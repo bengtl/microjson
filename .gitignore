@@ -1,0 +1,17 @@
+poetry.lock
+tmp*
+dist/*
+src/microjson/__pycache__/
+tests/__pycache__/
+tiles/
+.venv/
+.DS_Store
+*/__pycache__/
+*.pyc
+.vscode/
+dist/
+.mypy_cache/
+.hintrc
+*.zip
+testdata/
+

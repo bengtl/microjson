@@ -1,4 +1,4 @@
-import pandas as pd
+import pandas as pd  # type: ignore
 from microjson import model as mj
 from typing import List
 
@@ -29,13 +29,9 @@ def df_to_microjson(df: pd.DataFrame) -> mj.FeatureCollection:
         geometry = GeometryClass(
             type=row["geometryType"], coordinates=row["coordinates"]
         )
-
-        # Create a Properties object to hold metadata about the feature
-        properties = mj.Properties(
-            string={"name": row["name"]},
-            numeric={"value": row["value"]},
-            multiNumeric={"values": row["values"]},
-        )
+        properties = {}
+        for key in ["name", "value", "values"]:
+            properties[key] = row[key]
 
         # Generate a Feature object that combines geometry and properties
         feature = mj.MicroFeature(
@@ -45,42 +41,11 @@ def df_to_microjson(df: pd.DataFrame) -> mj.FeatureCollection:
         # Append this feature to the list of features
         features.append(feature)
 
-    # Compute value ranges for numerical attributes
-    valueRange = {
-        "value": {"min": df["value"].min(), "max": df["value"].max()},
-        "values": {
-            "min": df["values"].apply(min).min(),
-            "max": df["values"].apply(max).max(),
-        },
-    }
-
-    # Define which fields are to be considered as descriptive
-    descriptiveFields = ["name"]
-
     # Generate a FeatureCollection object to aggregate all features
     feature_collection = mj.MicroFeatureCollection(
         type="FeatureCollection",
         features=features,
-        valueRange=valueRange,
-        descriptiveFields=descriptiveFields,
-        properties=mj.Properties(string={"plate": "Example Plate"}),
-        multiscale={
-            "axes": [
-                {
-                    "name": "x",
-                    "type": "space",
-                    "unit": "meter",
-                    "description": "The x-coordinate",
-                },
-                {
-                    "name": "y",
-                    "type": "space",
-                    "unit": "meter",
-                    "description": "The y-coordinate",
-                },
-            ],
-            "transformationMatrix": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-        },
+        properties={"plate": "Example Plate"}
     )
 
     return feature_collection
@@ -114,4 +79,5 @@ if __name__ == "__main__":
     feature_collection_model = df_to_microjson(df)
 
     # Serialize the FeatureCollection model to a JSON string
-    print(feature_collection_model.model_dump_json(indent=2, exclude_unset=True))
+    print(feature_collection_model.model_dump_json(
+        indent=2, exclude_unset=True))

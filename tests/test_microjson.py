@@ -2,7 +2,7 @@ import json
 import pytest
 from pydantic import ValidationError
 from microjson.model import MicroJSON, GeoJSON
-from microjson.utils import gather_example_files
+from microjson.fileutils import gather_example_files
 
 
 # Define the directories containing the example JSON files
@@ -15,7 +15,8 @@ INVALID_MICROJSON_DIR = "tests/json/microjson/invalid"
 valid_examples = gather_example_files(VALID_EXAMPLES_DIR)
 invalid_examples = gather_example_files(INVALID_EXAMPLES_DIR)
 valid_microjson = gather_example_files(VALID_MICROJSON_DIR) + valid_examples
-invalid_microjson = gather_example_files(INVALID_MICROJSON_DIR) + invalid_examples
+invalid_microjson = gather_example_files(
+    INVALID_MICROJSON_DIR) + invalid_examples
 
 
 @pytest.mark.parametrize("filename", valid_examples)

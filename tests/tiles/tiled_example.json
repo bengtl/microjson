@@ -5,12 +5,12 @@
     "version": "1.0.0",
     "attribution": "<a href='http://example.com'>Example</a>",
     "tiles": [
-        "./tiled_example/{zlvl}/{x}/{y}.json"
+        "http://example.com/tiled_example/{zlvl}/{x}/{y}.json"
     ],
     "minzoom": 0,
     "maxzoom": 10,
     "bounds": [0, 0, 24000, 24000],
-    "center": [12000, 12000, 0],
+    "center": [12000, 12000, 10],
     "vector_layers": [
         {
             "id": "image_layer",
@@ -19,12 +19,12 @@
             "maxzoom": 10,
             "fields": {
                 "string": {
-                    "plate": "Plate ID",
-                    "image": "Image URI"
+                    "Plate": "Plate ID",
+                    "Image": "Image URI",
+                    "Label": "Label"
                 },
                 "numerical": {
-                    "label": "Label ID",
-                    "channel": "Channel ID"
+                    "Channel": "Channel ID"
                 }
             }
         }
