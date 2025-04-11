@@ -42,25 +42,116 @@
             maxBounds: [[0, 0], [200, 200]],  // Set the bounds to fit the coordinate system
             noWrap: true
         });
-        // Define vector tile options
+
+        map.createPane('backgroundPane');
+        map.createPane('vectorPane');
+
+        map.getPane('backgroundPane').style.zIndex = 200;
+        map.getPane('vectorPane').style.zIndex = 400;
+
+        // Add background image overlay with adjustable offsets
+        // Replace 'https://example.com/background-image.jpg' with the URL of your actual background image
+        var imageUrl = 'http://localhost:8080/data/hackathon/intensity/stitched_1.ome.png';
+        
+        // Offset variables to adjust the positioning of the background image
+        // Adjust these values to fix alignment issues between the background image and vector tiles
+        var xOffset = 0; // Positive moves right, negative moves left
+        var yOffset = 0;  // Positive moves down, negative moves up
+        var size = 256;   // Size of the image in pixels
+        // Apply offsets to image bounds
+        var imageBounds = [
+            [0 + yOffset, 0 + xOffset],             // Top-left corner with offset
+            [size + yOffset, size + xOffset]          // Bottom-right corner with offset
+        ];
+        
+        L.imageOverlay(imageUrl, imageBounds, {
+            opacity: 1.0,
+            pane: 'backgroundPane'  // Background image assigned to backgroundPane
+        }).addTo(map);
+
+        // Define a collection of 16 distinct colors for the labels
+        var colorPalette = [
+            '#e6194B', // Red
+            '#3cb44b', // Green
+            '#ffe119', // Yellow
+            '#4363d8', // Blue
+            '#f58231', // Orange
+            '#911eb4', // Purple
+            '#42d4f4', // Cyan
+            '#f032e6', // Magenta
+            '#bfef45', // Lime
+            '#fabed4', // Pink
+            '#469990', // Teal
+            '#dcbeff', // Lavender
+            '#9A6324', // Brown
+            '#fffac8', // Beige
+            '#800000', // Maroon
+            '#aaffc3'  // Mint
+        ];
+
+        // Object to store the mapping between label values and colors
+        var labelColorMap = {};
+        var nextColorIndex = 0;
+
+        // Function to get color for a specific label value
+        function getColorForLabel(properties) {
+            // Create a consistent identifier string based on the most relevant property
+            // Try common properties that might exist in your data
+            var identifier;
+            
+            if (properties.class_label !== undefined) {
+                identifier = "class_" + properties.class_label;
+            } else if (properties.label !== undefined) {
+                identifier = "label_" + properties.label;
+            } else if (properties.id !== undefined) {
+                identifier = "id_" + properties.id;
+            } else if (properties.cell_id !== undefined) {
+                identifier = "cell_" + properties.cell_id;
+            } else if (properties.cluster !== undefined) {
+                identifier = "cluster_" + properties.cluster;
+            } else {
+                // As a last resort, use the string representation of the entire properties object
+                identifier = JSON.stringify(properties);
+            }
+            
+            // If this identifier already has an assigned color, return it
+            if (labelColorMap.hasOwnProperty(identifier)) {
+                return labelColorMap[identifier];
+            }
+            
+            // Otherwise, assign a new color to this identifier
+            var color = colorPalette[nextColorIndex % colorPalette.length];
+            labelColorMap[identifier] = color;
+            nextColorIndex++;
+            console.log("Assigned color", color, "to", identifier);
+            return color;
+        }
+
+        // Define vector tile options with a styling function
         var vectorTileOptions = {
-            rendererFactory: L.canvas.tile,
+            rendererFactory: L.svg.tile, // Use SVG renderer for better transparency support
             vectorTileLayerStyles: {
-                geojsonLayer: {
-                    fillColor: '#ffff00',
-                    fillOpacity: 1,
-                    weight: 1,
-                    opacity: 0.5,
-                    color: '#000000',
-                    fill: true
+                geojsonLayer: function(properties, zoom) {
+                    // Pass the entire properties object to get a color
+                    var fillColor = getColorForLabel(properties);
+                    
+                    return {
+                        fillColor: fillColor,
+                        fillOpacity: 0.5, // Ensure fill transparency
+                        weight: 1,
+                        opacity: 0.5, // Ensure stroke transparency
+                        color: '#000000',
+                        fill: true
+                    };
                 }
             },
             interactive: true,
             noWrap: true,
+            pane: 'vectorPane'  // Use our custom pane
         };
 
         // Add vector tile layer
-        var vectorGrid = L.vectorGrid.protobuf('http://localhost:8080/tiles/{z}/{x}/{y}.pbf', vectorTileOptions).addTo(map);
+        var vectorGrid = L.vectorGrid.protobuf('http://localhost:8080/data/hackathon/vectortiles/stitched_1/{z}/{x}/{y}.pbf', vectorTileOptions).addTo(map);
 
         // Variable to track the currently active tooltip
         let activeTooltip = null;
@@ -115,15 +206,14 @@
         // Optional: Handle click events
         vectorGrid.on('click', function (e) {
             console.log('Clicked feature properties:', e.layer.properties);
+            console.log('Property keys:', Object.keys(e.layer.properties));
+            console.log('Property values:', Object.values(e.layer.properties));
+            alert('Check browser console for feature properties');
         });
 
         // Error handling for tile loading
         vectorGrid.on('tileerror', function (error) {
             console.error('Tile loading error:', error);
-        });
-
-        vectorGrid.on('click', function (e) {
-            console.log(e.layer.properties); // Log properties of the clicked feature
         });
     </script>
 </body>
