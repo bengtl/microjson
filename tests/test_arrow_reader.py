@@ -1,0 +1,452 @@
+"""Tests for Arrow/GeoParquet reader: Parquet → MicroJSON round-trip."""
+
+from __future__ import annotations
+
+import json
+
+import pyarrow as pa
+import pytest
+import shapely
+from shapely.geometry import (
+    LineString as ShapelyLineString,
+    MultiLineString as ShapelyMultiLineString,
+    MultiPolygon as ShapelyMultiPolygon,
+    Point as ShapelyPoint,
+    Polygon as ShapelyPolygon,
+)
+
+from microjson.arrow import (
+    ArrowConfig,
+    from_arrow_table,
+    from_geoparquet,
+    to_arrow_table,
+    to_geoparquet,
+)
+from microjson.arrow._from_geometry import (
+    neuron_from_tree_json,
+    shapely_to_microjson,
+    slicestack_from_rows,
+)
+from microjson.model import (
+    MicroFeature,
+    MicroFeatureCollection,
+    NeuronMorphology,
+    PolyhedralSurface,
+    Slice,
+    SliceStack,
+    SWCSample,
+    TIN,
+)
+
+from geojson_pydantic import (
+    GeometryCollection,
+    LineString,
+    MultiLineString,
+    MultiPoint,
+    MultiPolygon,
+    Point,
+    Polygon,
+)
+
+
+# ---- Fixtures ----
+
+
+def _point_feat(fid="p1", x=1.0, y=2.0, z=3.0, props=None):
+    return MicroFeature(
+        type="Feature",
+        id=fid,
+        geometry=Point(type="Point", coordinates=(x, y, z)),
+        properties=props or {},
+    )
+
+
+def _polygon_feat(fid="pg1"):
+    return MicroFeature(
+        type="Feature",
+        id=fid,
+        geometry=Polygon(
+            type="Polygon",
+            coordinates=[[(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]],
+        ),
+        properties={"area": 100},
+    )
+
+
+def _polygon_with_hole_feat():
+    return MicroFeature(
+        type="Feature",
+        id="pwh1",
+        geometry=Polygon(
+            type="Polygon",
+            coordinates=[
+                [(0, 0), (20, 0), (20, 20), (0, 20), (0, 0)],
+                [(5, 5), (15, 5), (15, 15), (5, 15), (5, 5)],
+            ],
+        ),
+        properties={},
+    )
+
+
+def _linestring_feat():
+    return MicroFeature(
+        type="Feature",
+        id="ls1",
+        geometry=LineString(
+            type="LineString",
+            coordinates=[(0, 0, 0), (1, 1, 1), (2, 0, 2)],
+        ),
+        properties={"name": "line1"},
+    )
+
+
+def _neuron_feat():
+    return MicroFeature(
+        type="Feature",
+        id="n1",
+        geometry=NeuronMorphology(
+            type="NeuronMorphology",
+            tree=[
+                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5.0, parent=-1),
+                SWCSample(id=2, type=2, x=10, y=0, z=0, r=1.0, parent=1),
+                SWCSample(id=3, type=3, x=0, y=10, z=0, r=1.0, parent=1),
+            ],
+        ),
+        properties={"species": "mouse"},
+    )
+
+
+def _slicestack_feat():
+    return MicroFeature(
+        type="Feature",
+        id="ss1",
+        geometry=SliceStack(
+            type="SliceStack",
+            slices=[
+                Slice(
+                    z=0.0,
+                    geometry=Polygon(
+                        type="Polygon",
+                        coordinates=[[(0, 0), (5, 0), (5, 5), (0, 5), (0, 0)]],
+                    ),
+                    properties={"label": "bottom"},
+                ),
+                Slice(
+                    z=10.0,
+                    geometry=Polygon(
+                        type="Polygon",
+                        coordinates=[[(1, 1), (4, 1), (4, 4), (1, 4), (1, 1)]],
+                    ),
+                    properties={"label": "top"},
+                ),
+            ],
+        ),
+        properties={"stack_name": "test"},
+    )
+
+
+def _tin_feat():
+    return MicroFeature(
+        type="Feature",
+        id="t1",
+        geometry=TIN(
+            type="TIN",
+            coordinates=[
+                [[(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 0)]],
+                [[(1, 0, 0), (1, 1, 0), (0, 1, 0), (1, 0, 0)]],
+            ],
+        ),
+        properties={},
+    )
+
+
+# ===== Shapely → MicroJSON Tests =====
+
+
+class TestShapelyToMicroJSON:
+    def test_point_2d(self):
+        s = ShapelyPoint(1, 2)
+        m = shapely_to_microjson(s)
+        assert isinstance(m, Point)
+        assert m.coordinates[0] == 1.0
+        assert m.coordinates[1] == 2.0
+
+    def test_point_3d(self):
+        s = ShapelyPoint(1, 2, 3)
+        m = shapely_to_microjson(s)
+        assert isinstance(m, Point)
+        assert len(m.coordinates) == 3
+        assert m.coordinates[2] == 3.0
+
+    def test_linestring(self):
+        s = ShapelyLineString([(0, 0, 0), (1, 1, 1)])
+        m = shapely_to_microjson(s)
+        assert isinstance(m, LineString)
+        assert len(m.coordinates) == 2
+
+    def test_polygon(self):
+        s = ShapelyPolygon([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
+        m = shapely_to_microjson(s)
+        assert isinstance(m, Polygon)
+        assert len(m.coordinates) == 1  # exterior only
+
+    def test_polygon_with_hole(self):
+        s = ShapelyPolygon(
+            [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
+            [[(2, 2), (8, 2), (8, 8), (2, 8), (2, 2)]],
+        )
+        m = shapely_to_microjson(s)
+        assert isinstance(m, Polygon)
+        assert len(m.coordinates) == 2  # exterior + 1 hole
+
+    def test_multipolygon(self):
+        s = ShapelyMultiPolygon([
+            ShapelyPolygon([(0, 0), (1, 0), (1, 1), (0, 0)]),
+            ShapelyPolygon([(5, 5), (6, 5), (6, 6), (5, 5)]),
+        ])
+        m = shapely_to_microjson(s)
+        assert isinstance(m, MultiPolygon)
+        assert len(m.coordinates) == 2
+
+    def test_none(self):
+        assert shapely_to_microjson(None) is None
+
+    def test_unsupported_raises(self):
+        with pytest.raises(TypeError, match="Unsupported"):
+            shapely_to_microjson("not a geometry")
+
+
+class TestNeuronFromTreeJson:
+    def test_roundtrip(self):
+        tree_data = [
+            {"id": 1, "type": 1, "x": 0, "y": 0, "z": 0, "r": 5.0, "parent": -1},
+            {"id": 2, "type": 2, "x": 10, "y": 0, "z": 0, "r": 1.0, "parent": 1},
+        ]
+        j = json.dumps(tree_data)
+        nm = neuron_from_tree_json(j)
+        assert isinstance(nm, NeuronMorphology)
+        assert len(nm.tree) == 2
+        assert nm.tree[0].x == 0
+        assert nm.tree[1].x == 10
+
+
+class TestSliceStackFromRows:
+    def test_basic(self):
+        rows = [
+            {
+                "_slice_z": 10.0,
+                "_slice_properties": json.dumps({"label": "top"}),
+                "_shapely_geom": ShapelyPolygon([(1, 1), (4, 1), (4, 4), (1, 1)]),
+            },
+            {
+                "_slice_z": 0.0,
+                "_slice_properties": json.dumps({"label": "bottom"}),
+                "_shapely_geom": ShapelyPolygon([(0, 0), (5, 0), (5, 5), (0, 0)]),
+            },
+        ]
+        ss = slicestack_from_rows(rows)
+        assert isinstance(ss, SliceStack)
+        assert len(ss.slices) == 2
+        # Sorted by z
+        assert ss.slices[0].z == 0.0
+        assert ss.slices[1].z == 10.0
+
+
+# ===== Arrow Round-trip Tests =====
+
+
+class TestArrowRoundTrip:
+    def test_point(self):
+        orig = _point_feat(props={"count": 42})
+        table = to_arrow_table(orig)
+        fc = from_arrow_table(table)
+        assert len(fc.features) == 1
+        f = fc.features[0]
+        assert f.id == "p1"
+        assert isinstance(f.geometry, Point)
+        assert f.geometry.coordinates[2] == 3.0
+        assert f.properties["count"] == 42
+
+    def test_polygon(self):
+        orig = _polygon_feat()
+        table = to_arrow_table(orig)
+        fc = from_arrow_table(table)
+        f = fc.features[0]
+        assert isinstance(f.geometry, Polygon)
+        assert f.properties["area"] == 100
+
+    def test_polygon_with_hole(self):
+        orig = _polygon_with_hole_feat()
+        table = to_arrow_table(orig)
+        fc = from_arrow_table(table)
+        f = fc.features[0]
+        assert isinstance(f.geometry, Polygon)
+        assert len(f.geometry.coordinates) == 2  # exterior + hole
+
+    def test_linestring(self):
+        orig = _linestring_feat()
+        table = to_arrow_table(orig)
+        fc = from_arrow_table(table)
+        f = fc.features[0]
+        assert isinstance(f.geometry, LineString)
+        assert len(f.geometry.coordinates) == 3
+
+    def test_neuron_morphology(self):
+        orig = _neuron_feat()
+        table = to_arrow_table(orig)
+        fc = from_arrow_table(table)
+        f = fc.features[0]
+        assert isinstance(f.geometry, NeuronMorphology)
+        assert len(f.geometry.tree) == 3
+        assert f.geometry.tree[0].r == 5.0
+        assert f.properties["species"] == "mouse"
+
+    def test_slicestack(self):
+        orig = _slicestack_feat()
+        table = to_arrow_table(orig)
+        fc = from_arrow_table(table)
+        # SliceStack rows are re-aggregated
+        ss_feats = [f for f in fc.features if isinstance(f.geometry, SliceStack)]
+        assert len(ss_feats) == 1
+        ss = ss_feats[0]
+        assert len(ss.geometry.slices) == 2
+        assert ss.geometry.slices[0].z == 0.0
+        assert ss.geometry.slices[1].z == 10.0
+        assert ss.geometry.slices[0].properties["label"] == "bottom"
+        assert ss.properties["stack_name"] == "test"
+
+    def test_collection(self):
+        fc_orig = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[
+                _point_feat("a", props={"val": 1}),
+                _point_feat("b", props={"val": 2}),
+            ],
+        )
+        table = to_arrow_table(fc_orig)
+        fc = from_arrow_table(table)
+        assert len(fc.features) == 2
+        assert fc.features[0].id == "a"
+        assert fc.features[1].id == "b"
+
+    def test_null_geometry(self):
+        orig = MicroFeature(
+            type="Feature", id="null", geometry=None, properties={"tag": "x"},
+        )
+        table = to_arrow_table(orig)
+        fc = from_arrow_table(table)
+        assert fc.features[0].geometry is None
+
+    def test_feature_class_preserved(self):
+        orig = MicroFeature(
+            type="Feature",
+            id="fc1",
+            geometry=Point(type="Point", coordinates=(0, 0)),
+            properties={},
+            featureClass="neuron",
+        )
+        table = to_arrow_table(orig)
+        fc = from_arrow_table(table)
+        assert fc.features[0].featureClass == "neuron"
+
+    def test_tin_roundtrip(self):
+        """TIN → MultiPolygon WKB → MultiPolygon (type info lost, geometry preserved)."""
+        orig = _tin_feat()
+        table = to_arrow_table(orig)
+        fc = from_arrow_table(table)
+        f = fc.features[0]
+        # TIN is stored as MultiPolygon in WKB — comes back as MultiPolygon
+        assert isinstance(f.geometry, MultiPolygon)
+        assert len(f.geometry.coordinates) == 2
+
+
+# ===== GeoParquet File Round-trip Tests =====
+
+
+class TestGeoParquetRoundTrip:
+    def test_write_read(self, tmp_path):
+        path = tmp_path / "roundtrip.parquet"
+        fc_orig = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[
+                _point_feat("a", props={"val": 1}),
+                _polygon_feat("b"),
+            ],
+        )
+        to_geoparquet(fc_orig, path)
+        fc = from_geoparquet(path)
+        assert len(fc.features) == 2
+        assert fc.features[0].id == "a"
+
+    def test_neuron_file_roundtrip(self, tmp_path):
+        path = tmp_path / "neuron.parquet"
+        to_geoparquet(_neuron_feat(), path)
+        fc = from_geoparquet(path)
+        f = fc.features[0]
+        assert isinstance(f.geometry, NeuronMorphology)
+        assert len(f.geometry.tree) == 3
+
+    def test_slicestack_file_roundtrip(self, tmp_path):
+        path = tmp_path / "slices.parquet"
+        to_geoparquet(_slicestack_feat(), path)
+        fc = from_geoparquet(path)
+        ss_feats = [f for f in fc.features if isinstance(f.geometry, SliceStack)]
+        assert len(ss_feats) == 1
+        assert len(ss_feats[0].geometry.slices) == 2
+
+    def test_mixed_geometry_file_roundtrip(self, tmp_path):
+        path = tmp_path / "mixed.parquet"
+        fc_orig = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[
+                _point_feat("p"),
+                _neuron_feat(),
+                _slicestack_feat(),
+            ],
+        )
+        to_geoparquet(fc_orig, path)
+        fc = from_geoparquet(path)
+
+        # 1 point + 1 neuron + 1 re-aggregated slicestack = 3 features
+        assert len(fc.features) == 3
+        geom_types = {type(f.geometry).__name__ for f in fc.features}
+        assert "Point" in geom_types
+        assert "NeuronMorphology" in geom_types
+        assert "SliceStack" in geom_types
+
+    def test_custom_geometry_column(self, tmp_path):
+        path = tmp_path / "custom_col.parquet"
+        config = ArrowConfig(primary_geometry_column="geom")
+        to_geoparquet(_point_feat(), path, config)
+        fc = from_geoparquet(path)
+        assert len(fc.features) == 1
+        assert isinstance(fc.features[0].geometry, Point)
+
+
+# ===== End-to-end: Parquet → MicroJSON → Draco GLB =====
+
+
+class TestParquetToDraco:
+    def test_parquet_to_glb_pipeline(self, tmp_path):
+        """Full pipeline: write Parquet, read back, export to Draco GLB."""
+        from microjson.gltf import GltfConfig, to_glb
+
+        parquet_path = tmp_path / "neurons.parquet"
+
+        # Create a neuron and write to parquet
+        to_geoparquet(_neuron_feat(), parquet_path)
+
+        # Read back
+        fc = from_geoparquet(parquet_path)
+        assert len(fc.features) == 1
+        assert isinstance(fc.features[0].geometry, NeuronMorphology)
+
+        # Export to GLB (with Draco if available)
+        try:
+            import DracoPy  # noqa: F401
+            config = GltfConfig(draco=True)
+        except ImportError:
+            config = GltfConfig(draco=False)
+
+        glb_bytes = to_glb(fc, config=config)
+        assert len(glb_bytes) > 0

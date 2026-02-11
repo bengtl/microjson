@@ -1,0 +1,394 @@
+"""Integration tests for Arrow/GeoParquet export: writer API, round-trip, mixed geometry."""
+
+from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
+
+import geopandas as gpd
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+import shapely
+
+from microjson.arrow import ArrowConfig, to_arrow_table, to_geoparquet
+from microjson.model import (
+    MicroFeature,
+    MicroFeatureCollection,
+    NeuronMorphology,
+    PolyhedralSurface,
+    Slice,
+    SliceStack,
+    SWCSample,
+    TIN,
+)
+
+from geojson_pydantic import (
+    LineString,
+    MultiLineString,
+    MultiPoint,
+    MultiPolygon,
+    Point,
+    Polygon,
+)
+
+
+# ---- Helpers ----
+
+def _point_feat(fid="p1", x=1.0, y=2.0, z=3.0, props=None):
+    return MicroFeature(
+        type="Feature",
+        id=fid,
+        geometry=Point(type="Point", coordinates=(x, y, z)),
+        properties=props or {},
+    )
+
+
+def _polygon_feat(fid="pg1"):
+    return MicroFeature(
+        type="Feature",
+        id=fid,
+        geometry=Polygon(
+            type="Polygon",
+            coordinates=[[(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]],
+        ),
+        properties={"area": 100.0},
+    )
+
+
+def _neuron_feat():
+    return MicroFeature(
+        type="Feature",
+        id="n1",
+        geometry=NeuronMorphology(
+            type="NeuronMorphology",
+            tree=[
+                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5.0, parent=-1),
+                SWCSample(id=2, type=2, x=10, y=0, z=0, r=1.0, parent=1),
+                SWCSample(id=3, type=3, x=0, y=10, z=5, r=1.0, parent=1),
+            ],
+        ),
+        properties={"species": "mouse"},
+    )
+
+
+def _slicestack_feat():
+    return MicroFeature(
+        type="Feature",
+        id="ss1",
+        geometry=SliceStack(
+            type="SliceStack",
+            slices=[
+                Slice(
+                    z=0.0,
+                    geometry=Polygon(
+                        type="Polygon",
+                        coordinates=[[(0, 0), (5, 0), (5, 5), (0, 5), (0, 0)]],
+                    ),
+                    properties={"label": "slice0"},
+                ),
+                Slice(
+                    z=5.0,
+                    geometry=Polygon(
+                        type="Polygon",
+                        coordinates=[[(1, 1), (4, 1), (4, 4), (1, 4), (1, 1)]],
+                    ),
+                ),
+            ],
+        ),
+        properties={"stack_id": 42},
+    )
+
+
+def _tin_feat():
+    return MicroFeature(
+        type="Feature",
+        id="t1",
+        geometry=TIN(
+            type="TIN",
+            coordinates=[
+                [[(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 0)]],
+            ],
+        ),
+        properties={},
+    )
+
+
+# ===== Writer API Tests =====
+
+
+class TestToArrowTable:
+    def test_single_feature(self):
+        table = to_arrow_table(_point_feat())
+        assert isinstance(table, pa.Table)
+        assert len(table) == 1
+
+    def test_collection(self):
+        fc = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[_point_feat("a"), _point_feat("b")],
+        )
+        table = to_arrow_table(fc)
+        assert len(table) == 2
+
+    def test_custom_config(self):
+        config = ArrowConfig(primary_geometry_column="geom")
+        table = to_arrow_table(_point_feat(), config)
+        assert "geom" in table.column_names
+        meta = json.loads(table.schema.metadata[b"geo"])
+        assert meta["primary_column"] == "geom"
+
+    def test_returns_table_type(self):
+        table = to_arrow_table(_point_feat())
+        assert isinstance(table, pa.Table)
+
+
+# ===== GeoParquet Round-trip Tests =====
+
+
+class TestGeoParquetRoundTrip:
+    def test_write_and_read(self, tmp_path):
+        path = tmp_path / "test.parquet"
+        fc = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[
+                _point_feat("a", props={"val": 1}),
+                _point_feat("b", props={"val": 2}),
+            ],
+        )
+        table = to_geoparquet(fc, path)
+
+        # Verify file exists
+        assert path.exists()
+        assert path.stat().st_size > 0
+
+        # Read back with pyarrow
+        read_table = pq.read_table(str(path))
+        assert len(read_table) == 2
+        assert "geometry" in read_table.column_names
+
+        # Verify GeoParquet metadata preserved
+        meta = json.loads(read_table.schema.metadata[b"geo"])
+        assert meta["version"] == "1.1.0"
+
+    def test_geopandas_read(self, tmp_path):
+        """Verify geopandas can read the GeoParquet file."""
+        path = tmp_path / "geopandas_test.parquet"
+        fc = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[
+                _polygon_feat("p1"),
+                _polygon_feat("p2"),
+            ],
+        )
+        to_geoparquet(fc, path)
+
+        gdf = gpd.read_parquet(str(path))
+        assert len(gdf) == 2
+        assert "geometry" in gdf.columns
+        assert gdf.geometry.iloc[0].geom_type == "Polygon"
+
+    def test_3d_point_roundtrip(self, tmp_path):
+        path = tmp_path / "3d_points.parquet"
+        to_geoparquet(_point_feat(), path)
+
+        read_table = pq.read_table(str(path))
+        wkb = read_table["geometry"][0].as_py()
+        geom = shapely.from_wkb(wkb)
+        assert geom.has_z
+        assert geom.z == 3.0
+
+    def test_creates_parent_dirs(self, tmp_path):
+        path = tmp_path / "sub" / "dir" / "test.parquet"
+        to_geoparquet(_point_feat(), path)
+        assert path.exists()
+
+
+# ===== Mixed Geometry Tests =====
+
+
+class TestMixedGeometry:
+    def test_point_and_polygon(self):
+        fc = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[_point_feat(), _polygon_feat()],
+        )
+        table = to_arrow_table(fc)
+        assert len(table) == 2
+        meta = json.loads(table.schema.metadata[b"geo"])
+        types = meta["columns"]["geometry"]["geometry_types"]
+        assert "Point Z" in types
+        assert "Polygon" in types
+
+    def test_neuron_and_point(self):
+        fc = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[_neuron_feat(), _point_feat()],
+        )
+        table = to_arrow_table(fc)
+        assert len(table) == 2
+        assert "_neuron_tree" in table.column_names
+        # Point row should have null _neuron_tree
+        assert table["_neuron_tree"][1].as_py() is None
+
+    def test_slicestack_with_other_features(self):
+        fc = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[_slicestack_feat(), _point_feat()],
+        )
+        table = to_arrow_table(fc)
+        # 2 slices + 1 point = 3 rows
+        assert len(table) == 3
+        assert "_slice_z" in table.column_names
+        # Point row should have null _slice_z
+        assert table["_slice_z"][2].as_py() is None
+
+    def test_all_3d_types(self):
+        fc = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[
+                _point_feat(),
+                _neuron_feat(),
+                _tin_feat(),
+            ],
+        )
+        table = to_arrow_table(fc)
+        assert len(table) == 3
+        meta = json.loads(table.schema.metadata[b"geo"])
+        types = meta["columns"]["geometry"]["geometry_types"]
+        assert "Point Z" in types
+        assert "MultiLineString Z" in types
+        assert "MultiPolygon Z" in types
+
+    def test_mixed_geometry_geoparquet(self, tmp_path):
+        """Write mixed geometry types to GeoParquet and verify metadata."""
+        path = tmp_path / "mixed.parquet"
+        fc = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[_point_feat(), _polygon_feat(), _neuron_feat()],
+        )
+        to_geoparquet(fc, path)
+
+        read_table = pq.read_table(str(path))
+        meta = json.loads(read_table.schema.metadata[b"geo"])
+        types = meta["columns"]["geometry"]["geometry_types"]
+        assert len(types) >= 3
+
+
+# ===== Edge Cases =====
+
+
+class TestEdgeCases:
+    def test_empty_collection(self):
+        fc = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[],
+        )
+        table = to_arrow_table(fc)
+        assert len(table) == 0
+
+    def test_no_properties(self):
+        feat = MicroFeature(
+            type="Feature",
+            id="noprops",
+            geometry=Point(type="Point", coordinates=(0, 0)),
+            properties={},
+        )
+        table = to_arrow_table(feat)
+        # Should have at least id, featureClass, geometry
+        assert len(table.column_names) >= 3
+
+    def test_null_geometry_feature(self):
+        feat = MicroFeature(
+            type="Feature",
+            id="nullgeo",
+            geometry=None,
+            properties={"tag": "test"},
+        )
+        table = to_arrow_table(feat)
+        assert table["geometry"][0].as_py() is None
+
+    def test_slicestack_with_null_slice_properties(self):
+        feat = MicroFeature(
+            type="Feature",
+            id="ss_null",
+            geometry=SliceStack(
+                type="SliceStack",
+                slices=[
+                    Slice(
+                        z=0.0,
+                        geometry=Polygon(
+                            type="Polygon",
+                            coordinates=[
+                                [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]
+                            ],
+                        ),
+                    ),
+                ],
+            ),
+            properties={},
+        )
+        table = to_arrow_table(feat)
+        assert table["_slice_properties"][0].as_py() is None
+
+    def test_feature_properties_propagated_to_slices(self):
+        """Feature-level properties appear on every exploded slice row."""
+        table = to_arrow_table(_slicestack_feat())
+        assert len(table) == 2
+        # Both rows have stack_id
+        assert table["stack_id"][0].as_py() == 42
+        assert table["stack_id"][1].as_py() == 42
+
+    def test_multipoint_3d(self):
+        feat = MicroFeature(
+            type="Feature",
+            id="mp1",
+            geometry=MultiPoint(
+                type="MultiPoint",
+                coordinates=[(0, 0, 0), (1, 1, 1), (2, 2, 2)],
+            ),
+            properties={},
+        )
+        table = to_arrow_table(feat)
+        wkb = table["geometry"][0].as_py()
+        geom = shapely.from_wkb(wkb)
+        assert geom.geom_type == "MultiPoint"
+        assert shapely.get_coordinate_dimension(geom) == 3
+
+    def test_multilinestring_geometry(self):
+        feat = MicroFeature(
+            type="Feature",
+            id="mls1",
+            geometry=MultiLineString(
+                type="MultiLineString",
+                coordinates=[
+                    [(0, 0, 0), (1, 1, 1)],
+                    [(2, 2, 2), (3, 3, 3)],
+                ],
+            ),
+            properties={},
+        )
+        table = to_arrow_table(feat)
+        wkb = table["geometry"][0].as_py()
+        geom = shapely.from_wkb(wkb)
+        assert geom.geom_type == "MultiLineString"
+
+    def test_multipolygon_geometry(self):
+        feat = MicroFeature(
+            type="Feature",
+            id="mpg1",
+            geometry=MultiPolygon(
+                type="MultiPolygon",
+                coordinates=[
+                    [[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]],
+                    [[(5, 5), (6, 5), (6, 6), (5, 6), (5, 5)]],
+                ],
+            ),
+            properties={},
+        )
+        table = to_arrow_table(feat)
+        wkb = table["geometry"][0].as_py()
+        geom = shapely.from_wkb(wkb)
+        assert geom.geom_type == "MultiPolygon"
+        assert len(geom.geoms) == 2

@@ -25,5 +25,7 @@ from .neuroglancer import (  # noqa: F401
     write_annotations,
 )
 from .gltf import to_gltf, to_glb, GltfConfig  # noqa: F401
+from .arrow import to_arrow_table, to_geoparquet, ArrowConfig  # noqa: F401
+from .arrow import from_arrow_table, from_geoparquet  # noqa: F401
 
 __version__ = "0.4.2"
