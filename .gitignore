@@ -16,3 +16,6 @@ dist/
 testdata/
 *.ipynb_checkpoints
 data/
+neuroglancer_output
+swcs
+testdir
