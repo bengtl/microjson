@@ -91,6 +91,11 @@ def _init_gltf(config: GltfConfig) -> GLTF2:
             doubleSided=True,
         )
     ]
+
+    if config.draco:
+        from ._draco import ensure_draco_extensions
+        ensure_draco_extensions(gltf)
+
     return gltf
 
 
@@ -107,6 +112,12 @@ def _add_triangle_mesh(
         vertices = _apply_y_up(vertices)
         if normals is not None:
             normals = _apply_y_up(normals)
+
+    if config.draco:
+        from ._draco import add_draco_triangle_mesh
+        return add_draco_triangle_mesh(
+            gltf, vertices, indices, normals, config, material_idx,
+        )
 
     verts_f32 = vertices.astype(np.float32)
     pos_acc = create_accessor(gltf, verts_f32, FLOAT, "VEC3", ARRAY_BUFFER)

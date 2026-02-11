@@ -52,6 +52,17 @@ class GltfConfig(BaseModel):
         grid_max_z: Max number of layers (Z direction).  When all three
             ``grid_max_*`` values are set and the features cannot fit,
             a ``ValueError`` is raised before any mesh generation.
+        draco: Enable Draco mesh compression (``KHR_draco_mesh_compression``).
+            Only TRIANGLES primitives are compressed; lines and points
+            are left uncompressed.  Requires the optional ``DracoPy``
+            package (``pip install DracoPy``).
+        draco_quantization_position: Quantization bits for vertex positions
+            (1–30).  Higher = more precise but larger.  14 bits ≈ 0.6 µm
+            precision for typical microscopy volumes.
+        draco_quantization_normal: Quantization bits for normal vectors
+            (1–30).  10 bits is usually sufficient for direction vectors.
+        draco_compression_level: Draco compression level (0–10).  Higher
+            values produce smaller output but take longer to encode.
     """
 
     tube_segments: int = 8
@@ -67,3 +78,7 @@ class GltfConfig(BaseModel):
     grid_max_x: int | None = None
     grid_max_y: int | None = None
     grid_max_z: int | None = None
+    draco: bool = False
+    draco_quantization_position: int = 14
+    draco_quantization_normal: int = 10
+    draco_compression_level: int = 1

@@ -67,7 +67,12 @@ optional = true
 version = "^3.5.1"
 optional = true
 
+[tool.poetry.dependencies.DracoPy]
+version = "^1.4"
+optional = true
+
 [tool.poetry.extras]
+draco = ["DracoPy"]
 all = [
     "bfio",
     "scipy",

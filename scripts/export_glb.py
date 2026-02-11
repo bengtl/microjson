@@ -8,6 +8,7 @@ Options:
     -o OUTPUT       Output file path (default: neuron.glb)
     --grid X,Y,Z    Grid layout, e.g. --grid 5,4 or --grid 5,4,2
     --spacing N     Gap between features in source units (default: 0 = auto 20%)
+    --draco         Enable Draco mesh compression (requires DracoPy)
 
 Examples:
     # All SWC files in swcs/ (single row)
@@ -54,6 +55,9 @@ def main():
     grid_str = _pop_flag(args, "--grid")
     spacing_str = _pop_flag(args, "--spacing")
     feature_spacing = float(spacing_str) if spacing_str else 0.0
+    draco = "--draco" in args
+    if draco:
+        args.remove("--draco")
 
     # Parse grid spec
     grid_x = grid_y = grid_z = None
@@ -99,6 +103,7 @@ def main():
         grid_max_y=grid_y,
         grid_max_z=grid_z,
         feature_spacing=feature_spacing,
+        draco=draco,
     )
 
     features = []
