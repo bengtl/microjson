@@ -39,6 +39,8 @@ mapbox-vector-tile = "^2.1.0"
 pyarrow = "^19.0.1"
 geopandas = "^1.0.1"
 jsonschema = "^4.23.0"
+pygltflib = "^1.16"
+numpy = "^1.26"
 
 [tool.poetry.dependencies.scikit-image]
 version = "^0.20.0"
