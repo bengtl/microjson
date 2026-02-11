@@ -13,9 +13,11 @@ from .transforms import (  # noqa: F401
     AffineTransform,
     VoxelCoordinateSystem,
     apply_transform,
+    translate_geometry,
     voxel_to_physical,
     physical_to_voxel,
 )
+from .layout import geometry_bounds, apply_layout  # noqa: F401
 from .microjson2vt.microjson2vt import microjson2vt  # noqa: F401
 from .neuroglancer import (  # noqa: F401
     to_neuroglancer,

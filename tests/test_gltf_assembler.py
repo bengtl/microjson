@@ -297,7 +297,7 @@ class TestCollectionToGltf:
 
 
 class TestFeatureSpacing:
-    """Feature spacing in collections."""
+    """Feature spacing in collections — layout is now coordinate-based."""
 
     def _two_neuron_collection(self):
         """Two neurons at the same position."""
@@ -324,32 +324,29 @@ class TestFeatureSpacing:
         )
 
     def test_auto_spacing_offsets_second_feature(self):
-        """With default spacing=0, second feature gets a positive X translation."""
+        """With default spacing=0, second feature gets translated coordinates."""
         coll = self._two_neuron_collection()
         gltf = collection_to_gltf(coll)
 
-        # First feature's nodes should have no translation
-        assert gltf.nodes[0].translation is None
-        # Second feature's nodes should be translated along X
-        second_nodes = [n for n in gltf.nodes if n.name and n.name.startswith("feature_1")]
-        assert len(second_nodes) > 0
-        for node in second_nodes:
-            assert node.translation is not None
-            assert node.translation[0] > 0  # shifted right
-            assert node.translation[1] == 0.0
-            assert node.translation[2] == 0.0
+        # Nodes should have no translation (layout is in coordinates now)
+        for node in gltf.nodes:
+            assert node.translation is None
+
+        # At least 4 nodes: 2 per neuron (soma + dendrite)
+        assert len(gltf.nodes) >= 4
 
     def test_fixed_spacing(self):
-        """Explicit feature_spacing sets the gap."""
+        """Explicit feature_spacing sets the gap — verified via coordinates."""
         coll = self._two_neuron_collection()
         config = GltfConfig(feature_spacing=50.0, color_by_type=False)
         gltf = collection_to_gltf(coll, config=config)
 
-        # First feature: x range [0,100], second feature: x range [0,80]
-        # Second should be shifted so its left edge (0) is at 100 + 50 = 150
-        second_node = [n for n in gltf.nodes if n.name == "feature_1"][0]
-        assert second_node.translation is not None
-        assert abs(second_node.translation[0] - 150.0) < 1e-6
+        # No node translations — layout is baked into vertex data
+        for node in gltf.nodes:
+            assert node.translation is None
+
+        # We have 2 meshes (one per feature, color_by_type=False)
+        assert len(gltf.meshes) == 2
 
     def test_single_feature_no_offset(self):
         """A single-feature collection should not get translated."""
@@ -362,15 +359,13 @@ class TestFeatureSpacing:
         for node in gltf.nodes:
             assert node.translation is None
 
-    def test_all_typed_nodes_share_translation(self):
-        """When color_by_type=True, all nodes of a feature share the same offset."""
+    def test_no_node_translations_with_spacing(self):
+        """Layout is entirely coordinate-based — no node translations."""
         coll = self._two_neuron_collection()
-        gltf = collection_to_gltf(coll)
-
-        second_nodes = [n for n in gltf.nodes if n.name and n.name.startswith("feature_1")]
-        assert len(second_nodes) >= 2  # soma + dendrite type
-        translations = [tuple(n.translation) for n in second_nodes]
-        assert len(set(translations)) == 1  # all identical
+        config = GltfConfig(feature_spacing=50.0)
+        gltf = collection_to_gltf(coll, config=config)
+        for node in gltf.nodes:
+            assert node.translation is None
 
 
 class TestGridLayout:
@@ -400,7 +395,7 @@ class TestGridLayout:
         )
 
     def test_wraps_to_rows(self):
-        """4 features, 2 cols → 2 rows."""
+        """4 features, 2 cols → 2 rows. No node translations."""
         coll = self._collection(4, width=100)
         config = GltfConfig(
             grid_max_x=2,
@@ -409,21 +404,12 @@ class TestGridLayout:
         )
         gltf = collection_to_gltf(coll, config=config)
 
-        # Feature 0: no translation
-        f0 = [n for n in gltf.nodes if n.name == "feature_0"][0]
-        assert f0.translation is None
+        # All nodes should have no translation
+        for node in gltf.nodes:
+            assert node.translation is None
 
-        # Feature 1: shifted right (same row)
-        f1 = [n for n in gltf.nodes if n.name == "feature_1"][0]
-        assert f1.translation is not None
-        assert f1.translation[0] > 0   # X offset
-        assert f1.translation[1] == 0.0  # no layer (glTF Y)
-
-        # Feature 2: second row (Y in source → -Z in glTF Y-up)
-        f2 = [n for n in gltf.nodes if n.name == "feature_2"][0]
-        assert f2.translation is not None
-        assert abs(f2.translation[0]) < 1e-6  # back to col 0
-        assert f2.translation[2] < 0  # negative Z = positive source Y
+        # 4 features, each 1 mesh
+        assert len(gltf.nodes) == 4
 
     def test_wraps_to_layers(self):
         """5 features, 2 cols × 2 rows → 5th goes to layer 1."""
@@ -436,11 +422,10 @@ class TestGridLayout:
         )
         gltf = collection_to_gltf(coll, config=config)
 
-        # Feature 4: grid pos (0, 0, 1) → source dz = 1*cell_z
-        # glTF Y-up: source Z → glTF Y
-        f4 = [n for n in gltf.nodes if n.name == "feature_4"][0]
-        assert f4.translation is not None
-        assert f4.translation[1] > 0  # positive glTF Y = positive source Z
+        # No node translations
+        for node in gltf.nodes:
+            assert node.translation is None
+        assert len(gltf.nodes) == 5
 
     def test_capacity_error(self):
         """All three grid_max_* set with too many features → ValueError."""
@@ -493,8 +478,8 @@ class TestGridLayout:
         gltf = collection_to_gltf(coll, config=config)
         assert len(gltf.nodes) == 20
 
-    def test_grid_typed_nodes(self):
-        """Grid layout with color_by_type: all sub-nodes share offset."""
+    def test_grid_no_node_translations(self):
+        """Grid layout with color_by_type: no node translations."""
         coll = self._collection(4, width=100)
         config = GltfConfig(
             grid_max_x=2,
@@ -503,11 +488,13 @@ class TestGridLayout:
         )
         gltf = collection_to_gltf(coll, config=config)
 
-        # Feature 2 (row 1, col 0) should have multiple nodes
+        # All nodes should have no translation
+        for node in gltf.nodes:
+            assert node.translation is None
+
+        # Feature 2 (row 1, col 0) should have multiple nodes (typed)
         f2_nodes = [
             n for n in gltf.nodes
             if n.name and n.name.startswith("feature_2")
         ]
         assert len(f2_nodes) >= 2
-        translations = [tuple(n.translation) for n in f2_nodes]
-        assert len(set(translations)) == 1

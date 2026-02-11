@@ -6,8 +6,7 @@ and wires them into pygltflib's GLTF2 object.
 
 from __future__ import annotations
 
-import math
-from typing import Any, Union
+from typing import Any
 
 import numpy as np
 from pygltflib import (
@@ -47,6 +46,7 @@ from ..model import (
     SliceStack,
     TIN,
 )
+from ..layout import apply_layout
 from ._buffers import create_accessor
 from .mesh_builder import neuron_to_tube_mesh, neuron_to_typed_meshes
 from .models import DEFAULT_SWC_FALLBACK_COLOR, GltfConfig
@@ -173,7 +173,6 @@ def _add_node(
     mesh_idx: int,
     name: str | None = None,
     extras: dict | None = None,
-    translation: list[float] | None = None,
 ) -> int:
     """Add a node referencing a mesh and return its index."""
     node = Node(mesh=mesh_idx)
@@ -181,8 +180,6 @@ def _add_node(
         node.name = name
     if extras:
         node.extras = extras
-    if translation is not None:
-        node.translation = translation
     node_idx = len(gltf.nodes)
     gltf.nodes.append(node)
     gltf.scenes[0].nodes.append(node_idx)
@@ -514,211 +511,6 @@ def _convert_multipoint(
 
 
 # ---------------------------------------------------------------------------
-# Bounding box helpers (for feature spacing / grid layout)
-# ---------------------------------------------------------------------------
-
-# Type alias: (x_min, x_max, y_min, y_max, z_min, z_max)
-_Bounds = tuple[float, float, float, float, float, float]
-
-
-def _collect_xyz_from_coords(
-    coords: Any,
-    xs: list[float],
-    ys: list[float],
-    zs: list[float],
-) -> None:
-    """Recursively extract X/Y/Z from nested GeoJSON coordinate arrays."""
-    if not coords:
-        return
-    if isinstance(coords[0], (int, float)):
-        xs.append(float(coords[0]))
-        ys.append(float(coords[1]) if len(coords) > 1 else 0.0)
-        zs.append(float(coords[2]) if len(coords) > 2 else 0.0)
-    else:
-        for item in coords:
-            _collect_xyz_from_coords(item, xs, ys, zs)
-
-
-def _geometry_bounds(geom: Any) -> _Bounds | None:
-    """Return 3-D bounding box or *None* if the geometry is empty."""
-    xs: list[float] = []
-    ys: list[float] = []
-    zs: list[float] = []
-
-    if isinstance(geom, NeuronMorphology):
-        for s in geom.tree:
-            xs.append(s.x)
-            ys.append(s.y)
-            zs.append(s.z)
-    elif isinstance(geom, SliceStack):
-        for slc in geom.slices:
-            if hasattr(slc.geometry, "coordinates"):
-                _collect_xyz_from_coords(
-                    slc.geometry.coordinates, xs, ys, zs,
-                )
-            # Include slice Z
-            zs.append(slc.z)
-    elif hasattr(geom, "coordinates"):
-        _collect_xyz_from_coords(geom.coordinates, xs, ys, zs)
-
-    if not xs:
-        return None
-    return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
-
-
-# ---------------------------------------------------------------------------
-# Layout helpers
-# ---------------------------------------------------------------------------
-
-_Offset3 = tuple[float, float, float]
-
-
-def _row_layout(
-    bounds: list[_Bounds | None],
-    config: GltfConfig,
-) -> list[_Offset3]:
-    """Place features side-by-side along X (original behaviour)."""
-    n = len(bounds)
-    widths = [(b[1] - b[0]) if b else 0.0 for b in bounds]
-    max_width = max(widths) if widths else 0.0
-    gap = (
-        config.feature_spacing
-        if config.feature_spacing > 0
-        else max_width * 0.2
-    )
-
-    offsets: list[_Offset3] = [(0.0, 0.0, 0.0)] * n
-    cursor = bounds[0][1] if bounds[0] else gap
-
-    for i in range(1, n):
-        b = bounds[i]
-        if b is None:
-            dx = cursor + gap
-            offsets[i] = (dx, 0.0, 0.0)
-            cursor = dx
-            continue
-        dx = (cursor + gap) - b[0]
-        offsets[i] = (dx, 0.0, 0.0)
-        cursor = b[1] + dx
-
-    return offsets
-
-
-def _grid_layout(
-    bounds: list[_Bounds | None],
-    config: GltfConfig,
-    n: int,
-) -> list[_Offset3]:
-    """Place features on a uniform grid that wraps X → Y → Z.
-
-    ``grid_max_x/y/z`` give the number of cells per axis directly
-    (e.g. 3 × 3 × 3 = 27 cells).
-    """
-    widths = [(b[1] - b[0]) if b else 0.0 for b in bounds]
-    heights = [(b[3] - b[2]) if b else 0.0 for b in bounds]
-    depths = [(b[5] - b[4]) if b else 0.0 for b in bounds]
-
-    max_w = max(widths) if widths else 0.0
-    max_h = max(heights) if heights else 0.0
-    max_d = max(depths) if depths else 0.0
-
-    max_extent = max(max_w, max_h, max_d)
-    gap = (
-        config.feature_spacing
-        if config.feature_spacing > 0
-        else (max_extent * 0.2 if max_extent > 0 else 1.0)
-    )
-
-    cell_x = max_w + gap
-    cell_y = max_h + gap
-    cell_z = max_d + gap
-
-    # Grid dimensions — values are cell counts, unlimited when None
-    cols = config.grid_max_x if config.grid_max_x is not None else n
-    rows = (
-        config.grid_max_y
-        if config.grid_max_y is not None
-        else max(1, -(-n // cols))
-    )
-    layers = (
-        config.grid_max_z
-        if config.grid_max_z is not None
-        else max(1, -(-n // (cols * rows)))
-    )
-
-    capacity = cols * rows * layers
-    if n > capacity:
-        raise ValueError(
-            f"Cannot fit {n} features in grid "
-            f"({cols} cols \u00d7 {rows} rows \u00d7 {layers} layers "
-            f"= {capacity} cells). "
-            f"Increase grid_max_x/y/z or reduce feature count."
-        )
-
-    # Feature 0 is the reference point; others are placed relative to it
-    ref = bounds[0]
-    ref_cx = (ref[0] + ref[1]) / 2 if ref else 0.0
-    ref_cy = (ref[2] + ref[3]) / 2 if ref else 0.0
-    ref_cz = (ref[4] + ref[5]) / 2 if ref else 0.0
-
-    offsets: list[_Offset3] = [(0.0, 0.0, 0.0)]
-
-    for i in range(1, n):
-        col = i % cols
-        row = (i // cols) % rows
-        layer = i // (cols * rows)
-
-        target_cx = ref_cx + col * cell_x
-        target_cy = ref_cy + row * cell_y
-        target_cz = ref_cz + layer * cell_z
-
-        b = bounds[i]
-        feat_cx = (b[0] + b[1]) / 2 if b else 0.0
-        feat_cy = (b[2] + b[3]) / 2 if b else 0.0
-        feat_cz = (b[4] + b[5]) / 2 if b else 0.0
-
-        offsets.append((
-            target_cx - feat_cx,
-            target_cy - feat_cy,
-            target_cz - feat_cz,
-        ))
-
-    return offsets
-
-
-def _compute_feature_offsets(
-    features: list,
-    config: GltfConfig,
-) -> list[_Offset3]:
-    """Compute 3-D translation for each feature in a collection.
-
-    Returns a list of ``(dx, dy, dz)`` offsets in **source** coordinates.
-    The first feature always stays at its original position.
-
-    Raises ``ValueError`` when all three ``grid_max_*`` values are set and
-    the features cannot fit (checked before any mesh generation).
-    """
-    n = len(features)
-    if n <= 1:
-        return [(0.0, 0.0, 0.0)] * n
-
-    bounds = [
-        _geometry_bounds(f.geometry) if f.geometry else None
-        for f in features
-    ]
-
-    has_grid = (
-        config.grid_max_x is not None
-        or config.grid_max_y is not None
-        or config.grid_max_z is not None
-    )
-
-    if has_grid:
-        return _grid_layout(bounds, config, n)
-    return _row_layout(bounds, config)
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -756,18 +548,15 @@ def _add_nodes_for_mesh(
     mesh_result: int | list[int],
     name: str | None = None,
     extras: dict | None = None,
-    translation: list[float] | None = None,
 ) -> None:
     """Add node(s) for one or more meshes returned by a converter."""
     if isinstance(mesh_result, list):
         for j, midx in enumerate(mesh_result):
             node_name = f"{name}_{j}" if name else None
             _add_node(gltf, midx, name=node_name,
-                      extras=extras if j == 0 else None,
-                      translation=translation)
+                      extras=extras if j == 0 else None)
     elif mesh_result >= 0:
-        _add_node(gltf, mesh_result, name=name, extras=extras,
-                  translation=translation)
+        _add_node(gltf, mesh_result, name=name, extras=extras)
 
 
 def feature_to_gltf(
@@ -808,7 +597,8 @@ def collection_to_gltf(
 ) -> GLTF2:
     """Convert a MicroFeatureCollection to a glTF scene.
 
-    Each feature becomes a separate node in the scene.
+    Layout (spacing/grid) is applied to the MicroJSON coordinates before
+    mesh generation, so the glTF nodes contain no translation offsets.
 
     Args:
         collection: The feature collection.
@@ -822,11 +612,17 @@ def collection_to_gltf(
 
     gltf = _init_gltf(config)
 
-    # Compute layout offsets *before* any mesh generation so that a
-    # capacity error is raised early.
-    offsets = _compute_feature_offsets(list(collection.features), config)
+    # Apply layout to geometry coordinates before mesh generation.
+    # This raises ValueError early if grid capacity is exceeded.
+    laid_out = apply_layout(
+        collection,
+        spacing=config.feature_spacing,
+        grid_max_x=config.grid_max_x,
+        grid_max_y=config.grid_max_y,
+        grid_max_z=config.grid_max_z,
+    )
 
-    for i, feature in enumerate(collection.features):
+    for i, feature in enumerate(laid_out.features):
         geom = feature.geometry
         if geom is None:
             continue
@@ -837,17 +633,8 @@ def collection_to_gltf(
         if config.include_metadata and feature.properties:
             extras = dict(feature.properties)
 
-        # Build glTF-space translation from the source-space offset
-        dx, dy, dz = offsets[i]
-        translation = None
-        if abs(dx) > 1e-12 or abs(dy) > 1e-12 or abs(dz) > 1e-12:
-            if config.y_up:
-                translation = [dx, dz, -dy]
-            else:
-                translation = [dx, dy, dz]
-
         _add_nodes_for_mesh(gltf, mesh_result, name=f"feature_{i}",
-                            extras=extras, translation=translation)
+                            extras=extras)
 
     # Store collection-level metadata in scene extras
     if config.include_metadata and collection.properties:

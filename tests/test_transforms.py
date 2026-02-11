@@ -5,10 +5,19 @@ from microjson.transforms import (
     AffineTransform,
     VoxelCoordinateSystem,
     apply_transform,
+    translate_geometry,
     voxel_to_physical,
     physical_to_voxel,
 )
-from geojson_pydantic import Point, LineString
+from microjson.model import (
+    NeuronMorphology,
+    SWCSample,
+    TIN,
+    PolyhedralSurface,
+    Slice,
+    SliceStack,
+)
+from geojson_pydantic import Point, LineString, Polygon, MultiPolygon
 
 
 class TestAffineTransform:
@@ -139,6 +148,186 @@ class TestApplyTransform:
         result = apply_transform(ls, t)
         assert result.coordinates[0][0] == pytest.approx(100.0)
         assert result.coordinates[1][2] == pytest.approx(310.0)
+
+
+class TestApplyTransform3D:
+    """Tests for 3D MicroJSON type transforms."""
+
+    def _translation(self, dx=10, dy=20, dz=30):
+        return AffineTransform(
+            type="affine",
+            matrix=[
+                [1, 0, 0, dx],
+                [0, 1, 0, dy],
+                [0, 0, 1, dz],
+                [0, 0, 0, 1],
+            ],
+        )
+
+    def test_translate_neuron(self):
+        neuron = NeuronMorphology(
+            type="NeuronMorphology",
+            tree=[
+                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1),
+                SWCSample(id=2, type=3, x=10, y=20, z=30, r=2, parent=1),
+            ],
+        )
+        result = apply_transform(neuron, self._translation(100, 200, 300))
+        assert isinstance(result, NeuronMorphology)
+        assert result.tree[0].x == pytest.approx(100.0)
+        assert result.tree[0].y == pytest.approx(200.0)
+        assert result.tree[0].z == pytest.approx(300.0)
+        assert result.tree[1].x == pytest.approx(110.0)
+        assert result.tree[1].y == pytest.approx(220.0)
+        assert result.tree[1].z == pytest.approx(330.0)
+
+    def test_neuron_preserves_metadata(self):
+        neuron = NeuronMorphology(
+            type="NeuronMorphology",
+            tree=[
+                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5.5, parent=-1),
+                SWCSample(id=2, type=3, x=10, y=0, z=0, r=2.1, parent=1),
+            ],
+        )
+        result = apply_transform(neuron, self._translation())
+        assert result.tree[0].id == 1
+        assert result.tree[0].type == 1
+        assert result.tree[0].r == 5.5
+        assert result.tree[0].parent == -1
+        assert result.tree[1].id == 2
+        assert result.tree[1].r == 2.1
+
+    def test_translate_tin(self):
+        tin = TIN(
+            type="TIN",
+            coordinates=[
+                [[(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 0)]],
+            ],
+        )
+        result = apply_transform(tin, self._translation(10, 20, 30))
+        assert isinstance(result, TIN)
+        # First vertex of first triangle
+        assert result.coordinates[0][0][0][0] == pytest.approx(10.0)
+        assert result.coordinates[0][0][0][1] == pytest.approx(20.0)
+        assert result.coordinates[0][0][0][2] == pytest.approx(30.0)
+
+    def test_translate_polyhedral_surface(self):
+        ps = PolyhedralSurface(
+            type="PolyhedralSurface",
+            coordinates=[
+                [[(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0, 0, 0)]],
+            ],
+        )
+        result = apply_transform(ps, self._translation(5, 10, 15))
+        assert isinstance(result, PolyhedralSurface)
+        assert result.coordinates[0][0][0][0] == pytest.approx(5.0)
+        assert result.coordinates[0][0][0][1] == pytest.approx(10.0)
+        assert result.coordinates[0][0][0][2] == pytest.approx(15.0)
+
+    def test_translate_slice_stack(self):
+        ss = SliceStack(
+            type="SliceStack",
+            slices=[
+                Slice(z=0.0, geometry=Polygon(
+                    type="Polygon",
+                    coordinates=[[(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0), (0, 0, 0)]],
+                )),
+                Slice(z=5.0, geometry=Polygon(
+                    type="Polygon",
+                    coordinates=[[(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0), (0, 0, 0)]],
+                )),
+            ],
+        )
+        result = apply_transform(ss, self._translation(100, 200, 300))
+        assert isinstance(result, SliceStack)
+        assert result.slices[0].z == pytest.approx(300.0)
+        assert result.slices[1].z == pytest.approx(305.0)
+        # Check polygon coordinates shifted
+        assert result.slices[0].geometry.coordinates[0][0][0] == pytest.approx(100.0)
+        assert result.slices[0].geometry.coordinates[0][0][1] == pytest.approx(200.0)
+
+    def test_slice_stack_preserves_properties(self):
+        ss = SliceStack(
+            type="SliceStack",
+            slices=[
+                Slice(z=0.0, geometry=Polygon(
+                    type="Polygon",
+                    coordinates=[[(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 0, 0)]],
+                ), properties={"label": "top"}),
+            ],
+            axis="z",
+            units="um",
+            interpolation="linear",
+        )
+        result = apply_transform(ss, self._translation())
+        assert result.slices[0].properties == {"label": "top"}
+        assert result.axis == "z"
+        assert result.units == "um"
+        assert result.interpolation == "linear"
+
+    def test_neuron_identity_roundtrip(self):
+        """Identity transform should leave coordinates unchanged."""
+        neuron = NeuronMorphology(
+            type="NeuronMorphology",
+            tree=[
+                SWCSample(id=1, type=1, x=1.5, y=2.5, z=3.5, r=1.0, parent=-1),
+            ],
+        )
+        identity = AffineTransform(
+            type="affine",
+            matrix=[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],
+        )
+        result = apply_transform(neuron, identity)
+        assert result.tree[0].x == pytest.approx(1.5)
+        assert result.tree[0].y == pytest.approx(2.5)
+        assert result.tree[0].z == pytest.approx(3.5)
+
+    def test_scale_neuron(self):
+        """Non-translation affine (scale) should work on neurons."""
+        neuron = NeuronMorphology(
+            type="NeuronMorphology",
+            tree=[
+                SWCSample(id=1, type=1, x=10, y=20, z=30, r=5, parent=-1),
+            ],
+        )
+        scale = AffineTransform(
+            type="affine",
+            matrix=[[2,0,0,0],[0,3,0,0],[0,0,4,0],[0,0,0,1]],
+        )
+        result = apply_transform(neuron, scale)
+        assert result.tree[0].x == pytest.approx(20.0)
+        assert result.tree[0].y == pytest.approx(60.0)
+        assert result.tree[0].z == pytest.approx(120.0)
+
+
+class TestTranslateGeometry:
+    """Tests for translate_geometry() convenience function."""
+
+    def test_translate_point(self):
+        p = Point(type="Point", coordinates=(1.0, 2.0, 3.0))
+        result = translate_geometry(p, 10, 20, 30)
+        assert result.coordinates[0] == pytest.approx(11.0)
+        assert result.coordinates[1] == pytest.approx(22.0)
+        assert result.coordinates[2] == pytest.approx(33.0)
+
+    def test_translate_neuron(self):
+        neuron = NeuronMorphology(
+            type="NeuronMorphology",
+            tree=[
+                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1),
+            ],
+        )
+        result = translate_geometry(neuron, 100, 200, 300)
+        assert result.tree[0].x == pytest.approx(100.0)
+        assert result.tree[0].y == pytest.approx(200.0)
+        assert result.tree[0].z == pytest.approx(300.0)
+
+    def test_translate_zero_is_identity(self):
+        p = Point(type="Point", coordinates=(5.0, 6.0, 7.0))
+        result = translate_geometry(p, 0, 0, 0)
+        assert result.coordinates[0] == pytest.approx(5.0)
+        assert result.coordinates[1] == pytest.approx(6.0)
+        assert result.coordinates[2] == pytest.approx(7.0)
 
 
 class TestVoxelPhysicalConversion:
