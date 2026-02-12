@@ -41,15 +41,13 @@ from geojson_pydantic import (
 from ..model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
     PolyhedralSurface,
     SliceStack,
     TIN,
 )
 from ..layout import apply_layout
 from ._buffers import create_accessor
-from .mesh_builder import neuron_to_tube_mesh, neuron_to_typed_meshes
-from .models import DEFAULT_SWC_FALLBACK_COLOR, GltfConfig
+from .models import GltfConfig
 from .triangulator import multipolygon_to_mesh, polygon_to_mesh
 
 
@@ -72,17 +70,25 @@ def _apply_y_up(positions: np.ndarray) -> np.ndarray:
     return out
 
 
-def _init_gltf(config: GltfConfig) -> GLTF2:
-    """Create a fresh GLTF2 object with default material."""
+def _init_gltf(
+    config: GltfConfig,
+) -> tuple[GLTF2, dict[str, int]]:
+    """Create a fresh GLTF2 object with materials.
+
+    Returns:
+        A ``(gltf, value_to_material)`` tuple.  ``value_to_material`` maps
+        ``color_map`` keys to material indices when ``color_map`` is set;
+        otherwise it is empty.  Material 0 is always the default color.
+    """
     gltf = GLTF2()
     gltf._glb_data = None
     gltf.asset = Asset(version="2.0", generator="microjson-gltf")
     gltf.scenes = [Scene(nodes=[])]
     gltf.scene = 0
 
-    r, g, b, a = config.default_color
-    gltf.materials = [
-        Material(
+    def _make_material(rgba: tuple[float, float, float, float]) -> Material:
+        r, g, b, a = rgba
+        return Material(
             pbrMetallicRoughness=PbrMetallicRoughness(
                 baseColorFactor=[r, g, b, a],
                 metallicFactor=0.1,
@@ -90,13 +96,21 @@ def _init_gltf(config: GltfConfig) -> GLTF2:
             ),
             doubleSided=True,
         )
-    ]
+
+    gltf.materials = [_make_material(config.default_color)]
+
+    value_to_material: dict[str, int] = {}
+    if config.color_map:
+        for value, rgba in config.color_map.items():
+            idx = len(gltf.materials)
+            gltf.materials.append(_make_material(rgba))
+            value_to_material[value] = idx
 
     if config.draco:
         from ._draco import ensure_draco_extensions
         ensure_draco_extensions(gltf)
 
-    return gltf
+    return gltf, value_to_material
 
 
 def _add_triangle_mesh(
@@ -143,6 +157,7 @@ def _add_line_primitive(
     vertices: np.ndarray,
     indices: np.ndarray,
     config: GltfConfig,
+    material_idx: int = 0,
 ) -> int:
     """Add a line primitive and return the mesh index."""
     if config.y_up:
@@ -155,7 +170,7 @@ def _add_line_primitive(
 
     mesh_idx = len(gltf.meshes)
     gltf.meshes.append(
-        Mesh(primitives=[Primitive(attributes=Attributes(POSITION=pos_acc), indices=idx_acc, material=0, mode=LINES)])
+        Mesh(primitives=[Primitive(attributes=Attributes(POSITION=pos_acc), indices=idx_acc, material=material_idx, mode=LINES)])
     )
     return mesh_idx
 
@@ -164,6 +179,7 @@ def _add_point_primitive(
     gltf: GLTF2,
     vertices: np.ndarray,
     config: GltfConfig,
+    material_idx: int = 0,
 ) -> int:
     """Add a point primitive and return the mesh index."""
     if config.y_up:
@@ -174,7 +190,7 @@ def _add_point_primitive(
 
     mesh_idx = len(gltf.meshes)
     gltf.meshes.append(
-        Mesh(primitives=[Primitive(attributes=Attributes(POSITION=pos_acc), material=0, mode=POINTS)])
+        Mesh(primitives=[Primitive(attributes=Attributes(POSITION=pos_acc), material=material_idx, mode=POINTS)])
     )
     return mesh_idx
 
@@ -201,86 +217,11 @@ def _add_node(
 # Geometry dispatchers
 # ---------------------------------------------------------------------------
 
-_SWC_TYPE_NAMES = {
-    1: "soma",
-    2: "axon",
-    3: "basal_dendrite",
-    4: "apical_dendrite",
-}
-
-
-def _ensure_type_material(
-    gltf: GLTF2,
-    swc_type: int,
-    config: GltfConfig,
-    material_cache: dict[int, int],
-) -> int:
-    """Get or create a material for the given SWC type. Returns material index."""
-    if swc_type in material_cache:
-        return material_cache[swc_type]
-
-    color = config.swc_type_colors.get(swc_type, DEFAULT_SWC_FALLBACK_COLOR)
-    r, g, b, a = color
-    mat_idx = len(gltf.materials)
-    gltf.materials.append(
-        Material(
-            name=_SWC_TYPE_NAMES.get(swc_type, f"type_{swc_type}"),
-            pbrMetallicRoughness=PbrMetallicRoughness(
-                baseColorFactor=[r, g, b, a],
-                metallicFactor=0.1,
-                roughnessFactor=0.8,
-            ),
-            doubleSided=True,
-        )
-    )
-    material_cache[swc_type] = mat_idx
-    return mat_idx
-
-
-def _convert_neuron(
-    gltf: GLTF2,
-    geom: NeuronMorphology,
-    config: GltfConfig,
-) -> int | list[int]:
-    """Convert neuron geometry, optionally colored by SWC type.
-
-    Returns a single mesh index, or a list of mesh indices when
-    ``config.color_by_type`` is True.
-    """
-    if not config.color_by_type:
-        verts, normals, indices = neuron_to_tube_mesh(
-            geom,
-            segments=config.tube_segments,
-            min_radius=config.tube_min_radius,
-            smooth_subdivisions=config.smooth_factor,
-            mesh_quality=config.mesh_quality,
-        )
-        return _add_triangle_mesh(gltf, verts, indices, normals, config)
-
-    # Per-type meshes with distinct materials
-    typed = neuron_to_typed_meshes(
-        geom,
-        segments=config.tube_segments,
-        min_radius=config.tube_min_radius,
-        smooth_subdivisions=config.smooth_factor,
-        mesh_quality=config.mesh_quality,
-    )
-    material_cache: dict[int, int] = {}
-    mesh_indices = []
-
-    for swc_type in sorted(typed):
-        verts, normals, indices = typed[swc_type]
-        mat_idx = _ensure_type_material(gltf, swc_type, config, material_cache)
-        mesh_idx = _add_triangle_mesh(gltf, verts, indices, normals, config, mat_idx)
-        mesh_indices.append(mesh_idx)
-
-    return mesh_indices
-
-
 def _convert_tin(
     gltf: GLTF2,
     geom: TIN,
     config: GltfConfig,
+    material_idx: int = 0,
 ) -> int:
     all_verts = []
     all_indices = []
@@ -300,13 +241,14 @@ def _convert_tin(
         return -1
     verts = np.array(all_verts, dtype=np.float64)
     indices = np.array(all_indices, dtype=np.uint32)
-    return _add_triangle_mesh(gltf, verts, indices, None, config)
+    return _add_triangle_mesh(gltf, verts, indices, None, config, material_idx)
 
 
 def _convert_polyhedral_surface(
     gltf: GLTF2,
     geom: PolyhedralSurface,
     config: GltfConfig,
+    material_idx: int = 0,
 ) -> int:
     all_verts: list[np.ndarray] = []
     all_indices: list[np.ndarray] = []
@@ -356,6 +298,7 @@ def _convert_polyhedral_surface(
         np.concatenate(all_indices),
         None,
         config,
+        material_idx,
     )
 
 
@@ -363,6 +306,7 @@ def _convert_polygon(
     gltf: GLTF2,
     geom: Polygon,
     config: GltfConfig,
+    material_idx: int = 0,
 ) -> int:
     from shapely.geometry import Polygon as ShapelyPolygon
 
@@ -375,13 +319,14 @@ def _convert_polygon(
     verts, indices = polygon_to_mesh(poly, z=z)
     if verts.shape[0] == 0:
         return -1
-    return _add_triangle_mesh(gltf, verts, indices, None, config)
+    return _add_triangle_mesh(gltf, verts, indices, None, config, material_idx)
 
 
 def _convert_multipolygon(
     gltf: GLTF2,
     geom: MultiPolygon,
     config: GltfConfig,
+    material_idx: int = 0,
 ) -> int:
     from shapely.geometry import Polygon as ShapelyPolygon
     from shapely.geometry import MultiPolygon as ShapelyMultiPolygon
@@ -397,13 +342,14 @@ def _convert_multipolygon(
     verts, indices = multipolygon_to_mesh(mp, z=z)
     if verts.shape[0] == 0:
         return -1
-    return _add_triangle_mesh(gltf, verts, indices, None, config)
+    return _add_triangle_mesh(gltf, verts, indices, None, config, material_idx)
 
 
 def _convert_slice_stack(
     gltf: GLTF2,
     geom: SliceStack,
     config: GltfConfig,
+    material_idx: int = 0,
 ) -> int:
     from shapely.geometry import Polygon as ShapelyPolygon
     from shapely.geometry import MultiPolygon as ShapelyMultiPolygon
@@ -444,6 +390,7 @@ def _convert_slice_stack(
         np.concatenate(all_indices),
         None,
         config,
+        material_idx,
     )
 
 
@@ -451,6 +398,7 @@ def _convert_linestring(
     gltf: GLTF2,
     geom: LineString,
     config: GltfConfig,
+    material_idx: int = 0,
 ) -> int:
     coords = geom.coordinates
     verts = []
@@ -466,13 +414,14 @@ def _convert_linestring(
         indices.extend([i, i + 1])
     indices_arr = np.array(indices, dtype=np.uint32)
 
-    return _add_line_primitive(gltf, verts_arr, indices_arr, config)
+    return _add_line_primitive(gltf, verts_arr, indices_arr, config, material_idx)
 
 
 def _convert_multilinestring(
     gltf: GLTF2,
     geom: MultiLineString,
     config: GltfConfig,
+    material_idx: int = 0,
 ) -> int:
     all_verts = []
     all_indices = []
@@ -493,6 +442,7 @@ def _convert_multilinestring(
         np.array(all_verts, dtype=np.float64),
         np.array(all_indices, dtype=np.uint32),
         config,
+        material_idx,
     )
 
 
@@ -500,17 +450,19 @@ def _convert_point(
     gltf: GLTF2,
     geom: Point,
     config: GltfConfig,
+    material_idx: int = 0,
 ) -> int:
     c = geom.coordinates
     z = c[2] if len(c) > 2 else 0.0
     verts = np.array([[c[0], c[1], z]], dtype=np.float64)
-    return _add_point_primitive(gltf, verts, config)
+    return _add_point_primitive(gltf, verts, config, material_idx)
 
 
 def _convert_multipoint(
     gltf: GLTF2,
     geom: MultiPoint,
     config: GltfConfig,
+    material_idx: int = 0,
 ) -> int:
     verts = []
     for c in geom.coordinates:
@@ -518,7 +470,7 @@ def _convert_multipoint(
         verts.append([c[0], c[1], z])
     if not verts:
         return -1
-    return _add_point_primitive(gltf, np.array(verts, dtype=np.float64), config)
+    return _add_point_primitive(gltf, np.array(verts, dtype=np.float64), config, material_idx)
 
 
 # ---------------------------------------------------------------------------
@@ -529,28 +481,27 @@ def _convert_geometry(
     gltf: GLTF2,
     geom: Any,
     config: GltfConfig,
+    material_idx: int = 0,
 ) -> int | list[int]:
     """Dispatch a geometry to its converter. Returns mesh index(es) or -1."""
-    if isinstance(geom, NeuronMorphology):
-        return _convert_neuron(gltf, geom, config)
-    elif isinstance(geom, TIN):
-        return _convert_tin(gltf, geom, config)
+    if isinstance(geom, TIN):
+        return _convert_tin(gltf, geom, config, material_idx)
     elif isinstance(geom, PolyhedralSurface):
-        return _convert_polyhedral_surface(gltf, geom, config)
+        return _convert_polyhedral_surface(gltf, geom, config, material_idx)
     elif isinstance(geom, SliceStack):
-        return _convert_slice_stack(gltf, geom, config)
+        return _convert_slice_stack(gltf, geom, config, material_idx)
     elif isinstance(geom, Polygon):
-        return _convert_polygon(gltf, geom, config)
+        return _convert_polygon(gltf, geom, config, material_idx)
     elif isinstance(geom, MultiPolygon):
-        return _convert_multipolygon(gltf, geom, config)
+        return _convert_multipolygon(gltf, geom, config, material_idx)
     elif isinstance(geom, LineString):
-        return _convert_linestring(gltf, geom, config)
+        return _convert_linestring(gltf, geom, config, material_idx)
     elif isinstance(geom, MultiLineString):
-        return _convert_multilinestring(gltf, geom, config)
+        return _convert_multilinestring(gltf, geom, config, material_idx)
     elif isinstance(geom, Point):
-        return _convert_point(gltf, geom, config)
+        return _convert_point(gltf, geom, config, material_idx)
     elif isinstance(geom, MultiPoint):
-        return _convert_multipoint(gltf, geom, config)
+        return _convert_multipoint(gltf, geom, config, material_idx)
     return -1
 
 
@@ -570,6 +521,19 @@ def _add_nodes_for_mesh(
         _add_node(gltf, mesh_result, name=name, extras=extras)
 
 
+def _resolve_material(
+    feature: MicroFeature,
+    config: GltfConfig,
+    value_to_material: dict[str, int],
+) -> int:
+    """Look up the material index for a feature based on color_by/color_map."""
+    if config.color_by and value_to_material and feature.properties:
+        value = feature.properties.get(config.color_by)
+        if value is not None:
+            return value_to_material.get(str(value), 0)
+    return 0
+
+
 def feature_to_gltf(
     feature: MicroFeature,
     config: GltfConfig | None = None,
@@ -586,13 +550,14 @@ def feature_to_gltf(
     if config is None:
         config = GltfConfig()
 
-    gltf = _init_gltf(config)
+    gltf, value_to_material = _init_gltf(config)
 
     geom = feature.geometry
     if geom is None:
         return gltf
 
-    mesh_result = _convert_geometry(gltf, geom, config)
+    material_idx = _resolve_material(feature, config, value_to_material)
+    mesh_result = _convert_geometry(gltf, geom, config, material_idx)
 
     extras = None
     if config.include_metadata and feature.properties:
@@ -621,7 +586,7 @@ def collection_to_gltf(
     if config is None:
         config = GltfConfig()
 
-    gltf = _init_gltf(config)
+    gltf, value_to_material = _init_gltf(config)
 
     # Apply layout to geometry coordinates before mesh generation.
     # This raises ValueError early if grid capacity is exceeded.
@@ -638,7 +603,8 @@ def collection_to_gltf(
         if geom is None:
             continue
 
-        mesh_result = _convert_geometry(gltf, geom, config)
+        material_idx = _resolve_material(feature, config, value_to_material)
+        mesh_result = _convert_geometry(gltf, geom, config, material_idx)
 
         extras = None
         if config.include_metadata and feature.properties:

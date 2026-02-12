@@ -172,77 +172,6 @@ class SliceStack(BaseModel):
         )
 
 
-# ---------------------------------------------------------------------------
-# NeuronMorphology — SWC tree structure for neuron morphologies
-# ---------------------------------------------------------------------------
-
-# Standard SWC type codes
-SWC_UNDEFINED = 0
-SWC_SOMA = 1
-SWC_AXON = 2
-SWC_BASAL_DENDRITE = 3
-SWC_APICAL_DENDRITE = 4
-SWC_FORK_POINT = 5
-SWC_END_POINT = 6
-SWC_CUSTOM = 7
-
-
-class SWCSample(BaseModel):
-    """A single sample point in an SWC neuron morphology tree."""
-
-    id: int
-    type: int
-    x: float
-    y: float
-    z: float
-    r: float
-    parent: int
-
-
-class NeuronMorphology(BaseModel):
-    """A neuron morphology represented as an SWC tree.
-
-    Each node has a 3D position, radius, type code, and parent reference.
-    """
-
-    type: Literal["NeuronMorphology"]
-    tree: List[SWCSample]
-
-    @field_validator("tree")
-    @classmethod
-    def _validate_tree(cls, v: List[SWCSample]) -> List[SWCSample]:
-        if len(v) == 0:
-            raise ValueError("NeuronMorphology tree must have at least one node")
-        ids = {s.id for s in v}
-        has_root = any(s.parent == -1 for s in v)
-        if not has_root:
-            raise ValueError(
-                "NeuronMorphology tree must have at least one root node "
-                "(parent == -1)"
-            )
-        for s in v:
-            if s.parent != -1 and s.parent not in ids:
-                raise ValueError(
-                    f"Node {s.id} has parent {s.parent} which does not exist "
-                    f"in the tree"
-                )
-        return v
-
-    def bbox3d(self) -> Tuple[float, float, float, float, float, float]:
-        xs = [s.x for s in self.tree]
-        ys = [s.y for s in self.tree]
-        zs = [s.z for s in self.tree]
-        return (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
-
-    def centroid3d(self) -> Tuple[float, float, float]:
-        n = len(self.tree)
-        return (
-            sum(s.x for s in self.tree) / n,
-            sum(s.y for s in self.tree) / n,
-            sum(s.z for s in self.tree) / n,
-        )
-
-
 GeometryType = Union[  # type: ignore
     Point,
     MultiPoint,
@@ -254,7 +183,6 @@ GeometryType = Union[  # type: ignore
     PolyhedralSurface,
     TIN,
     SliceStack,
-    NeuronMorphology,
     type(None),
 ]
 

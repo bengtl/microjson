@@ -21,9 +21,8 @@ from pathlib import Path
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
-    SWCSample,
 )
+from microjson.swc import NeuronMorphology, SWCSample
 from microjson.neuroglancer import (
     to_neuroglancer,
     write_annotations,
@@ -105,21 +104,17 @@ def example_mixed_collection(output_dir: Path) -> None:
     """Export a collection with neurons + point markers + line traces."""
     print("=== Example 2: Mixed collection export ===")
 
-    # Build a MicroFeatureCollection with diverse geometry types
+    mixed_dir = output_dir / "mixed_collection"
+
+    # Write neuron skeletons directly (NeuronMorphology → precomputed skeleton)
+    skel_dir = mixed_dir / "skeletons"
+    write_skeleton(skel_dir, segment_id=1, morphology=make_pyramidal_neuron())
+    write_skeleton(skel_dir, segment_id=2, morphology=make_interneuron())
+
+    # Build a collection with Point/LineString annotations
     collection = MicroFeatureCollection(
         type="FeatureCollection",
         features=[
-            # Two neurons
-            MicroFeature(
-                type="Feature",
-                geometry=make_pyramidal_neuron(),
-                properties={"name": "pyramidal_cell_01", "region": "CA1"},
-            ),
-            MicroFeature(
-                type="Feature",
-                geometry=make_interneuron(),
-                properties={"name": "interneuron_01", "region": "CA3"},
-            ),
             # Soma markers (Point annotations)
             MicroFeature(
                 type="Feature",
@@ -147,10 +142,11 @@ def example_mixed_collection(output_dir: Path) -> None:
         ],
     )
 
-    mixed_dir = output_dir / "mixed_collection"
+    # Export Point/LineString annotations via orchestrator
     result = to_neuroglancer(collection, mixed_dir)
 
     print(f"  Output paths:")
+    print(f"    skeletons: {skel_dir}/")
     for key, path in result["paths"].items():
         print(f"    {key}: {path}/")
     print()

@@ -21,8 +21,6 @@ from geojson_pydantic import (
 
 from .tilemodel import CoordinateTransformation
 from .model import (
-    NeuronMorphology,
-    SWCSample,
     TIN,
     PolyhedralSurface,
     SliceStack,
@@ -102,19 +100,6 @@ def _transform_coords(coords, matrix: List[List[float]]):
 # 3D type transform helpers
 # ---------------------------------------------------------------------------
 
-def _transform_neuron(
-    geom: NeuronMorphology, matrix: List[List[float]]
-) -> NeuronMorphology:
-    """Transform each SWCSample position, preserving r/id/type/parent."""
-    new_tree = []
-    for s in geom.tree:
-        nx, ny, nz = _transform_position((s.x, s.y, s.z), matrix)
-        new_tree.append(SWCSample(
-            id=s.id, type=s.type, x=nx, y=ny, z=nz, r=s.r, parent=s.parent,
-        ))
-    return NeuronMorphology(type="NeuronMorphology", tree=new_tree)
-
-
 def _transform_tin(geom: TIN, matrix: List[List[float]]) -> TIN:
     """Transform nested polygon coordinates in a TIN."""
     new_coords = _transform_coords(list(geom.coordinates), matrix)
@@ -164,7 +149,7 @@ def _transform_slice_stack(
 
 Geometry = Union[
     Point, MultiPoint, LineString, MultiLineString, Polygon, MultiPolygon,
-    NeuronMorphology, TIN, PolyhedralSurface, SliceStack,
+    TIN, PolyhedralSurface, SliceStack,
 ]
 
 
@@ -172,7 +157,7 @@ def apply_transform(geometry: Geometry, transform: AffineTransform) -> Geometry:
     """Apply an affine transform to a geometry, returning a new geometry.
 
     Supports all GeoJSON geometry types plus MicroJSON 3D types
-    (NeuronMorphology, TIN, PolyhedralSurface, SliceStack).
+    (TIN, PolyhedralSurface, SliceStack).
 
     Args:
         geometry: A geometry with 3D coordinates.
@@ -183,8 +168,6 @@ def apply_transform(geometry: Geometry, transform: AffineTransform) -> Geometry:
     """
     matrix = transform.matrix
 
-    if isinstance(geometry, NeuronMorphology):
-        return _transform_neuron(geometry, matrix)
     if isinstance(geometry, TIN):
         return _transform_tin(geometry, matrix)
     if isinstance(geometry, PolyhedralSurface):

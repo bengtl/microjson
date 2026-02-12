@@ -23,13 +23,13 @@ from collections import defaultdict
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
+from geojson_pydantic import MultiLineString
+
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
-    SWCSample,
 )
-from microjson.swc import swc_to_microjson
+from microjson.swc import NeuronMorphology, SWCSample, _parse_swc
 from microjson.neuroglancer import write_skeleton
 from microjson.neuroglancer.properties_writer import write_segment_properties
 from microjson.neuroglancer.annotation_writer import write_annotations
@@ -206,8 +206,7 @@ def main() -> None:
         return
 
     # Step 1: Load the full morphology
-    feature = swc_to_microjson(str(swc_path))
-    morphology = feature.geometry
+    morphology = _parse_swc(str(swc_path))
     print(f"\n  Loaded: {swc_path.name}")
     print(f"  Total nodes: {len(morphology.tree)}")
 
@@ -273,12 +272,20 @@ def main() -> None:
     # Step 5: Build MicroFeatureCollection (for --save-json)
     all_features: list[MicroFeature] = []
 
-    # Add each compartment as a MicroFeature
+    # Add each compartment as a MicroFeature (MultiLineString skeleton edges)
     for swc_type, subtree in sorted(subtrees.items()):
         type_name = SWC_TYPES.get(swc_type, f"type_{swc_type}")
+        # Convert NeuronMorphology subtree → MultiLineString3D (edge segments)
+        by_id = {s.id: s for s in subtree.tree}
+        lines = []
+        for s in subtree.tree:
+            if s.parent != -1 and s.parent in by_id:
+                p = by_id[s.parent]
+                lines.append([[p.x, p.y, p.z], [s.x, s.y, s.z]])
+        geom = MultiLineString(type="MultiLineString", coordinates=lines) if lines else None
         all_features.append(MicroFeature(
             type="Feature",
-            geometry=subtree,
+            geometry=geom,
             properties={"compartment": type_name, "swc_type": swc_type, "node_count": len(subtree.tree)},
             featureClass=type_name,
         ))

@@ -1,4 +1,4 @@
-"""Tests for Arrow/GeoParquet reader: Parquet → MicroJSON round-trip."""
+"""Tests for Arrow/GeoParquet reader: Parquet -> MicroJSON round-trip."""
 
 from __future__ import annotations
 
@@ -23,18 +23,15 @@ from microjson.arrow import (
     to_geoparquet,
 )
 from microjson.arrow._from_geometry import (
-    neuron_from_tree_json,
     shapely_to_microjson,
     slicestack_from_rows,
 )
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
     PolyhedralSurface,
     Slice,
     SliceStack,
-    SWCSample,
     TIN,
 )
 
@@ -100,22 +97,6 @@ def _linestring_feat():
     )
 
 
-def _neuron_feat():
-    return MicroFeature(
-        type="Feature",
-        id="n1",
-        geometry=NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5.0, parent=-1),
-                SWCSample(id=2, type=2, x=10, y=0, z=0, r=1.0, parent=1),
-                SWCSample(id=3, type=3, x=0, y=10, z=0, r=1.0, parent=1),
-            ],
-        ),
-        properties={"species": "mouse"},
-    )
-
-
 def _slicestack_feat():
     return MicroFeature(
         type="Feature",
@@ -160,7 +141,7 @@ def _tin_feat():
     )
 
 
-# ===== Shapely → MicroJSON Tests =====
+# ===== Shapely -> MicroJSON Tests =====
 
 
 class TestShapelyToMicroJSON:
@@ -214,20 +195,6 @@ class TestShapelyToMicroJSON:
     def test_unsupported_raises(self):
         with pytest.raises(TypeError, match="Unsupported"):
             shapely_to_microjson("not a geometry")
-
-
-class TestNeuronFromTreeJson:
-    def test_roundtrip(self):
-        tree_data = [
-            {"id": 1, "type": 1, "x": 0, "y": 0, "z": 0, "r": 5.0, "parent": -1},
-            {"id": 2, "type": 2, "x": 10, "y": 0, "z": 0, "r": 1.0, "parent": 1},
-        ]
-        j = json.dumps(tree_data)
-        nm = neuron_from_tree_json(j)
-        assert isinstance(nm, NeuronMorphology)
-        assert len(nm.tree) == 2
-        assert nm.tree[0].x == 0
-        assert nm.tree[1].x == 10
 
 
 class TestSliceStackFromRows:
@@ -291,16 +258,6 @@ class TestArrowRoundTrip:
         assert isinstance(f.geometry, LineString)
         assert len(f.geometry.coordinates) == 3
 
-    def test_neuron_morphology(self):
-        orig = _neuron_feat()
-        table = to_arrow_table(orig)
-        fc = from_arrow_table(table)
-        f = fc.features[0]
-        assert isinstance(f.geometry, NeuronMorphology)
-        assert len(f.geometry.tree) == 3
-        assert f.geometry.tree[0].r == 5.0
-        assert f.properties["species"] == "mouse"
-
     def test_slicestack(self):
         orig = _slicestack_feat()
         table = to_arrow_table(orig)
@@ -350,13 +307,13 @@ class TestArrowRoundTrip:
         assert fc.features[0].featureClass == "neuron"
 
     def test_tin_roundtrip(self):
-        """TIN → MultiPolygon WKB → MultiPolygon (type info lost, geometry preserved)."""
+        """TIN -> MultiPolygon WKB -> TIN (triangle-only 3D MultiPolygon reconstructed)."""
         orig = _tin_feat()
         table = to_arrow_table(orig)
         fc = from_arrow_table(table)
         f = fc.features[0]
-        # TIN is stored as MultiPolygon in WKB — comes back as MultiPolygon
-        assert isinstance(f.geometry, MultiPolygon)
+        # TIN stored as MultiPolygon in WKB — reconstructed as TIN on read
+        assert isinstance(f.geometry, TIN)
         assert len(f.geometry.coordinates) == 2
 
 
@@ -378,14 +335,6 @@ class TestGeoParquetRoundTrip:
         assert len(fc.features) == 2
         assert fc.features[0].id == "a"
 
-    def test_neuron_file_roundtrip(self, tmp_path):
-        path = tmp_path / "neuron.parquet"
-        to_geoparquet(_neuron_feat(), path)
-        fc = from_geoparquet(path)
-        f = fc.features[0]
-        assert isinstance(f.geometry, NeuronMorphology)
-        assert len(f.geometry.tree) == 3
-
     def test_slicestack_file_roundtrip(self, tmp_path):
         path = tmp_path / "slices.parquet"
         to_geoparquet(_slicestack_feat(), path)
@@ -394,25 +343,34 @@ class TestGeoParquetRoundTrip:
         assert len(ss_feats) == 1
         assert len(ss_feats[0].geometry.slices) == 2
 
+    def test_tin_file_roundtrip(self, tmp_path):
+        """TIN -> Parquet -> TIN (triangle-only 3D MultiPolygon reconstructed)."""
+        path = tmp_path / "tin.parquet"
+        to_geoparquet(_tin_feat(), path)
+        fc = from_geoparquet(path)
+        f = fc.features[0]
+        assert isinstance(f.geometry, TIN)
+        assert len(f.geometry.coordinates) == 2
+
     def test_mixed_geometry_file_roundtrip(self, tmp_path):
         path = tmp_path / "mixed.parquet"
         fc_orig = MicroFeatureCollection(
             type="FeatureCollection",
             features=[
                 _point_feat("p"),
-                _neuron_feat(),
                 _slicestack_feat(),
+                _tin_feat(),
             ],
         )
         to_geoparquet(fc_orig, path)
         fc = from_geoparquet(path)
 
-        # 1 point + 1 neuron + 1 re-aggregated slicestack = 3 features
+        # 1 point + 1 re-aggregated slicestack + 1 tin (as MultiPolygon) = 3 features
         assert len(fc.features) == 3
         geom_types = {type(f.geometry).__name__ for f in fc.features}
         assert "Point" in geom_types
-        assert "NeuronMorphology" in geom_types
         assert "SliceStack" in geom_types
+        assert "TIN" in geom_types  # TIN reconstructed from triangle-only 3D MultiPolygon
 
     def test_custom_geometry_column(self, tmp_path):
         path = tmp_path / "custom_col.parquet"
@@ -423,23 +381,24 @@ class TestGeoParquetRoundTrip:
         assert isinstance(fc.features[0].geometry, Point)
 
 
-# ===== End-to-end: Parquet → MicroJSON → Draco GLB =====
+# ===== End-to-end: Parquet -> GLB =====
 
 
-class TestParquetToDraco:
+class TestParquetToGlb:
     def test_parquet_to_glb_pipeline(self, tmp_path):
-        """Full pipeline: write Parquet, read back, export to Draco GLB."""
+        """Full pipeline: write Parquet, read back, export to GLB."""
         from microjson.gltf import GltfConfig, to_glb
 
-        parquet_path = tmp_path / "neurons.parquet"
+        parquet_path = tmp_path / "tin.parquet"
 
-        # Create a neuron and write to parquet
-        to_geoparquet(_neuron_feat(), parquet_path)
+        # Create a TIN feature and write to parquet
+        to_geoparquet(_tin_feat(), parquet_path)
 
         # Read back
         fc = from_geoparquet(parquet_path)
         assert len(fc.features) == 1
-        assert isinstance(fc.features[0].geometry, NeuronMorphology)
+        # TIN reconstructed from triangle-only 3D MultiPolygon
+        assert isinstance(fc.features[0].geometry, TIN)
 
         # Export to GLB (with Draco if available)
         try:

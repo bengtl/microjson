@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import shapely
@@ -27,7 +26,6 @@ from geojson_pydantic import (
 )
 
 from ..model import (
-    NeuronMorphology,
     PolyhedralSurface,
     SliceStack,
     TIN,
@@ -84,36 +82,6 @@ def geometry_collection_to_shapely(
     return ShapelyGeometryCollection(parts)
 
 
-def neuron_to_shapely(geom: NeuronMorphology) -> ShapelyMultiLineString:
-    """Convert NeuronMorphology to MultiLineString3D (parent→child edges)."""
-    node_map = {s.id: s for s in geom.tree}
-    edges: list[list[tuple]] = []
-    for sample in geom.tree:
-        if sample.parent == -1:
-            continue
-        parent = node_map[sample.parent]
-        edges.append([
-            (parent.x, parent.y, parent.z),
-            (sample.x, sample.y, sample.z),
-        ])
-    if not edges:
-        # Single root node — represent as degenerate line
-        root = geom.tree[0]
-        edges.append([
-            (root.x, root.y, root.z),
-            (root.x, root.y, root.z),
-        ])
-    return ShapelyMultiLineString(edges)
-
-
-def neuron_tree_json(geom: NeuronMorphology) -> str:
-    """Serialize NeuronMorphology tree to JSON string."""
-    return json.dumps(
-        [s.model_dump() for s in geom.tree],
-        separators=(",", ":"),
-    )
-
-
 def tin_to_shapely(geom: TIN) -> ShapelyMultiPolygon:
     """Convert TIN to MultiPolygon3D (each triangle face → polygon)."""
     polys = []
@@ -163,8 +131,6 @@ def to_shapely(geom: Any) -> Any:
         return multipolygon_to_shapely(geom)
     if isinstance(geom, GeometryCollection):
         return geometry_collection_to_shapely(geom)
-    if isinstance(geom, NeuronMorphology):
-        return neuron_to_shapely(geom)
     if isinstance(geom, TIN):
         return tin_to_shapely(geom)
     if isinstance(geom, PolyhedralSurface):

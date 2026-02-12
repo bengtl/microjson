@@ -22,8 +22,6 @@ from microjson.arrow._geometry import (
     multilinestring_to_shapely,
     multipoint_to_shapely,
     multipolygon_to_shapely,
-    neuron_to_shapely,
-    neuron_tree_json,
     point_to_shapely,
     polyhedral_to_shapely,
     polygon_to_shapely,
@@ -37,11 +35,9 @@ from microjson.arrow.models import ArrowConfig
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
     PolyhedralSurface,
     Slice,
     SliceStack,
-    SWCSample,
     TIN,
 )
 
@@ -87,22 +83,6 @@ def _polygon_feature():
             coordinates=[[(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]],
         ),
         properties={"area": 100},
-    )
-
-
-def _neuron_feature():
-    return MicroFeature(
-        type="Feature",
-        id="n1",
-        geometry=NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5.0, parent=-1),
-                SWCSample(id=2, type=2, x=10, y=0, z=0, r=1.0, parent=1),
-                SWCSample(id=3, type=3, x=0, y=10, z=0, r=1.0, parent=1),
-            ],
-        ),
-        properties={"species": "mouse"},
     )
 
 
@@ -237,32 +217,6 @@ class TestGeometryConversion:
         assert isinstance(s, ShapelyMultiPolygon)
         assert len(s.geoms) == 2
 
-    def test_neuron_morphology(self):
-        feat = _neuron_feature()
-        s = neuron_to_shapely(feat.geometry)
-        assert isinstance(s, ShapelyMultiLineString)
-        # 2 edges: root→child1, root→child2
-        assert len(s.geoms) == 2
-        # All 3D
-        assert shapely.get_coordinate_dimension(s) == 3
-
-    def test_neuron_single_root(self):
-        """Single-node neuron → degenerate line."""
-        geom = NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1)],
-        )
-        s = neuron_to_shapely(geom)
-        assert isinstance(s, ShapelyMultiLineString)
-        assert len(s.geoms) == 1
-
-    def test_neuron_tree_json(self):
-        feat = _neuron_feature()
-        j = neuron_tree_json(feat.geometry)
-        parsed = json.loads(j)
-        assert len(parsed) == 3
-        assert parsed[0]["id"] == 1
-
     def test_tin(self):
         feat = _tin_feature()
         s = tin_to_shapely(feat.geometry)
@@ -276,7 +230,7 @@ class TestGeometryConversion:
         assert len(s.geoms) == 1
 
     def test_slicestack_fallback(self):
-        """SliceStack → GeometryCollection (non-exploded path)."""
+        """SliceStack -> GeometryCollection (non-exploded path)."""
         feat = _slicestack_feature()
         s = to_shapely(feat.geometry)
         assert s.geom_type == "GeometryCollection"
@@ -358,7 +312,7 @@ class TestTypeInference:
         assert _infer_pa_type([True, False]) == pa.bool_()
 
     def test_mixed_types(self):
-        """Mixed types → JSON string."""
+        """Mixed types -> JSON string."""
         assert _infer_pa_type([1, "a"]) == pa.string()
 
     def test_dict_values(self):
@@ -392,17 +346,6 @@ class TestTableBuilder:
         assert len(table) == 2
         assert table["id"][0].as_py() == "a"
         assert table["id"][1].as_py() == "b"
-
-    def test_neuron_has_tree_column(self):
-        table = build_table(_neuron_feature())
-        assert "_neuron_tree" in table.column_names
-        tree = json.loads(table["_neuron_tree"][0].as_py())
-        assert len(tree) == 3
-
-    def test_neuron_no_tree_column_when_disabled(self):
-        config = ArrowConfig(include_neuron_tree=False)
-        table = build_table(_neuron_feature(), config)
-        assert "_neuron_tree" not in table.column_names
 
     def test_slicestack_exploded(self):
         table = build_table(_slicestack_feature())
@@ -458,7 +401,7 @@ class TestTableBuilder:
         assert len(meta["columns"]["geometry"]["bbox"]) == 4
 
     def test_mixed_property_types(self):
-        """Properties with mixed types → JSON-serialized strings."""
+        """Properties with mixed types -> JSON-serialized strings."""
         fc = MicroFeatureCollection(
             type="FeatureCollection",
             features=[
@@ -467,7 +410,7 @@ class TestTableBuilder:
             ],
         )
         table = build_table(fc)
-        # Mixed int/str → string column
+        # Mixed int/str -> string column
         assert table.schema.field("val").type == pa.string()
 
     def test_feature_class_column(self):
@@ -501,7 +444,7 @@ class TestTableBuilder:
         assert coords[2] == (2.0, 0.0, 2.0)
 
     def test_property_with_dict_value(self):
-        """Dict properties → JSON-serialized string."""
+        """Dict properties -> JSON-serialized string."""
         feat = _point_feature(props={"meta": {"key": "val"}})
         table = build_table(feat)
         val = table["meta"][0].as_py()

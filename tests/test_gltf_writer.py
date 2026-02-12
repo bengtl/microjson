@@ -10,32 +10,35 @@ from pygltflib import GLTF2
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
-    SWCSample,
+    TIN,
 )
 from microjson.gltf import GltfConfig, to_glb, to_gltf
 
 
-def _neuron_feature(**props) -> MicroFeature:
-    neuron = NeuronMorphology(
-        type="NeuronMorphology",
-        tree=[
-            SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1),
-            SWCSample(id=2, type=3, x=10, y=0, z=0, r=2, parent=1),
-        ],
+def _tin_feature(**props) -> MicroFeature:
+    """A simple TIN feature (2 triangles)."""
+    return MicroFeature(
+        type="Feature",
+        geometry=TIN(
+            type="TIN",
+            coordinates=[
+                [[(0, 0, 0), (1, 0, 0), (0.5, 1, 0), (0, 0, 0)]],
+                [[(1, 0, 0), (1, 1, 0), (0.5, 1, 0), (1, 0, 0)]],
+            ],
+        ),
+        properties=props or None,
     )
-    return MicroFeature(type="Feature", geometry=neuron, properties=props or None)
 
 
 class TestToGltf:
     def test_returns_gltf2(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         result = to_gltf(feat)
         assert isinstance(result, GLTF2)
         assert len(result.meshes) > 0
 
     def test_saves_to_file(self, tmp_path):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         out = tmp_path / "test.gltf"
         result = to_gltf(feat, output_path=out)
 
@@ -47,34 +50,34 @@ class TestToGltf:
         assert data["asset"]["version"] == "2.0"
 
     def test_config_passthrough(self):
-        feat = _neuron_feature()
-        config = GltfConfig(tube_segments=4, y_up=False)
+        feat = _tin_feature()
+        config = GltfConfig(y_up=False)
         result = to_gltf(feat, config=config)
         assert isinstance(result, GLTF2)
 
 
 class TestToGlb:
     def test_returns_bytes(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         result = to_glb(feat)
         assert isinstance(result, bytes)
         assert len(result) > 0
 
     def test_glb_magic_header(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         result = to_glb(feat)
         # GLB magic: 0x46546C67 = "glTF"
         assert result[:4] == b"glTF"
 
     def test_glb_version(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         result = to_glb(feat)
         import struct
         version = struct.unpack_from("<I", result, 4)[0]
         assert version == 2
 
     def test_saves_to_file(self, tmp_path):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         out = tmp_path / "test.glb"
         result = to_glb(feat, output_path=out)
 
@@ -83,13 +86,13 @@ class TestToGlb:
         assert result == out.read_bytes()
 
     def test_creates_parent_dirs(self, tmp_path):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         out = tmp_path / "nested" / "dir" / "test.glb"
         to_glb(feat, output_path=out)
         assert out.exists()
 
     def test_roundtrip_with_pygltflib(self, tmp_path):
-        feat = _neuron_feature(cell_type="pyramidal")
+        feat = _tin_feature(cell_type="pyramidal")
         out = tmp_path / "roundtrip.glb"
         to_glb(feat, output_path=out)
 
@@ -100,7 +103,7 @@ class TestToGlb:
     def test_collection_glb(self):
         from geojson_pydantic import Point
 
-        feat1 = _neuron_feature()
+        feat1 = _tin_feature()
         feat2 = MicroFeature(
             type="Feature",
             geometry=Point(type="Point", coordinates=[5.0, 5.0, 5.0]),
@@ -114,7 +117,7 @@ class TestToGlb:
         assert result[:4] == b"glTF"
 
     def test_metadata_preserved_in_glb(self, tmp_path):
-        feat = _neuron_feature(cell_type="pyramidal", layer=5)
+        feat = _tin_feature(cell_type="pyramidal", layer=5)
         out = tmp_path / "meta.glb"
         to_glb(feat, output_path=out)
 

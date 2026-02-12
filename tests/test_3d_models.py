@@ -19,7 +19,6 @@ from microjson.model import (
     TIN,
     Slice,
     SliceStack,
-    NeuronMorphology,
 )
 
 
@@ -457,24 +456,20 @@ class TestSliceStack:
 
 
 # ---------------------------------------------------------------------------
-# Step 7: Integration — MicroJSON with 3D geometry types
+# Step 7: Integration -- MicroJSON with 3D geometry types
 # ---------------------------------------------------------------------------
 
-# Full 3D MicroJSON document from spec Appendix A (adapted)
+# Full 3D MicroJSON document (adapted -- NeuronMorphology replaced with TIN)
 FULL_3D_DOCUMENT = {
     "type": "FeatureCollection",
     "features": [
         {
             "type": "Feature",
             "geometry": {
-                "type": "NeuronMorphology",
-                "tree": [
-                    {"id": 1, "type": 1, "x": 500.0, "y": 300.0,
-                     "z": 100.0, "r": 8.0, "parent": -1},
-                    {"id": 2, "type": 3, "x": 510.0, "y": 305.0,
-                     "z": 102.0, "r": 2.0, "parent": 1},
-                    {"id": 3, "type": 3, "x": 520.0, "y": 310.0,
-                     "z": 105.0, "r": 1.5, "parent": 2},
+                "type": "TIN",
+                "coordinates": [
+                    [[(0, 0, 0), (10, 0, 0), (5, 10, 5), (0, 0, 0)]],
+                    [[(10, 0, 0), (20, 0, 0), (5, 10, 5), (10, 0, 0)]],
                 ],
             },
             "properties": {
@@ -521,21 +516,6 @@ FULL_3D_DOCUMENT = {
 
 class TestMicroJSON3DIntegration:
     """Test MicroJSON root model with 3D geometry types."""
-
-    def test_feature_with_neuron_morphology(self):
-        data = {
-            "type": "Feature",
-            "geometry": {
-                "type": "NeuronMorphology",
-                "tree": [
-                    {"id": 1, "type": 1, "x": 0, "y": 0, "z": 0,
-                     "r": 1.0, "parent": -1},
-                ],
-            },
-            "properties": {},
-        }
-        mj = MicroJSON.model_validate(data)
-        assert mj.root.geometry.type == "NeuronMorphology"
 
     def test_feature_with_slicestack(self):
         data = {
@@ -586,7 +566,7 @@ class TestMicroJSON3DIntegration:
         """Parse the full 3D MicroJSON example from the spec."""
         mfc = MicroFeatureCollection.model_validate(FULL_3D_DOCUMENT)
         assert len(mfc.features) == 2
-        assert mfc.features[0].geometry.type == "NeuronMorphology"
+        assert mfc.features[0].geometry.type == "TIN"
         assert mfc.features[1].geometry.type == "SliceStack"
 
         # Round-trip through JSON

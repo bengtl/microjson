@@ -16,11 +16,9 @@ from microjson.arrow import ArrowConfig, to_arrow_table, to_geoparquet
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
     PolyhedralSurface,
     Slice,
     SliceStack,
-    SWCSample,
     TIN,
 )
 
@@ -57,19 +55,17 @@ def _polygon_feat(fid="pg1"):
     )
 
 
-def _neuron_feat():
+def _tin_feat():
     return MicroFeature(
         type="Feature",
-        id="n1",
-        geometry=NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5.0, parent=-1),
-                SWCSample(id=2, type=2, x=10, y=0, z=0, r=1.0, parent=1),
-                SWCSample(id=3, type=3, x=0, y=10, z=5, r=1.0, parent=1),
+        id="t1",
+        geometry=TIN(
+            type="TIN",
+            coordinates=[
+                [[(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 0)]],
             ],
         ),
-        properties={"species": "mouse"},
+        properties={},
     )
 
 
@@ -98,20 +94,6 @@ def _slicestack_feat():
             ],
         ),
         properties={"stack_id": 42},
-    )
-
-
-def _tin_feat():
-    return MicroFeature(
-        type="Feature",
-        id="t1",
-        geometry=TIN(
-            type="TIN",
-            coordinates=[
-                [[(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 0)]],
-            ],
-        ),
-        properties={},
     )
 
 
@@ -221,16 +203,17 @@ class TestMixedGeometry:
         assert "Point Z" in types
         assert "Polygon" in types
 
-    def test_neuron_and_point(self):
+    def test_tin_and_point(self):
         fc = MicroFeatureCollection(
             type="FeatureCollection",
-            features=[_neuron_feat(), _point_feat()],
+            features=[_tin_feat(), _point_feat()],
         )
         table = to_arrow_table(fc)
         assert len(table) == 2
-        assert "_neuron_tree" in table.column_names
-        # Point row should have null _neuron_tree
-        assert table["_neuron_tree"][1].as_py() is None
+        meta = json.loads(table.schema.metadata[b"geo"])
+        types = meta["columns"]["geometry"]["geometry_types"]
+        assert "Point Z" in types
+        assert "MultiPolygon Z" in types  # TIN stored as MultiPolygon
 
     def test_slicestack_with_other_features(self):
         fc = MicroFeatureCollection(
@@ -249,24 +232,22 @@ class TestMixedGeometry:
             type="FeatureCollection",
             features=[
                 _point_feat(),
-                _neuron_feat(),
                 _tin_feat(),
             ],
         )
         table = to_arrow_table(fc)
-        assert len(table) == 3
+        assert len(table) == 2
         meta = json.loads(table.schema.metadata[b"geo"])
         types = meta["columns"]["geometry"]["geometry_types"]
         assert "Point Z" in types
-        assert "MultiLineString Z" in types
-        assert "MultiPolygon Z" in types
+        assert "MultiPolygon Z" in types  # TIN stored as MultiPolygon
 
     def test_mixed_geometry_geoparquet(self, tmp_path):
         """Write mixed geometry types to GeoParquet and verify metadata."""
         path = tmp_path / "mixed.parquet"
         fc = MicroFeatureCollection(
             type="FeatureCollection",
-            features=[_point_feat(), _polygon_feat(), _neuron_feat()],
+            features=[_point_feat(), _polygon_feat(), _tin_feat()],
         )
         to_geoparquet(fc, path)
 

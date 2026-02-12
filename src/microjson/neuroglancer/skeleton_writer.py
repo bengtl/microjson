@@ -21,7 +21,7 @@ import json
 from pathlib import Path
 from typing import List, Optional
 
-from ..model import NeuronMorphology
+from ..swc import NeuronMorphology
 from ..transforms import AffineTransform
 from ._binary import pack_float32_array, pack_uint32, pack_uint32_array
 from .models import SkeletonInfo, VertexAttributeInfo

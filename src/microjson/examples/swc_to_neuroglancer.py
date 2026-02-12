@@ -25,7 +25,7 @@ import json
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
-from microjson.swc import swc_to_microjson
+from microjson.swc import _parse_swc, swc_to_microjson
 from microjson.neuroglancer import write_skeleton
 from microjson.neuroglancer.properties_writer import write_segment_properties
 from microjson.neuroglancer.skeleton_writer import build_skeleton_info
@@ -98,7 +98,7 @@ def main() -> None:
 
         segment_id = i + 1
         feature = swc_to_microjson(str(swc_path))
-        morphology = feature.geometry
+        morphology = _parse_swc(str(swc_path))
 
         # Add the filename as a property
         feature.properties = {"name": swc_path.stem, "file": swc_path.name}

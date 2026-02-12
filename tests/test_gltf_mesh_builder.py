@@ -1,17 +1,20 @@
-"""Tests for NeuronMorphology tube mesh generation."""
+"""Tests for mesh generation utilities and neuron tube mesh generation."""
 
 import math
 
 import numpy as np
 import pytest
 
-from microjson.model import NeuronMorphology, SWCSample
-from microjson.gltf.mesh_builder import (
+from microjson.swc import (
+    NeuronMorphology,
+    SWCSample,
     _extract_paths,
-    _icosphere,
-    _tube_along_path,
     neuron_to_tube_mesh,
     neuron_to_typed_meshes,
+)
+from microjson.gltf.mesh_builder import (
+    _icosphere,
+    _tube_along_path,
     smooth_path,
     thin_path,
 )
@@ -23,9 +26,9 @@ class TestTubeAlongPath:
         radii = [1.0, 1.0]
         v, n, idx = _tube_along_path(points, radii, 8)
 
-        assert v.shape == (16, 3)  # 2 rings × 8 segments
+        assert v.shape == (16, 3)  # 2 rings x 8 segments
         assert n.shape == (16, 3)
-        assert idx.shape == (16, 3)  # 8 quads × 2 tris
+        assert idx.shape == (16, 3)  # 8 quads x 2 tris
 
     def test_tapered_tube(self):
         points = [np.array([0, 0, 0.0]), np.array([5, 0, 0.0])]
@@ -52,9 +55,9 @@ class TestTubeAlongPath:
         radii = [1.0, 1.0, 1.0]
         v, n, idx = _tube_along_path(points, radii, 8)
 
-        # 3 rings × 8 = 24 verts (shared middle ring, not 32)
+        # 3 rings x 8 = 24 verts (shared middle ring, not 32)
         assert v.shape[0] == 24
-        assert idx.shape[0] == 32  # 2 segments × 8 quads × 2 tris
+        assert idx.shape[0] == 32  # 2 segments x 8 quads x 2 tris
 
     def test_single_point_returns_empty(self):
         v, n, idx = _tube_along_path([np.array([0, 0, 0.0])], [1.0], 8)
@@ -117,7 +120,7 @@ class TestExtractPaths:
         assert ends == {2, 3}
 
     def test_deep_branching(self):
-        """Root → chain → branch point → two branches."""
+        """Root -> chain -> branch point -> two branches."""
         tree = self._make_tree([
             {"id": 1, "type": 1, "x": 0, "y": 0, "z": 0, "r": 1, "parent": -1},
             {"id": 2, "type": 3, "x": 1, "y": 0, "z": 0, "r": 1, "parent": 1},
@@ -180,7 +183,7 @@ class TestNeuronToTubeMesh:
         neuron = self._simple_neuron()
         v, n, idx = neuron_to_tube_mesh(neuron, segments=8)
 
-        # Soma sphere(162) + tube path [1,2] (2 nodes × 8 segments = 16)
+        # Soma sphere(162) + tube path [1,2] (2 nodes x 8 segments = 16)
         assert v.shape[0] == 162 + 16
         assert n.shape[0] == v.shape[0]
         assert idx.max() < v.shape[0]
@@ -197,7 +200,7 @@ class TestNeuronToTubeMesh:
         )
         v, n, idx = neuron_to_tube_mesh(neuron, segments=8)
 
-        # Soma sphere(162) + path [1,2,4] (3×8=24) + path [1,3] (2×8=16)
+        # Soma sphere(162) + path [1,2,4] (3x8=24) + path [1,3] (2x8=16)
         # No junction sphere at node 1 (it's the soma)
         expected_verts = 162 + 24 + 16
         assert v.shape[0] == expected_verts
@@ -217,8 +220,8 @@ class TestNeuronToTubeMesh:
         v, n, idx = neuron_to_tube_mesh(neuron, segments=8)
 
         # No soma sphere (root is type=3)
-        # Junction sphere at node 2 (subdiv=1 → 42 verts)
-        # Path [1,2] (2×8=16) + path [2,3] (2×8=16) + path [2,4] (2×8=16)
+        # Junction sphere at node 2 (subdiv=1 -> 42 verts)
+        # Path [1,2] (2x8=16) + path [2,3] (2x8=16) + path [2,4] (2x8=16)
         expected = 42 + 16 + 16 + 16
         assert v.shape[0] == expected
         assert idx.max() < v.shape[0]
@@ -282,7 +285,7 @@ class TestNeuronToTubeMesh:
         )
         v, _, _ = neuron_to_tube_mesh(neuron, segments=8)
 
-        # Single path [1,2,3,4] → 4 rings × 8 = 32 verts (shared rings)
+        # Single path [1,2,3,4] -> 4 rings x 8 = 32 verts (shared rings)
         assert v.shape[0] == 32
 
         # Middle ring (at node 2, index=8..15) should be at x=5
@@ -305,11 +308,11 @@ class TestSmoothPath:
         assert len(sp) == 1
 
     def test_output_length(self):
-        """N points + M subdivisions → N + (N-1)*M output points."""
+        """N points + M subdivisions -> N + (N-1)*M output points."""
         pts = [np.array([float(i), 0, 0]) for i in range(5)]
         radii = [1.0] * 5
         sp, sr = smooth_path(pts, radii, 3)
-        # 5 original + 4 segments × 3 subdivisions = 5 + 12 = 17
+        # 5 original + 4 segments x 3 subdivisions = 5 + 12 = 17
         expected = 5 + (5 - 1) * 3
         assert len(sp) == expected
         assert len(sr) == expected
@@ -357,7 +360,7 @@ class TestSmoothingInNeuronMesh:
         neuron = self._simple_neuron()
         v0, _, _ = neuron_to_tube_mesh(neuron, segments=8, smooth_subdivisions=0)
         v3, _, _ = neuron_to_tube_mesh(neuron, segments=8, smooth_subdivisions=3)
-        # Smoothing adds more ring cross-sections → more vertices
+        # Smoothing adds more ring cross-sections -> more vertices
         assert v3.shape[0] > v0.shape[0]
 
     def test_smooth_indices_valid(self):
@@ -424,7 +427,7 @@ class TestThinPath:
 
 class TestMeshQuality:
     def _long_neuron(self):
-        """Neuron with many nodes — good for testing quality reduction."""
+        """Neuron with many nodes -- good for testing quality reduction."""
         samples = [SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1)]
         for i in range(2, 52):
             samples.append(SWCSample(

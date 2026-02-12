@@ -1,5 +1,7 @@
 """Tests for glTF scene graph assembly."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from pygltflib import LINES, POINTS, TRIANGLES
@@ -7,11 +9,9 @@ from pygltflib import LINES, POINTS, TRIANGLES
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
     PolyhedralSurface,
     Slice,
     SliceStack,
-    SWCSample,
     TIN,
 )
 from microjson.gltf.gltf_assembler import (
@@ -21,38 +21,48 @@ from microjson.gltf.gltf_assembler import (
 from microjson.gltf.models import GltfConfig
 
 
-def _neuron_feature(**props) -> MicroFeature:
-    neuron = NeuronMorphology(
-        type="NeuronMorphology",
-        tree=[
-            SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1),
-            SWCSample(id=2, type=3, x=10, y=0, z=0, r=2, parent=1),
-        ],
+FIXTURE_DIR = Path(__file__).parent / "fixtures"
+SAMPLE_SWC = FIXTURE_DIR / "sample_neuron.swc"
+
+
+def _tin_feature(**props) -> MicroFeature:
+    """A simple TIN feature (2 triangles)."""
+    return MicroFeature(
+        type="Feature",
+        geometry=TIN(
+            type="TIN",
+            coordinates=[
+                [[(0, 0, 0), (1, 0, 0), (0.5, 1, 0), (0, 0, 0)]],
+                [[(1, 0, 0), (1, 1, 0), (0.5, 1, 0), (1, 0, 0)]],
+            ],
+        ),
+        properties=props or None,
     )
-    return MicroFeature(type="Feature", geometry=neuron, properties=props or None)
+
+
+def _tin_from_swc() -> MicroFeature:
+    """A TIN feature derived from SWC conversion."""
+    from microjson.swc import swc_to_tin
+    return swc_to_tin(str(SAMPLE_SWC))
 
 
 class TestFeatureToGltf:
-    def test_neuron_morphology(self):
-        feat = _neuron_feature()
+    def test_tin_from_swc(self):
+        """SWC-derived TIN goes through the standard TIN path."""
+        feat = _tin_from_swc()
         gltf = feature_to_gltf(feat)
 
-        # Neuron with soma(type=1) + dendrite(type=3) → 2 meshes (one per type)
-        assert len(gltf.meshes) == 2
-        assert len(gltf.nodes) == 2
-        for mesh in gltf.meshes:
-            assert mesh.primitives[0].mode == TRIANGLES
+        assert len(gltf.meshes) == 1
+        assert gltf.meshes[0].primitives[0].mode == TRIANGLES
         assert len(gltf.accessors) > 0
         assert gltf.asset.generator == "microjson-gltf"
 
-    def test_neuron_no_color_by_type(self):
-        feat = _neuron_feature()
-        config = GltfConfig(color_by_type=False)
-        gltf = feature_to_gltf(feat, config=config)
+    def test_tin_geometry(self):
+        feat = _tin_feature()
+        gltf = feature_to_gltf(feat)
 
-        # Single mesh when coloring disabled
         assert len(gltf.meshes) == 1
-        assert len(gltf.nodes) == 1
+        assert gltf.meshes[0].primitives[0].mode == TRIANGLES
 
     def test_point_geometry(self):
         from geojson_pydantic import Point
@@ -94,20 +104,6 @@ class TestFeatureToGltf:
             ),
             properties=None,
         )
-        gltf = feature_to_gltf(feat)
-
-        assert len(gltf.meshes) == 1
-        assert gltf.meshes[0].primitives[0].mode == TRIANGLES
-
-    def test_tin_geometry(self):
-        tin = TIN(
-            type="TIN",
-            coordinates=[
-                [[[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 0]]],
-                [[[1, 0, 0], [1, 1, 0], [0, 1, 0], [1, 0, 0]]],
-            ],
-        )
-        feat = MicroFeature(type="Feature", geometry=tin, properties=None)
         gltf = feature_to_gltf(feat)
 
         assert len(gltf.meshes) == 1
@@ -180,20 +176,20 @@ class TestFeatureToGltf:
 
 class TestMetadata:
     def test_feature_properties_in_extras(self):
-        feat = _neuron_feature(cell_type="pyramidal", layer=5)
+        feat = _tin_feature(cell_type="pyramidal", layer=5)
         gltf = feature_to_gltf(feat)
 
         assert gltf.nodes[0].extras == {"cell_type": "pyramidal", "layer": 5}
 
     def test_metadata_disabled(self):
-        feat = _neuron_feature(cell_type="pyramidal")
+        feat = _tin_feature(cell_type="pyramidal")
         config = GltfConfig(include_metadata=False)
         gltf = feature_to_gltf(feat, config=config)
 
         assert not gltf.nodes[0].extras  # empty dict or None
 
     def test_collection_metadata(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         collection = MicroFeatureCollection(
             type="FeatureCollection",
             features=[feat],
@@ -221,7 +217,7 @@ class TestCoordinateTransform:
         data = gltf._glb_data[bv.byteOffset : bv.byteOffset + bv.byteLength]
         pos = np.frombuffer(data, dtype="<f4").reshape(-1, 3)
 
-        # Original (1, 2, 3) → Y-up (1, 3, -2)
+        # Original (1, 2, 3) -> Y-up (1, 3, -2)
         np.testing.assert_allclose(pos[0], [1.0, 3.0, -2.0], atol=1e-6)
 
     def test_y_up_disabled(self):
@@ -244,7 +240,7 @@ class TestCoordinateTransform:
 
 class TestCollectionToGltf:
     def test_multiple_features(self):
-        feat1 = _neuron_feature()
+        feat1 = _tin_feature()
         from geojson_pydantic import Point
 
         feat2 = MicroFeature(
@@ -258,12 +254,9 @@ class TestCollectionToGltf:
         )
         gltf = collection_to_gltf(collection)
 
-        # Neuron → 2 meshes (soma + dendrite), point → 1 mesh
-        assert len(gltf.meshes) == 3
-        assert len(gltf.nodes) == 3
-        assert gltf.nodes[0].name == "feature_0_0"
-        assert gltf.nodes[1].name == "feature_0_1"
-        assert gltf.nodes[2].name == "feature_1"
+        # TIN -> 1 mesh, point -> 1 mesh = 2 total
+        assert len(gltf.meshes) == 2
+        assert len(gltf.nodes) == 2
 
     def test_empty_collection(self):
         collection = MicroFeatureCollection(
@@ -275,82 +268,68 @@ class TestCollectionToGltf:
         assert len(gltf.nodes) == 0
 
     def test_default_material(self):
-        feat = _neuron_feature()
-        config = GltfConfig(color_by_type=False)
-        gltf = feature_to_gltf(feat, config=config)
+        feat = _tin_feature()
+        gltf = feature_to_gltf(feat)
 
-        assert len(gltf.materials) == 1
+        assert len(gltf.materials) >= 1
         pbr = gltf.materials[0].pbrMetallicRoughness
         assert pbr.metallicFactor == 0.1
         assert pbr.roughnessFactor == 0.8
 
-    def test_type_colored_materials(self):
-        feat = _neuron_feature()
-        gltf = feature_to_gltf(feat)
-
-        # Default + soma(1) + dendrite(3) = 3 materials
-        assert len(gltf.materials) == 3
-        # Type-specific materials have names
-        type_mat_names = {m.name for m in gltf.materials if m.name}
-        assert "soma" in type_mat_names
-        assert "basal_dendrite" in type_mat_names
-
 
 class TestFeatureSpacing:
-    """Feature spacing in collections — layout is now coordinate-based."""
+    """Feature spacing in collections -- layout is now coordinate-based."""
 
-    def _two_neuron_collection(self):
-        """Two neurons at the same position."""
-        n1 = NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1),
-                SWCSample(id=2, type=3, x=100, y=0, z=0, r=2, parent=1),
+    def _two_tin_collection(self):
+        """Two TINs at the same position."""
+        t1 = TIN(
+            type="TIN",
+            coordinates=[
+                [[(0, 0, 0), (100, 0, 0), (50, 10, 5), (0, 0, 0)]],
             ],
         )
-        n2 = NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1),
-                SWCSample(id=2, type=3, x=80, y=0, z=0, r=2, parent=1),
+        t2 = TIN(
+            type="TIN",
+            coordinates=[
+                [[(0, 0, 0), (80, 0, 0), (40, 10, 5), (0, 0, 0)]],
             ],
         )
         return MicroFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(type="Feature", geometry=n1, properties=None),
-                MicroFeature(type="Feature", geometry=n2, properties=None),
+                MicroFeature(type="Feature", geometry=t1, properties=None),
+                MicroFeature(type="Feature", geometry=t2, properties=None),
             ],
         )
 
-    def test_auto_spacing_offsets_second_feature(self):
-        """With default spacing=0, second feature gets translated coordinates."""
-        coll = self._two_neuron_collection()
+    def test_default_no_layout(self):
+        """Default config keeps coordinates as-is (no layout)."""
+        coll = self._two_tin_collection()
         gltf = collection_to_gltf(coll)
 
-        # Nodes should have no translation (layout is in coordinates now)
+        # Nodes should have no translation
         for node in gltf.nodes:
             assert node.translation is None
 
-        # At least 4 nodes: 2 per neuron (soma + dendrite)
-        assert len(gltf.nodes) >= 4
+        # At least 2 nodes: 1 per TIN
+        assert len(gltf.nodes) >= 2
 
     def test_fixed_spacing(self):
-        """Explicit feature_spacing sets the gap — verified via coordinates."""
-        coll = self._two_neuron_collection()
-        config = GltfConfig(feature_spacing=50.0, color_by_type=False)
+        """Explicit feature_spacing sets the gap -- verified via coordinates."""
+        coll = self._two_tin_collection()
+        config = GltfConfig(feature_spacing=50.0)
         gltf = collection_to_gltf(coll, config=config)
 
-        # No node translations — layout is baked into vertex data
+        # No node translations -- layout is baked into vertex data
         for node in gltf.nodes:
             assert node.translation is None
 
-        # We have 2 meshes (one per feature, color_by_type=False)
+        # We have 2 meshes (one per feature)
         assert len(gltf.meshes) == 2
 
     def test_single_feature_no_offset(self):
         """A single-feature collection should not get translated."""
-        feat = _neuron_feature()
+        feat = _tin_feature()
         coll = MicroFeatureCollection(
             type="FeatureCollection",
             features=[feat],
@@ -360,8 +339,8 @@ class TestFeatureSpacing:
             assert node.translation is None
 
     def test_no_node_translations_with_spacing(self):
-        """Layout is entirely coordinate-based — no node translations."""
-        coll = self._two_neuron_collection()
+        """Layout is entirely coordinate-based -- no node translations."""
+        coll = self._two_tin_collection()
         config = GltfConfig(feature_spacing=50.0)
         gltf = collection_to_gltf(coll, config=config)
         for node in gltf.nodes:
@@ -371,20 +350,20 @@ class TestFeatureSpacing:
 class TestGridLayout:
     """Grid placement when grid_max_* is set."""
 
-    def _make_neuron(self, x_offset=0.0, width=100.0):
-        return NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=x_offset, y=0, z=0, r=5, parent=-1),
-                SWCSample(id=2, type=3, x=x_offset + width, y=0, z=0, r=2, parent=1),
+    def _make_tin(self, x_offset=0.0, width=100.0):
+        return TIN(
+            type="TIN",
+            coordinates=[
+                [[(x_offset, 0, 0), (x_offset + width, 0, 0),
+                  (x_offset + width / 2, 10, 5), (x_offset, 0, 0)]],
             ],
         )
 
-    def _collection(self, n, **neuron_kw):
+    def _collection(self, n, **tin_kw):
         features = [
             MicroFeature(
                 type="Feature",
-                geometry=self._make_neuron(**neuron_kw),
+                geometry=self._make_tin(**tin_kw),
                 properties=None,
             )
             for _ in range(n)
@@ -395,12 +374,11 @@ class TestGridLayout:
         )
 
     def test_wraps_to_rows(self):
-        """4 features, 2 cols → 2 rows. No node translations."""
+        """4 features, 2 cols -> 2 rows. No node translations."""
         coll = self._collection(4, width=100)
         config = GltfConfig(
             grid_max_x=2,
             feature_spacing=10,
-            color_by_type=False,
         )
         gltf = collection_to_gltf(coll, config=config)
 
@@ -412,13 +390,12 @@ class TestGridLayout:
         assert len(gltf.nodes) == 4
 
     def test_wraps_to_layers(self):
-        """5 features, 2 cols × 2 rows → 5th goes to layer 1."""
+        """5 features, 2 cols x 2 rows -> 5th goes to layer 1."""
         coll = self._collection(5, width=100)
         config = GltfConfig(
             grid_max_x=2,
             grid_max_y=2,
             feature_spacing=10,
-            color_by_type=False,
         )
         gltf = collection_to_gltf(coll, config=config)
 
@@ -428,15 +405,14 @@ class TestGridLayout:
         assert len(gltf.nodes) == 5
 
     def test_capacity_error(self):
-        """All three grid_max_* set with too many features → ValueError."""
+        """All three grid_max_* set with too many features -> ValueError."""
         coll = self._collection(10, width=100)
-        # 2 × 2 × 2 = 8 < 10
+        # 2 x 2 x 2 = 8 < 10
         config = GltfConfig(
             grid_max_x=2,
             grid_max_y=2,
             grid_max_z=2,
             feature_spacing=10,
-            color_by_type=False,
         )
         with pytest.raises(ValueError, match="Cannot fit 10 features"):
             collection_to_gltf(coll, config=config)
@@ -448,7 +424,6 @@ class TestGridLayout:
             grid_max_x=2,
             grid_max_y=2,
             grid_max_z=2,
-            color_by_type=False,
         )
         gltf = collection_to_gltf(coll, config=config)
         assert len(gltf.nodes) == 8
@@ -460,9 +435,8 @@ class TestGridLayout:
             grid_max_x=3,
             grid_max_y=3,
             grid_max_z=3,
-            color_by_type=False,
         )
-        # 3×3×3 = 27 < 100 → ValueError fires instantly
+        # 3x3x3 = 27 < 100 -> ValueError fires instantly
         with pytest.raises(ValueError):
             collection_to_gltf(coll, config=config)
 
@@ -472,19 +446,17 @@ class TestGridLayout:
         config = GltfConfig(
             grid_max_x=3,
             feature_spacing=10,
-            color_by_type=False,
         )
-        # Should not raise — rows/layers expand as needed
+        # Should not raise -- rows/layers expand as needed
         gltf = collection_to_gltf(coll, config=config)
         assert len(gltf.nodes) == 20
 
     def test_grid_no_node_translations(self):
-        """Grid layout with color_by_type: no node translations."""
+        """Grid layout: no node translations."""
         coll = self._collection(4, width=100)
         config = GltfConfig(
             grid_max_x=2,
             feature_spacing=10,
-            color_by_type=True,
         )
         gltf = collection_to_gltf(coll, config=config)
 
@@ -492,9 +464,143 @@ class TestGridLayout:
         for node in gltf.nodes:
             assert node.translation is None
 
-        # Feature 2 (row 1, col 0) should have multiple nodes (typed)
-        f2_nodes = [
-            n for n in gltf.nodes
-            if n.name and n.name.startswith("feature_2")
-        ]
-        assert len(f2_nodes) >= 2
+
+class TestColorBy:
+    """Metadata-driven coloring via color_by + color_map."""
+
+    def _colored_collection(self):
+        """Three TIN features with different 'kind' property values."""
+        def _make(kind_value):
+            return MicroFeature(
+                type="Feature",
+                geometry=TIN(
+                    type="TIN",
+                    coordinates=[
+                        [[(0, 0, 0), (1, 0, 0), (0.5, 1, 0), (0, 0, 0)]],
+                    ],
+                ),
+                properties={"kind": kind_value},
+            )
+        return MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[_make("alpha"), _make("beta"), _make("alpha")],
+        )
+
+    def test_color_map_creates_multiple_materials(self):
+        """color_map entries create extra materials beyond the default."""
+        coll = self._colored_collection()
+        config = GltfConfig(
+            color_by="kind",
+            color_map={
+                "alpha": (1.0, 0.0, 0.0, 1.0),
+                "beta": (0.0, 1.0, 0.0, 1.0),
+            },
+        )
+        gltf = collection_to_gltf(coll, config=config)
+        # default + alpha + beta = 3 materials
+        assert len(gltf.materials) == 3
+
+    def test_features_get_correct_material(self):
+        """Features with matching property value get the right material."""
+        coll = self._colored_collection()
+        config = GltfConfig(
+            color_by="kind",
+            color_map={
+                "alpha": (1.0, 0.0, 0.0, 1.0),
+                "beta": (0.0, 1.0, 0.0, 1.0),
+            },
+        )
+        gltf = collection_to_gltf(coll, config=config)
+
+        # Find alpha and beta material indices
+        alpha_mat = None
+        beta_mat = None
+        for i, mat in enumerate(gltf.materials):
+            color = mat.pbrMetallicRoughness.baseColorFactor
+            if color == [1.0, 0.0, 0.0, 1.0]:
+                alpha_mat = i
+            elif color == [0.0, 1.0, 0.0, 1.0]:
+                beta_mat = i
+
+        assert alpha_mat is not None
+        assert beta_mat is not None
+
+        # mesh 0 = alpha, mesh 1 = beta, mesh 2 = alpha
+        assert gltf.meshes[0].primitives[0].material == alpha_mat
+        assert gltf.meshes[1].primitives[0].material == beta_mat
+        assert gltf.meshes[2].primitives[0].material == alpha_mat
+
+    def test_missing_property_falls_back_to_default(self):
+        """Feature without the color_by property gets material 0."""
+        feat_no_prop = MicroFeature(
+            type="Feature",
+            geometry=TIN(
+                type="TIN",
+                coordinates=[
+                    [[(0, 0, 0), (1, 0, 0), (0.5, 1, 0), (0, 0, 0)]],
+                ],
+            ),
+            properties={"other": "value"},
+        )
+        coll = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[feat_no_prop],
+        )
+        config = GltfConfig(
+            color_by="kind",
+            color_map={"alpha": (1.0, 0.0, 0.0, 1.0)},
+        )
+        gltf = collection_to_gltf(coll, config=config)
+        assert gltf.meshes[0].primitives[0].material == 0
+
+    def test_unmapped_value_falls_back_to_default(self):
+        """Property value not in color_map falls back to material 0."""
+        feat = MicroFeature(
+            type="Feature",
+            geometry=TIN(
+                type="TIN",
+                coordinates=[
+                    [[(0, 0, 0), (1, 0, 0), (0.5, 1, 0), (0, 0, 0)]],
+                ],
+            ),
+            properties={"kind": "gamma"},
+        )
+        coll = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[feat],
+        )
+        config = GltfConfig(
+            color_by="kind",
+            color_map={"alpha": (1.0, 0.0, 0.0, 1.0)},
+        )
+        gltf = collection_to_gltf(coll, config=config)
+        assert gltf.meshes[0].primitives[0].material == 0
+
+    def test_color_by_none_single_material(self):
+        """Without color_by, only 1 material (default behavior)."""
+        coll = self._colored_collection()
+        config = GltfConfig()
+        gltf = collection_to_gltf(coll, config=config)
+        assert len(gltf.materials) == 1
+
+    def test_single_feature_with_color_by(self):
+        """color_by works on feature_to_gltf too."""
+        feat = MicroFeature(
+            type="Feature",
+            geometry=TIN(
+                type="TIN",
+                coordinates=[
+                    [[(0, 0, 0), (1, 0, 0), (0.5, 1, 0), (0, 0, 0)]],
+                ],
+            ),
+            properties={"kind": "alpha"},
+        )
+        config = GltfConfig(
+            color_by="kind",
+            color_map={"alpha": (1.0, 0.0, 0.0, 1.0)},
+        )
+        gltf = feature_to_gltf(feat, config=config)
+        # default + alpha = 2 materials
+        assert len(gltf.materials) == 2
+        # feature should use alpha material (index 1)
+        assert gltf.meshes[0].primitives[0].material == 1

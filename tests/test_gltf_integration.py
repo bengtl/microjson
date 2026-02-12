@@ -9,13 +9,11 @@ from pygltflib import GLTF2
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
-    SWCSample,
     TIN,
     Slice,
     SliceStack,
 )
-from microjson.swc import swc_to_microjson
+from microjson.swc import swc_to_tin
 from microjson.gltf import GltfConfig, to_glb, to_gltf
 
 
@@ -24,11 +22,11 @@ SWC_FILE = FIXTURE_DIR / "sample_neuron.swc"
 
 
 class TestSWCToGLB:
-    """SWC file → swc_to_microjson → to_glb → validate."""
+    """SWC file -> swc_to_tin -> to_glb -> validate."""
 
     def test_swc_to_glb_pipeline(self, tmp_path):
-        feat = swc_to_microjson(str(SWC_FILE))
-        assert isinstance(feat.geometry, NeuronMorphology)
+        feat = swc_to_tin(str(SWC_FILE))
+        assert feat.geometry.type == "TIN"
 
         glb_bytes = to_glb(feat)
         assert glb_bytes[:4] == b"glTF"
@@ -36,7 +34,7 @@ class TestSWCToGLB:
         assert version == 2
 
     def test_swc_to_glb_roundtrip(self, tmp_path):
-        feat = swc_to_microjson(str(SWC_FILE))
+        feat = swc_to_tin(str(SWC_FILE))
         out = tmp_path / "neuron.glb"
         to_glb(feat, output_path=out)
 
@@ -46,7 +44,7 @@ class TestSWCToGLB:
         assert loaded.asset.generator == "microjson-gltf"
 
     def test_swc_to_gltf_roundtrip(self, tmp_path):
-        feat = swc_to_microjson(str(SWC_FILE))
+        feat = swc_to_tin(str(SWC_FILE))
         out = tmp_path / "neuron.gltf"
         to_gltf(feat, output_path=out)
 
@@ -54,7 +52,7 @@ class TestSWCToGLB:
         assert len(loaded.meshes) > 0
 
     def test_swc_collection_to_glb(self, tmp_path):
-        feat = swc_to_microjson(str(SWC_FILE))
+        feat = swc_to_tin(str(SWC_FILE))
         collection = MicroFeatureCollection(
             type="FeatureCollection",
             features=[feat],
@@ -75,13 +73,6 @@ class TestMixedGeometryCollection:
     def test_mixed_collection(self, tmp_path):
         from geojson_pydantic import LineString, Point, Polygon
 
-        neuron = NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1),
-                SWCSample(id=2, type=3, x=10, y=0, z=0, r=2, parent=1),
-            ],
-        )
         point = Point(type="Point", coordinates=[1.0, 2.0, 3.0])
         line = LineString(type="LineString", coordinates=[[0, 0, 0], [5, 5, 5]])
         poly = Polygon(
@@ -94,7 +85,6 @@ class TestMixedGeometryCollection:
         )
 
         features = [
-            MicroFeature(type="Feature", geometry=neuron, properties={"kind": "neuron"}),
             MicroFeature(type="Feature", geometry=point, properties={"kind": "point"}),
             MicroFeature(type="Feature", geometry=line, properties={"kind": "line"}),
             MicroFeature(type="Feature", geometry=poly, properties={"kind": "polygon"}),
@@ -109,9 +99,9 @@ class TestMixedGeometryCollection:
         glb = to_glb(collection, output_path=out)
 
         loaded = GLTF2.load(str(out))
-        # Neuron → 2 meshes (soma + dendrite), rest → 1 each = 6 total
-        assert len(loaded.meshes) == 6
-        assert len(loaded.nodes) == 6
+        # point(1) + line(1) + polygon(1) + tin(1) = 4 meshes
+        assert len(loaded.meshes) == 4
+        assert len(loaded.nodes) == 4
 
 
 class TestSliceStackToGLB:

@@ -10,8 +10,6 @@ from microjson.transforms import (
     physical_to_voxel,
 )
 from microjson.model import (
-    NeuronMorphology,
-    SWCSample,
     TIN,
     PolyhedralSurface,
     Slice,
@@ -164,39 +162,6 @@ class TestApplyTransform3D:
             ],
         )
 
-    def test_translate_neuron(self):
-        neuron = NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1),
-                SWCSample(id=2, type=3, x=10, y=20, z=30, r=2, parent=1),
-            ],
-        )
-        result = apply_transform(neuron, self._translation(100, 200, 300))
-        assert isinstance(result, NeuronMorphology)
-        assert result.tree[0].x == pytest.approx(100.0)
-        assert result.tree[0].y == pytest.approx(200.0)
-        assert result.tree[0].z == pytest.approx(300.0)
-        assert result.tree[1].x == pytest.approx(110.0)
-        assert result.tree[1].y == pytest.approx(220.0)
-        assert result.tree[1].z == pytest.approx(330.0)
-
-    def test_neuron_preserves_metadata(self):
-        neuron = NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5.5, parent=-1),
-                SWCSample(id=2, type=3, x=10, y=0, z=0, r=2.1, parent=1),
-            ],
-        )
-        result = apply_transform(neuron, self._translation())
-        assert result.tree[0].id == 1
-        assert result.tree[0].type == 1
-        assert result.tree[0].r == 5.5
-        assert result.tree[0].parent == -1
-        assert result.tree[1].id == 2
-        assert result.tree[1].r == 2.1
-
     def test_translate_tin(self):
         tin = TIN(
             type="TIN",
@@ -265,40 +230,6 @@ class TestApplyTransform3D:
         assert result.units == "um"
         assert result.interpolation == "linear"
 
-    def test_neuron_identity_roundtrip(self):
-        """Identity transform should leave coordinates unchanged."""
-        neuron = NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=1.5, y=2.5, z=3.5, r=1.0, parent=-1),
-            ],
-        )
-        identity = AffineTransform(
-            type="affine",
-            matrix=[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],
-        )
-        result = apply_transform(neuron, identity)
-        assert result.tree[0].x == pytest.approx(1.5)
-        assert result.tree[0].y == pytest.approx(2.5)
-        assert result.tree[0].z == pytest.approx(3.5)
-
-    def test_scale_neuron(self):
-        """Non-translation affine (scale) should work on neurons."""
-        neuron = NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=10, y=20, z=30, r=5, parent=-1),
-            ],
-        )
-        scale = AffineTransform(
-            type="affine",
-            matrix=[[2,0,0,0],[0,3,0,0],[0,0,4,0],[0,0,0,1]],
-        )
-        result = apply_transform(neuron, scale)
-        assert result.tree[0].x == pytest.approx(20.0)
-        assert result.tree[0].y == pytest.approx(60.0)
-        assert result.tree[0].z == pytest.approx(120.0)
-
 
 class TestTranslateGeometry:
     """Tests for translate_geometry() convenience function."""
@@ -310,17 +241,17 @@ class TestTranslateGeometry:
         assert result.coordinates[1] == pytest.approx(22.0)
         assert result.coordinates[2] == pytest.approx(33.0)
 
-    def test_translate_neuron(self):
-        neuron = NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1),
+    def test_translate_tin(self):
+        tin = TIN(
+            type="TIN",
+            coordinates=[
+                [[(0, 0, 0), (1, 0, 0), (0.5, 1, 0), (0, 0, 0)]],
             ],
         )
-        result = translate_geometry(neuron, 100, 200, 300)
-        assert result.tree[0].x == pytest.approx(100.0)
-        assert result.tree[0].y == pytest.approx(200.0)
-        assert result.tree[0].z == pytest.approx(300.0)
+        result = translate_geometry(tin, 100, 200, 300)
+        assert result.coordinates[0][0][0][0] == pytest.approx(100.0)
+        assert result.coordinates[0][0][0][1] == pytest.approx(200.0)
+        assert result.coordinates[0][0][0][2] == pytest.approx(300.0)
 
     def test_translate_zero_is_identity(self):
         p = Point(type="Point", coordinates=(5.0, 6.0, 7.0))

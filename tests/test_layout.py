@@ -6,11 +6,9 @@ from geojson_pydantic import Point, Polygon
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
     PolyhedralSurface,
     Slice,
     SliceStack,
-    SWCSample,
     TIN,
 )
 from microjson.layout import (
@@ -44,17 +42,6 @@ class TestGeometryBounds:
         assert b[3] == 10.0  # xmax
         assert b[4] == 5.0   # ymax
         assert b[5] == 0.0   # zmax (default)
-
-    def test_neuron_morphology(self):
-        neuron = NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=0, y=10, z=20, r=5, parent=-1),
-                SWCSample(id=2, type=3, x=100, y=50, z=30, r=2, parent=1),
-            ],
-        )
-        b = geometry_bounds(neuron)
-        assert b == (0, 10, 20, 100, 50, 30)
 
     def test_tin(self):
         tin = TIN(
@@ -93,33 +80,44 @@ class TestGeometryBounds:
 
 
 # ---------------------------------------------------------------------------
+# Helper: TIN feature factory (replaces NeuronMorphology-based helper)
+# ---------------------------------------------------------------------------
+
+def _tin_at(x_start=0.0, x_end=100.0):
+    """Create a TIN geometry spanning from x_start to x_end."""
+    return TIN(
+        type="TIN",
+        coordinates=[
+            [[(x_start, 0, 0), (x_end, 0, 0), ((x_start + x_end) / 2, 10, 5), (x_start, 0, 0)]],
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Row layout
 # ---------------------------------------------------------------------------
 
 class TestRowLayout:
-    def _neuron_at(self, x_start=0.0, x_end=100.0):
-        return NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=x_start, y=0, z=0, r=5, parent=-1),
-                SWCSample(id=2, type=3, x=x_end, y=0, z=0, r=2, parent=1),
-            ],
-        )
-
-    def _features(self, *neurons):
+    def _features(self, *tins):
         return [
-            MicroFeature(type="Feature", geometry=n, properties=None)
-            for n in neurons
+            MicroFeature(type="Feature", geometry=t, properties=None)
+            for t in tins
         ]
 
     def test_single_feature_no_offset(self):
-        feats = self._features(self._neuron_at())
+        feats = self._features(_tin_at())
         offsets = compute_collection_offsets(feats)
         assert offsets == [(0.0, 0.0, 0.0)]
 
-    def test_two_features_auto_spacing(self):
-        feats = self._features(self._neuron_at(0, 100), self._neuron_at(0, 80))
+    def test_default_no_layout(self):
+        """Default (spacing=None) keeps coordinates as-is."""
+        feats = self._features(_tin_at(0, 100), _tin_at(0, 80))
         offsets = compute_collection_offsets(feats)
+        assert offsets == [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)]
+
+    def test_two_features_auto_spacing(self):
+        feats = self._features(_tin_at(0, 100), _tin_at(0, 80))
+        offsets = compute_collection_offsets(feats, spacing=0.0)
         assert offsets[0] == (0.0, 0.0, 0.0)
         # Second feature should be shifted right
         assert offsets[1][0] > 100.0  # past first feature's xmax
@@ -127,7 +125,7 @@ class TestRowLayout:
         assert offsets[1][2] == 0.0
 
     def test_fixed_spacing(self):
-        feats = self._features(self._neuron_at(0, 100), self._neuron_at(0, 80))
+        feats = self._features(_tin_at(0, 100), _tin_at(0, 80))
         offsets = compute_collection_offsets(feats, spacing=50.0)
         # Second feature xmin (0) should land at first xmax (100) + gap (50) = 150
         assert abs(offsets[1][0] - 150.0) < 1e-6
@@ -142,20 +140,14 @@ class TestRowLayout:
 # ---------------------------------------------------------------------------
 
 class TestGridLayout:
-    def _neuron(self, width=100.0):
-        return NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1),
-                SWCSample(id=2, type=3, x=width, y=0, z=0, r=2, parent=1),
-            ],
-        )
+    def _tin(self, width=100.0):
+        return _tin_at(0.0, width)
 
     def _features(self, n, width=100.0):
         return [
             MicroFeature(
                 type="Feature",
-                geometry=self._neuron(width),
+                geometry=self._tin(width),
                 properties=None,
             )
             for _ in range(n)
@@ -215,80 +207,70 @@ class TestGridLayout:
 # ---------------------------------------------------------------------------
 
 class TestApplyLayout:
-    def _neuron_at(self, x_start=0.0, x_end=100.0):
-        return NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=x_start, y=0, z=0, r=5, parent=-1),
-                SWCSample(id=2, type=3, x=x_end, y=0, z=0, r=2, parent=1),
-            ],
-        )
-
     def test_single_feature_unchanged(self):
         feat = MicroFeature(
-            type="Feature", geometry=self._neuron_at(), properties=None,
+            type="Feature", geometry=_tin_at(), properties=None,
         )
         coll = MicroFeatureCollection(
             type="FeatureCollection", features=[feat],
         )
         result = apply_layout(coll)
-        # Single feature — no translation
-        assert result.features[0].geometry.tree[0].x == 0.0
+        # Single feature -- no translation
+        assert result.features[0].geometry.coordinates[0][0][0][0] == 0.0
 
     def test_two_features_coordinates_translated(self):
         coll = MicroFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(type="Feature", geometry=self._neuron_at(0, 100), properties=None),
-                MicroFeature(type="Feature", geometry=self._neuron_at(0, 80), properties=None),
+                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
+                MicroFeature(type="Feature", geometry=_tin_at(0, 80), properties=None),
             ],
         )
         result = apply_layout(coll, spacing=50.0)
         # First feature unchanged
-        assert result.features[0].geometry.tree[0].x == 0.0
-        # Second feature's xmin should be at 150 (100 + 50)
-        assert result.features[1].geometry.tree[0].x == pytest.approx(150.0)
-        assert result.features[1].geometry.tree[1].x == pytest.approx(230.0)  # 80 + 150
+        assert result.features[0].geometry.coordinates[0][0][0][0] == 0.0
+        # Second feature's xmin vertex should be shifted to 150 (100 + 50)
+        assert result.features[1].geometry.coordinates[0][0][0][0] == pytest.approx(150.0)
 
     def test_original_not_modified(self):
         feat = MicroFeature(
-            type="Feature", geometry=self._neuron_at(0, 100), properties=None,
+            type="Feature", geometry=_tin_at(0, 100), properties=None,
         )
         coll = MicroFeatureCollection(
             type="FeatureCollection",
             features=[feat, MicroFeature(
-                type="Feature", geometry=self._neuron_at(0, 80), properties=None,
+                type="Feature", geometry=_tin_at(0, 80), properties=None,
             )],
         )
         result = apply_layout(coll, spacing=50.0)
         # Original should be unchanged
-        assert coll.features[1].geometry.tree[0].x == 0.0
+        assert coll.features[1].geometry.coordinates[0][0][0][0] == 0.0
         # Result should be different
-        assert result.features[1].geometry.tree[0].x != 0.0
+        assert result.features[1].geometry.coordinates[0][0][0][0] != 0.0
 
     def test_grid_layout_coordinates(self):
         """Grid layout modifies coordinates, not just offsets."""
         coll = MicroFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(type="Feature", geometry=self._neuron_at(0, 100), properties=None),
-                MicroFeature(type="Feature", geometry=self._neuron_at(0, 100), properties=None),
-                MicroFeature(type="Feature", geometry=self._neuron_at(0, 100), properties=None),
-                MicroFeature(type="Feature", geometry=self._neuron_at(0, 100), properties=None),
+                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
+                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
+                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
+                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
             ],
         )
         result = apply_layout(coll, spacing=10.0, grid_max_x=2)
         # Feature 0: unchanged
-        assert result.features[0].geometry.tree[0].x == 0.0
+        assert result.features[0].geometry.coordinates[0][0][0][0] == 0.0
         # Feature 2: col 0, row 1 -> x unchanged, y shifted
-        assert abs(result.features[2].geometry.tree[0].x) < 1e-6
-        assert result.features[2].geometry.tree[0].y > 0
+        assert abs(result.features[2].geometry.coordinates[0][0][0][0]) < 1e-6
+        assert result.features[2].geometry.coordinates[0][0][0][1] > 0
 
     def test_null_geometry_feature_preserved(self):
         coll = MicroFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(type="Feature", geometry=self._neuron_at(0, 100), properties=None),
+                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
                 MicroFeature(type="Feature", geometry=None, properties=None),
             ],
         )
@@ -300,8 +282,8 @@ class TestApplyLayout:
         coll = MicroFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(type="Feature", geometry=self._neuron_at(0, 100), properties={"a": 1}),
-                MicroFeature(type="Feature", geometry=self._neuron_at(0, 80), properties={"b": 2}),
+                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties={"a": 1}),
+                MicroFeature(type="Feature", geometry=_tin_at(0, 80), properties={"b": 2}),
             ],
         )
         result = apply_layout(coll, spacing=50.0)

@@ -3,7 +3,14 @@
 import pytest
 from pathlib import Path
 from pydantic import ValidationError
-from microjson.model import SWCSample, NeuronMorphology
+from microjson.swc import (
+    SWCSample,
+    NeuronMorphology,
+    SWC_TYPE_NAMES,
+    _parse_swc,
+    microjson_to_swc,
+    swc_to_feature_collection,
+)
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -102,17 +109,14 @@ class TestSWCConverters:
 
         feature = swc_to_microjson(str(SAMPLE_SWC))
         assert feature.type == "Feature"
-        assert feature.geometry.type == "NeuronMorphology"
-        assert len(feature.geometry.tree) == 8
-        # soma is node 1
-        assert feature.geometry.tree[0].type == 1
-        assert feature.geometry.tree[0].parent == -1
+        # swc_to_microjson now returns TIN geometry
+        assert feature.geometry.type == "TIN"
+        assert len(feature.geometry.coordinates) > 0
 
     def test_microjson_to_swc(self):
-        from microjson.swc import swc_to_microjson, microjson_to_swc
-
-        feature = swc_to_microjson(str(SAMPLE_SWC))
-        swc_text = microjson_to_swc(feature)
+        """microjson_to_swc accepts a NeuronMorphology directly."""
+        morphology = _parse_swc(str(SAMPLE_SWC))
+        swc_text = microjson_to_swc(morphology)
         lines = [l for l in swc_text.strip().split("\n") if not l.startswith("#")]
         assert len(lines) == 8
         # first data line: id=1, type=1, parent=-1
@@ -122,10 +126,9 @@ class TestSWCConverters:
         assert parts[6] == "-1"
 
     def test_swc_roundtrip(self):
-        from microjson.swc import swc_to_microjson, microjson_to_swc
-
-        feature = swc_to_microjson(str(SAMPLE_SWC))
-        swc_text = microjson_to_swc(feature)
+        """Parse SWC -> NeuronMorphology -> SWC text."""
+        morphology = _parse_swc(str(SAMPLE_SWC))
+        swc_text = microjson_to_swc(morphology)
         # Parse the generated SWC text back
         lines = [l for l in swc_text.strip().split("\n") if not l.startswith("#")]
         assert len(lines) == 8
@@ -144,3 +147,130 @@ class TestSWCConverters:
         for line in mls.coordinates:
             assert len(line) == 2
             assert len(line[0]) == 3  # 3D coordinates
+
+
+# ---------------------------------------------------------------------------
+# swc_to_tin converter tests
+# ---------------------------------------------------------------------------
+
+
+class TestSWCToTIN:
+    def test_swc_to_tin_produces_tin(self):
+        from microjson.swc import swc_to_tin
+
+        feature = swc_to_tin(str(SAMPLE_SWC))
+        assert feature.type == "Feature"
+        assert feature.geometry.type == "TIN"
+
+    def test_swc_to_tin_valid_triangles(self):
+        from microjson.swc import swc_to_tin
+
+        feature = swc_to_tin(str(SAMPLE_SWC))
+        tin = feature.geometry
+        assert len(tin.coordinates) > 0
+        for face in tin.coordinates:
+            # Each face: exactly 1 ring
+            assert len(face) == 1
+            ring = face[0]
+            # Closed triangle: 4 positions (3 vertices + repeated first)
+            assert len(ring) == 4
+            # Ring is closed
+            assert ring[0] == ring[3]
+            # All positions are 3D
+            for pos in ring:
+                assert len(pos) == 3
+
+    def test_swc_to_tin_to_glb(self):
+        """TIN from SWC goes through existing glTF TIN path."""
+        from microjson.swc import swc_to_tin
+        from microjson.gltf.writer import to_glb
+
+        feature = swc_to_tin(str(SAMPLE_SWC))
+        glb_bytes = to_glb(feature)
+        assert len(glb_bytes) > 0
+        # GLB magic number
+        assert glb_bytes[:4] == b"glTF"
+
+    def test_swc_to_tin_smoothing(self):
+        """Higher smooth_subdivisions increases face count."""
+        from microjson.swc import swc_to_tin
+
+        f_no_smooth = swc_to_tin(str(SAMPLE_SWC), smooth_subdivisions=0)
+        f_smooth = swc_to_tin(str(SAMPLE_SWC), smooth_subdivisions=3)
+        assert len(f_smooth.geometry.coordinates) > len(f_no_smooth.geometry.coordinates)
+
+    def test_swc_to_tin_quality(self):
+        """mesh_quality < 1 decreases face count."""
+        from microjson.swc import swc_to_tin
+
+        f_full = swc_to_tin(str(SAMPLE_SWC), smooth_subdivisions=3, mesh_quality=1.0)
+        f_reduced = swc_to_tin(str(SAMPLE_SWC), smooth_subdivisions=3, mesh_quality=0.5)
+        assert len(f_reduced.geometry.coordinates) < len(f_full.geometry.coordinates)
+
+
+# ---------------------------------------------------------------------------
+# swc_to_feature_collection tests
+# ---------------------------------------------------------------------------
+
+
+class TestSWCToFeatureCollection:
+    def test_returns_feature_collection(self):
+        coll = swc_to_feature_collection(str(SAMPLE_SWC))
+        assert coll.type == "FeatureCollection"
+        assert len(coll.features) > 0
+
+    def test_one_feature_per_type(self):
+        """Each SWC type present in the file gets its own Feature."""
+        coll = swc_to_feature_collection(str(SAMPLE_SWC))
+        compartments = [f.properties["compartment"] for f in coll.features]
+        # No duplicates
+        assert len(compartments) == len(set(compartments))
+
+    def test_features_have_compartment_property(self):
+        coll = swc_to_feature_collection(str(SAMPLE_SWC))
+        for feat in coll.features:
+            assert "compartment" in feat.properties
+            assert feat.properties["compartment"] in SWC_TYPE_NAMES.values()
+
+    def test_features_have_tin_geometry(self):
+        coll = swc_to_feature_collection(str(SAMPLE_SWC))
+        for feat in coll.features:
+            assert feat.geometry.type == "TIN"
+            assert len(feat.geometry.coordinates) > 0
+
+    def test_features_have_feature_class(self):
+        coll = swc_to_feature_collection(str(SAMPLE_SWC))
+        for feat in coll.features:
+            assert feat.featureClass == feat.properties["compartment"]
+
+    def test_soma_present(self):
+        """The sample SWC has soma (type 1)."""
+        coll = swc_to_feature_collection(str(SAMPLE_SWC))
+        compartments = {f.properties["compartment"] for f in coll.features}
+        assert "soma" in compartments
+
+    def test_collection_has_neuron_name(self):
+        """Collection properties include the neuron name from filename."""
+        coll = swc_to_feature_collection(str(SAMPLE_SWC))
+        assert coll.properties is not None
+        assert coll.properties["name"] == "sample_neuron"
+
+    def test_neuromorpho_name_strips_cng(self):
+        """NeuroMorpho .CNG.swc suffix is stripped from the name."""
+        from microjson.swc import _neuron_name_from_path
+        assert _neuron_name_from_path("swcs/cnic_041.CNG.swc") == "cnic_041"
+        assert _neuron_name_from_path("foo/bar.swc") == "bar"
+
+    def test_explicit_name(self):
+        """Explicit name overrides filename derivation."""
+        coll = swc_to_feature_collection(str(SAMPLE_SWC), name="my_neuron")
+        assert coll.properties["name"] == "my_neuron"
+
+    def test_to_glb_roundtrip(self):
+        """Feature collection can be exported to GLB."""
+        from microjson.gltf.writer import to_glb
+
+        coll = swc_to_feature_collection(str(SAMPLE_SWC))
+        glb_bytes = to_glb(coll)
+        assert len(glb_bytes) > 0
+        assert glb_bytes[:4] == b"glTF"

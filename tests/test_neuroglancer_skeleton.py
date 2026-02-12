@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from microjson.model import NeuronMorphology, SWCSample
+from microjson.swc import NeuronMorphology, SWCSample
 from microjson.transforms import AffineTransform
 from microjson.neuroglancer.skeleton_writer import (
     affine_to_ng_transform,
@@ -22,7 +22,7 @@ from microjson.neuroglancer.skeleton_writer import (
 
 @pytest.fixture
 def simple_neuron():
-    """A 3-node neuron: root (soma) → child1 (axon) → child2 (axon)."""
+    """A 3-node neuron: root (soma) -> child1 (axon) -> child2 (axon)."""
     return NeuronMorphology(
         type="NeuronMorphology",
         tree=[
@@ -66,7 +66,7 @@ class TestNeuronToSkeletonBinary:
         data = neuron_to_skeleton_binary(simple_neuron)
         num_verts, num_edges = struct.unpack_from("<II", data, 0)
         assert num_verts == 3
-        assert num_edges == 2  # edges: 1→2, 2→3
+        assert num_edges == 2  # edges: 1->2, 2->3
 
     def test_vertex_positions(self, simple_neuron):
         data = neuron_to_skeleton_binary(simple_neuron)
@@ -78,8 +78,8 @@ class TestNeuronToSkeletonBinary:
         data = neuron_to_skeleton_binary(simple_neuron)
         offset = 8 + 3 * 4 * 3  # header + 9 floats
         edges = struct.unpack_from("<4I", data, offset)
-        # Edge 1→2: parent_idx=0, child_idx=1
-        # Edge 2→3: parent_idx=1, child_idx=2
+        # Edge 1->2: parent_idx=0, child_idx=1
+        # Edge 2->3: parent_idx=1, child_idx=2
         assert edges == (0, 1, 1, 2)
 
     def test_radius_attribute(self, simple_neuron):
@@ -123,7 +123,7 @@ class TestAffineToNgTransform:
     def test_identity(self, identity_transform):
         result = affine_to_ng_transform(identity_transform)
         assert len(result) == 12
-        # Row-major 3×4: each row = [Rx, Ry, Rz, Tx]
+        # Row-major 3x4: each row = [Rx, Ry, Rz, Tx]
         expected = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]
         assert result == expected
 

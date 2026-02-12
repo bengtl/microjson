@@ -5,8 +5,6 @@ from .model import (  # noqa: F401
     TIN,
     Slice,
     SliceStack,
-    SWCSample,
-    NeuronMorphology,
 )
 from .tilemodel import TileJSON  # noqa: F401
 from .transforms import (  # noqa: F401
@@ -21,7 +19,6 @@ from .layout import geometry_bounds, apply_layout  # noqa: F401
 from .microjson2vt.microjson2vt import microjson2vt  # noqa: F401
 from .neuroglancer import (  # noqa: F401
     to_neuroglancer,
-    write_skeleton,
     write_annotations,
 )
 from .gltf import to_gltf, to_glb, GltfConfig  # noqa: F401

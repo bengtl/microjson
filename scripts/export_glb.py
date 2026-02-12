@@ -9,6 +9,7 @@ Options:
     --grid X,Y,Z    Grid layout, e.g. --grid 5,4 or --grid 5,4,2
     --spacing N     Gap between features in source units (default: 0 = auto 20%)
     --draco         Enable Draco mesh compression (requires DracoPy)
+    --color         Color by SWC compartment type (soma, axon, dendrites)
 
 Examples:
     # All SWC files in swcs/ (single row)
@@ -29,9 +30,11 @@ Then drag the .glb file into https://gltf-viewer.donmccurdy.com/
 import sys
 from pathlib import Path
 
-from microjson.model import MicroFeatureCollection
-from microjson.swc import swc_to_microjson
+from microjson.model import MicroFeature, MicroFeatureCollection
+from microjson.swc import swc_to_microjson, swc_to_feature_collection
 from microjson.gltf import to_glb, GltfConfig
+from microjson.layout import compute_collection_offsets
+from microjson.transforms import translate_geometry
 
 DEFAULT_SWC_DIR = "swcs"
 DEFAULT_OUT = "neuron.glb"
@@ -58,6 +61,9 @@ def main():
     draco = "--draco" in args
     if draco:
         args.remove("--draco")
+    color = "--color" in args
+    if color:
+        args.remove("--color")
 
     # Parse grid spec
     grid_x = grid_y = grid_z = None
@@ -84,47 +90,83 @@ def main():
             print(f"Error: SWC file not found: {p}")
             sys.exit(1)
 
-    RED = (1.0, 0.0, 0.0, 1.0)
-    GREEN = (0.0, 1.0, 0.0, 1.0)
-    MAGENTA = (1.0, 0.0, 1.0, 1.0)
-    GREY = (0.5, 0.5, 0.5, 1.0)
+    # SWC compartment color map
+    swc_color_map = {
+        "soma": (1.0, 0.0, 0.0, 1.0),
+        "axon": (0.5, 0.5, 0.5, 1.0),
+        "basal_dendrite": (0.0, 1.0, 0.0, 1.0),
+        "apical_dendrite": (1.0, 0.0, 1.0, 1.0),
+    }
 
-    config = GltfConfig(
-        swc_type_colors={
-            1: RED,
-            2: GREY,
-            3: GREEN,
-            4: MAGENTA,
-        },
-        color_by_type=True,
-        smooth_factor=10,
-        mesh_quality=0.3,
-        grid_max_x=grid_x,
-        grid_max_y=grid_y,
-        grid_max_z=grid_z,
-        feature_spacing=feature_spacing,
-        draco=draco,
-    )
+    if color:
+        # --- Color mode: lay out whole neurons, then split into compartments ---
+        # 1. Build one monochrome feature per SWC (for layout calculation)
+        mono_features = []
+        for swc_path in swc_paths:
+            mono_features.append(
+                swc_to_microjson(str(swc_path), smooth_subdivisions=10, mesh_quality=0.3)
+            )
 
-    features = []
-    for swc_path in swc_paths:
-        feat = swc_to_microjson(str(swc_path))
-        if feat.properties is None:
-            feat.properties = {}
-        feat.properties["source"] = swc_path.name
-        features.append(feat)
+        # 2. Compute per-neuron layout offsets
+        offsets = compute_collection_offsets(
+            mono_features,
+            spacing=feature_spacing,
+            grid_max_x=grid_x,
+            grid_max_y=grid_y,
+            grid_max_z=grid_z,
+        )
 
-    print(f"Loaded {len(features)} SWC files")
+        # 3. Generate colored compartments and translate by neuron offset
+        all_features: list[MicroFeature] = []
+        for swc_path, (dx, dy, dz) in zip(swc_paths, offsets):
+            coll = swc_to_feature_collection(
+                str(swc_path), smooth_subdivisions=10, mesh_quality=0.3,
+            )
+            for feat in coll.features:
+                if abs(dx) > 1e-12 or abs(dy) > 1e-12 or abs(dz) > 1e-12:
+                    new_geom = translate_geometry(feat.geometry, dx, dy, dz)
+                    feat = feat.model_copy(update={"geometry": new_geom})
+                if feat.properties is None:
+                    feat.properties = {}
+                feat.properties["source"] = swc_path.name
+                all_features.append(feat)
 
-    if len(features) == 1:
+        # 4. Export without layout (default feature_spacing=None = no layout)
+        config = GltfConfig(
+            draco=draco,
+            color_by="compartment",
+            color_map=swc_color_map,
+        )
+    else:
+        # --- Standard mode: one feature per SWC, normal layout ---
+        config = GltfConfig(
+            grid_max_x=grid_x,
+            grid_max_y=grid_y,
+            grid_max_z=grid_z,
+            feature_spacing=feature_spacing,
+            draco=draco,
+        )
+        all_features = []
+        for swc_path in swc_paths:
+            feat = swc_to_microjson(
+                str(swc_path), smooth_subdivisions=10, mesh_quality=0.3,
+            )
+            if feat.properties is None:
+                feat.properties = {}
+            feat.properties["source"] = swc_path.name
+            all_features.append(feat)
+
+    print(f"Loaded {len(swc_paths)} SWC files ({len(all_features)} features)")
+
+    if len(all_features) == 1:
         data = to_glb(
-            features[0], config=config, output_path=out_path,
+            all_features[0], config=config, output_path=out_path,
         )
     else:
         coll = MicroFeatureCollection(
             type="FeatureCollection",
-            features=features,
-            properties={"neuron_count": len(features)},
+            features=all_features,
+            properties={"neuron_count": len(swc_paths)},
         )
         data = to_glb(coll, config=config, output_path=out_path)
 
@@ -138,9 +180,10 @@ def main():
             dims.append(str(grid_z))
         grid_info = f"  grid={'x'.join(dims)}"
 
+    color_info = "  color=compartment" if color else ""
     print(
         f"Wrote {out_path} ({mb:.1f} MB)"
-        f" — {len(features)} neuron(s){grid_info}"
+        f" — {len(swc_paths)} neuron(s), {len(all_features)} feature(s){grid_info}{color_info}"
     )
     print(
         "Open https://gltf-viewer.donmccurdy.com/"

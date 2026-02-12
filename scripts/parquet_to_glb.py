@@ -8,13 +8,15 @@ Options:
     -o OUTPUT           Output GLB path (default: <input_stem>.glb)
     --no-draco          Disable Draco compression
     --grid X,Y,Z        Grid layout, e.g. --grid 5,4 or --grid 5,4,2
-    --spacing N         Gap between features in source units (default: 0 = auto)
-    --smooth N          Catmull-Rom subdivisions per segment (default: 10)
-    --quality N         Mesh quality 0.0–1.0 (default: 0.3)
+    --spacing N         Gap between features in source units (default: none)
+    --color-by PROP     Color features by a property (e.g. --color-by compartment)
 
 Examples:
     # Basic: read parquet, write Draco GLB
     .venv/bin/python scripts/parquet_to_glb.py neurons.parquet
+
+    # Color by compartment property (e.g. SWC neuron compartments)
+    .venv/bin/python scripts/parquet_to_glb.py neurons.parquet --color-by compartment
 
     # Custom output and grid layout
     .venv/bin/python scripts/parquet_to_glb.py neurons.parquet -o grid.glb --grid 5,4
@@ -61,8 +63,7 @@ def main() -> None:
     out_path_str = _pop_flag(args, "-o") or _pop_flag(args, "--output")
     grid_str = _pop_flag(args, "--grid")
     spacing_str = _pop_flag(args, "--spacing")
-    smooth_str = _pop_flag(args, "--smooth")
-    quality_str = _pop_flag(args, "--quality")
+    color_by = _pop_flag(args, "--color-by")
     no_draco = _pop_bool(args, "--no-draco")
 
     if not args:
@@ -97,6 +98,51 @@ def main() -> None:
             geom_types.add(type(f.geometry).__name__)
     print(f"  Geometry types: {', '.join(sorted(geom_types)) or 'none'}")
 
+    # --- Build color map if --color-by is set ---
+    color_map = None
+    if color_by:
+        # Known domain: SWC compartments
+        _SWC_COLORS = {
+            "soma": (1.0, 0.0, 0.0, 1.0),
+            "axon": (0.5, 0.5, 0.5, 1.0),
+            "basal_dendrite": (0.0, 1.0, 0.0, 1.0),
+            "apical_dendrite": (1.0, 0.0, 1.0, 1.0),
+        }
+        # Auto-palette for unknown property values
+        _PALETTE = [
+            (0.90, 0.30, 0.30, 1.0),
+            (0.30, 0.70, 0.90, 1.0),
+            (0.30, 0.90, 0.40, 1.0),
+            (0.95, 0.70, 0.20, 1.0),
+            (0.70, 0.40, 0.90, 1.0),
+            (0.90, 0.50, 0.80, 1.0),
+            (0.40, 0.85, 0.85, 1.0),
+            (0.85, 0.85, 0.35, 1.0),
+        ]
+
+        # Scan features for unique values
+        unique_vals: list[str] = []
+        for f in fc.features:
+            if f.properties:
+                v = f.properties.get(color_by)
+                if v is not None:
+                    sv = str(v)
+                    if sv not in unique_vals:
+                        unique_vals.append(sv)
+
+        color_map = {}
+        palette_idx = 0
+        for val in sorted(unique_vals):
+            if val in _SWC_COLORS:
+                color_map[val] = _SWC_COLORS[val]
+            else:
+                color_map[val] = _PALETTE[palette_idx % len(_PALETTE)]
+                palette_idx += 1
+
+        print(f"  Color by '{color_by}': {len(color_map)} unique value(s)")
+        for val, rgba in color_map.items():
+            print(f"    {val} → rgba{rgba}")
+
     # --- Configure GLB export ---
     draco = not no_draco
     if draco:
@@ -108,12 +154,12 @@ def main() -> None:
 
     config = GltfConfig(
         draco=draco,
-        smooth_factor=int(smooth_str) if smooth_str else 10,
-        mesh_quality=float(quality_str) if quality_str else 0.3,
-        feature_spacing=float(spacing_str) if spacing_str else 0.0,
+        feature_spacing=float(spacing_str) if spacing_str else None,
         grid_max_x=grid_x,
         grid_max_y=grid_y,
         grid_max_z=grid_z,
+        color_by=color_by,
+        color_map=color_map,
     )
 
     # --- Export to GLB ---

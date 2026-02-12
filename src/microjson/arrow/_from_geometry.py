@@ -27,16 +27,37 @@ from geojson_pydantic import (
 )
 
 from ..model import (
-    NeuronMorphology,
     Slice,
     SliceStack,
-    SWCSample,
+    TIN,
 )
 
 
 def _pos(coord: tuple) -> tuple:
     """Convert a Shapely coordinate tuple to a GeoJSON position."""
     return tuple(float(c) for c in coord)
+
+
+def _is_tin(geom: ShapelyMultiPolygon) -> bool:
+    """Check if a MultiPolygon is a TIN (all polygons are 3D triangles)."""
+    if not geom.has_z:
+        return False
+    for poly in geom.geoms:
+        if len(poly.interiors) != 0:
+            return False
+        coords = list(poly.exterior.coords)
+        if len(coords) != 4:  # closed triangle = 4 coords
+            return False
+    return True
+
+
+def _multipolygon_to_tin(geom: ShapelyMultiPolygon) -> TIN:
+    """Convert a triangle-only 3D MultiPolygon to a TIN."""
+    faces = []
+    for poly in geom.geoms:
+        ring = [_pos(c) for c in poly.exterior.coords]
+        faces.append([ring])
+    return TIN(type="TIN", coordinates=faces)
 
 
 def _ring_coords(ring) -> list[tuple]:
@@ -82,6 +103,8 @@ def shapely_to_microjson(geom: Any) -> Any:
         return Polygon(type="Polygon", coordinates=rings)
 
     if isinstance(geom, ShapelyMultiPolygon):
+        if _is_tin(geom):
+            return _multipolygon_to_tin(geom)
         polys = []
         for poly in geom.geoms:
             rings = [_ring_coords(poly.exterior)]
@@ -95,12 +118,6 @@ def shapely_to_microjson(geom: Any) -> Any:
         return GeometryCollection(type="GeometryCollection", geometries=parts)
 
     raise TypeError(f"Unsupported Shapely geometry type: {type(geom)}")
-
-
-def neuron_from_tree_json(tree_json: str) -> NeuronMorphology:
-    """Reconstruct a NeuronMorphology from its JSON-serialized tree."""
-    samples = [SWCSample(**s) for s in json.loads(tree_json)]
-    return NeuronMorphology(type="NeuronMorphology", tree=samples)
 
 
 def slicestack_from_rows(

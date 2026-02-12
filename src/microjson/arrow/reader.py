@@ -11,11 +11,11 @@ import pyarrow.parquet as pq
 import shapely
 
 from ..model import MicroFeature, MicroFeatureCollection
-from ._from_geometry import neuron_from_tree_json, shapely_to_microjson, slicestack_from_rows
+from ._from_geometry import shapely_to_microjson, slicestack_from_rows
 
 
 # Columns with special meaning — not copied to feature.properties
-_RESERVED_COLUMNS = {"id", "featureClass", "geometry", "_neuron_tree",
+_RESERVED_COLUMNS = {"id", "featureClass", "geometry",
                       "_slice_z", "_slice_properties"}
 
 
@@ -35,13 +35,7 @@ def _geometry_from_row(row: dict[str, Any], geom_col: str = "geometry") -> Any:
 def _feature_from_row(row: dict[str, Any], geom_col: str = "geometry") -> MicroFeature:
     """Build a MicroFeature from a plain row (no SliceStack grouping)."""
     shapely_geom = _geometry_from_row(row, geom_col)
-
-    # NeuronMorphology: prefer _neuron_tree over WKB geometry
-    tree_json = row.get("_neuron_tree")
-    if tree_json is not None:
-        geometry = neuron_from_tree_json(tree_json)
-    else:
-        geometry = shapely_to_microjson(shapely_geom)
+    geometry = shapely_to_microjson(shapely_geom)
 
     # Collect user properties (everything not reserved)
     props: dict[str, Any] = {}
@@ -92,8 +86,7 @@ def from_arrow_table(
     """Convert a pyarrow.Table (with WKB geometry) to a MicroFeatureCollection.
 
     Rows with non-null ``_slice_z`` are re-grouped by ``id`` into
-    SliceStack features.  Rows with ``_neuron_tree`` are reconstructed
-    as NeuronMorphology.
+    SliceStack features.
 
     Args:
         table: A pyarrow.Table, typically read from a GeoParquet file.

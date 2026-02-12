@@ -2,7 +2,7 @@
 """Export MicroJSON data to GeoParquet for ML/data-science pipelines.
 
 Demonstrates three scenarios:
-  1. SWC neuron files → GeoParquet (skeleton geometry + tree metadata)
+  1. SWC neuron files → GeoParquet (TIN geometry)
   2. Mixed 2D/3D geometry → GeoParquet
   3. SliceStack → exploded GeoParquet (one row per slice)
 
@@ -33,13 +33,11 @@ from microjson.arrow import ArrowConfig, to_arrow_table, to_geoparquet
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
     Slice,
     SliceStack,
-    SWCSample,
 )
 
-from geojson_pydantic import MultiPolygon, Point, Polygon
+from geojson_pydantic import MultiLineString, MultiPolygon, Point, Polygon
 
 DEFAULT_SWC_DIR = "swcs"
 DEFAULT_OUT = "output.parquet"
@@ -80,20 +78,19 @@ def _demo_collection():
         featureClass="region",
     )
 
-    # A small neuron morphology
+    # A simple 3D neuron skeleton (MultiLineString — each edge is a segment)
     neuron_feat = MicroFeature(
         type="Feature",
         id="neuron_001",
-        geometry=NeuronMorphology(
-            type="NeuronMorphology",
-            tree=[
-                SWCSample(id=1, type=1, x=250, y=250, z=10, r=8.0, parent=-1),
-                SWCSample(id=2, type=2, x=280, y=250, z=12, r=1.5, parent=1),
-                SWCSample(id=3, type=2, x=310, y=260, z=15, r=1.0, parent=2),
-                SWCSample(id=4, type=3, x=250, y=220, z=8, r=2.0, parent=1),
-                SWCSample(id=5, type=3, x=240, y=190, z=5, r=1.5, parent=4),
-                SWCSample(id=6, type=4, x=250, y=280, z=12, r=1.8, parent=1),
-                SWCSample(id=7, type=4, x=260, y=310, z=18, r=1.2, parent=6),
+        geometry=MultiLineString(
+            type="MultiLineString",
+            coordinates=[
+                [[250, 250, 10], [280, 250, 12]],  # soma → axon
+                [[280, 250, 12], [310, 260, 15]],
+                [[250, 250, 10], [250, 220, 8]],    # soma → basal dendrite
+                [[250, 220, 8], [240, 190, 5]],
+                [[250, 250, 10], [250, 280, 12]],   # soma → apical dendrite
+                [[250, 280, 12], [260, 310, 18]],
             ],
         ),
         properties={"species": "mouse", "brain_region": "hippocampus"},
@@ -192,8 +189,8 @@ def main():
         print(f"    python -c \"import geopandas; print(geopandas.read_parquet('{out}'))\"")
         return
 
-    # SWC mode
-    from microjson.swc import swc_to_microjson
+    # SWC mode — one Feature per compartment, with "compartment" property
+    from microjson.swc import swc_to_feature_collection
 
     if args:
         swc_paths = [Path(a) for a in args]
@@ -211,13 +208,14 @@ def main():
 
     features = []
     for swc_path in swc_paths:
-        feat = swc_to_microjson(str(swc_path))
-        if feat.properties is None:
-            feat.properties = {}
-        feat.properties["source_file"] = swc_path.name
-        features.append(feat)
+        neuron_coll = swc_to_feature_collection(str(swc_path))
+        for feat in neuron_coll.features:
+            if feat.properties is None:
+                feat.properties = {}
+            feat.properties["source_file"] = swc_path.name
+            features.append(feat)
 
-    print(f"Loaded {len(features)} SWC file(s)")
+    print(f"Loaded {len(swc_paths)} SWC file(s) → {len(features)} feature(s)")
 
     coll = MicroFeatureCollection(
         type="FeatureCollection",

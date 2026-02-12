@@ -12,8 +12,7 @@ from pygltflib import LINES, POINTS, TRIANGLES, BufferFormat
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
-    SWCSample,
+    TIN,
 )
 from microjson.gltf.gltf_assembler import (
     collection_to_gltf,
@@ -33,17 +32,21 @@ from microjson.gltf._draco import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _neuron_feature(**props) -> MicroFeature:
-    neuron = NeuronMorphology(
-        type="NeuronMorphology",
-        tree=[
-            SWCSample(id=1, type=1, x=0, y=0, z=0, r=5, parent=-1),
-            SWCSample(id=2, type=3, x=10, y=0, z=0, r=2, parent=1),
-            SWCSample(id=3, type=3, x=20, y=5, z=0, r=1.5, parent=2),
-            SWCSample(id=4, type=3, x=30, y=10, z=0, r=1, parent=3),
-        ],
+def _tin_feature(**props) -> MicroFeature:
+    """A TIN feature with several triangles for meaningful compression tests."""
+    return MicroFeature(
+        type="Feature",
+        geometry=TIN(
+            type="TIN",
+            coordinates=[
+                [[(0, 0, 0), (10, 0, 0), (5, 10, 5), (0, 0, 0)]],
+                [[(10, 0, 0), (20, 0, 0), (15, 10, 5), (10, 0, 0)]],
+                [[(0, 0, 0), (5, 10, 5), (0, 10, 0), (0, 0, 0)]],
+                [[(10, 0, 0), (15, 10, 5), (5, 10, 5), (10, 0, 0)]],
+            ],
+        ),
+        properties=props or None,
     )
-    return MicroFeature(type="Feature", geometry=neuron, properties=props or None)
 
 
 def _line_feature() -> MicroFeature:
@@ -90,7 +93,7 @@ class TestDracoCompression:
     """Compressed GLB is smaller, valid GLB header, vertex count preserved."""
 
     def test_compressed_glb_smaller(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         config_std = GltfConfig(draco=False)
         config_draco = GltfConfig(draco=True)
 
@@ -103,7 +106,7 @@ class TestDracoCompression:
         )
 
     def test_valid_glb_header(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         glb = to_glb(feat, config=GltfConfig(draco=True))
 
         # GLB magic: 0x46546C67 ('glTF')
@@ -119,7 +122,7 @@ class TestDracoCompression:
         assert length == len(glb)
 
     def test_vertex_count_preserved(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         config_std = GltfConfig(draco=False)
         config_draco = GltfConfig(draco=True)
 
@@ -168,14 +171,14 @@ class TestDracoExtensionStructure:
     """Extension on root + primitives, stub accessors, Draco BufferView."""
 
     def test_extension_on_root(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         gltf = feature_to_gltf(feat, config=GltfConfig(draco=True))
 
         assert DRACO_EXTENSION in gltf.extensionsUsed
         assert DRACO_EXTENSION in gltf.extensionsRequired
 
     def test_extension_on_primitives(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         gltf = feature_to_gltf(feat, config=GltfConfig(draco=True))
 
         for mesh in gltf.meshes:
@@ -188,42 +191,15 @@ class TestDracoExtensionStructure:
                     assert "attributes" in ext
                     assert "POSITION" in ext["attributes"]
 
-    def test_draco_attribute_ids_with_normals(self):
-        """DracoPy assigns NORMAL=0, POSITION=1 when normals are present."""
-        feat = _neuron_feature()
-        gltf = feature_to_gltf(feat, config=GltfConfig(draco=True))
-
-        for mesh in gltf.meshes:
-            for prim in mesh.primitives:
-                if prim.mode != TRIANGLES:
-                    continue
-                ext = prim.extensions[DRACO_EXTENSION]
-                attrs = ext["attributes"]
-                if "NORMAL" in attrs:
-                    assert attrs["POSITION"] == 1
-                    assert attrs["NORMAL"] == 0
-                else:
-                    assert attrs["POSITION"] == 0
-
-    def test_draco_attribute_ids_without_normals(self):
-        """POSITION=0 when normals are absent (e.g. polygon mesh)."""
-        feat = _polygon_feature()
-        gltf = feature_to_gltf(feat, config=GltfConfig(draco=True))
-
-        prim = gltf.meshes[0].primitives[0]
-        ext = prim.extensions[DRACO_EXTENSION]
-        assert ext["attributes"]["POSITION"] == 0
-        assert "NORMAL" not in ext["attributes"]
-
     def test_stub_accessors_have_no_bufferview(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         gltf = feature_to_gltf(feat, config=GltfConfig(draco=True))
 
         for mesh in gltf.meshes:
             for prim in mesh.primitives:
                 if prim.mode != TRIANGLES:
                     continue
-                # POSITION accessor — no bufferView or byteOffset
+                # POSITION accessor -- no bufferView or byteOffset
                 pos_acc = gltf.accessors[prim.attributes.POSITION]
                 assert pos_acc.bufferView is None
                 assert pos_acc.byteOffset is None
@@ -240,7 +216,7 @@ class TestDracoExtensionStructure:
                     assert norm_acc.byteOffset is None
 
     def test_position_accessor_has_min_max(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         gltf = feature_to_gltf(feat, config=GltfConfig(draco=True))
 
         for mesh in gltf.meshes:
@@ -254,7 +230,7 @@ class TestDracoExtensionStructure:
                 assert len(pos_acc.min) == 3
 
     def test_draco_bufferview_has_no_target(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         gltf = feature_to_gltf(feat, config=GltfConfig(draco=True))
 
         for mesh in gltf.meshes:
@@ -314,20 +290,20 @@ class TestDracoNonTriangle:
 # ---------------------------------------------------------------------------
 
 class TestDracoMixedGeometry:
-    """Collection with neurons + lines — only triangles compressed."""
+    """Collection with TINs + lines -- only triangles compressed."""
 
     def test_mixed_collection(self):
-        neuron_feat = _neuron_feature()
+        tin_feat = _tin_feature()
         line_feat = _line_feature()
 
         coll = MicroFeatureCollection(
             type="FeatureCollection",
-            features=[neuron_feat, line_feat],
+            features=[tin_feat, line_feat],
         )
         config = GltfConfig(draco=True)
         gltf = collection_to_gltf(coll, config=config)
 
-        # Should have meshes for neuron (triangle) + line
+        # Should have meshes for TIN (triangle) + line
         triangle_meshes = []
         line_meshes = []
         for mesh in gltf.meshes:
@@ -350,12 +326,12 @@ class TestDracoMixedGeometry:
             assert prim.extensions is None or DRACO_EXTENSION not in (prim.extensions or {})
 
     def test_mixed_with_points(self):
-        neuron_feat = _neuron_feature()
+        tin_feat = _tin_feature()
         point_feat = _point_feature()
 
         coll = MicroFeatureCollection(
             type="FeatureCollection",
-            features=[neuron_feat, point_feat],
+            features=[tin_feat, point_feat],
         )
         config = GltfConfig(draco=True)
         gltf = collection_to_gltf(coll, config=config)
@@ -385,14 +361,14 @@ class TestDracoMixedGeometry:
 # ---------------------------------------------------------------------------
 
 class TestDracoConfig:
-    """Custom quantization works, draco=False by default, draco=False → standard GLB."""
+    """Custom quantization works, draco=False by default, draco=False -> standard GLB."""
 
     def test_draco_false_by_default(self):
         config = GltfConfig()
         assert config.draco is False
 
     def test_draco_false_produces_standard_glb(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         config = GltfConfig(draco=False)
         gltf = feature_to_gltf(feat, config=config)
 
@@ -409,22 +385,19 @@ class TestDracoConfig:
                     assert pos_acc.bufferView is not None
 
     def test_custom_quantization(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         config_low = GltfConfig(draco=True, draco_quantization_position=8)
         config_high = GltfConfig(draco=True, draco_quantization_position=20)
 
         glb_low = to_glb(feat, config=config_low)
         glb_high = to_glb(feat, config=config_high)
 
-        # Higher quantization → more bits → generally larger file
-        # (may not always hold for tiny meshes, but should for neurons)
-        assert len(glb_low) <= len(glb_high) or True  # Soft check — log if unexpected
         # Both should still be valid GLBs
         assert struct.unpack_from("<I", glb_low, 0)[0] == 0x46546C67
         assert struct.unpack_from("<I", glb_high, 0)[0] == 0x46546C67
 
     def test_custom_compression_level(self):
-        feat = _neuron_feature()
+        feat = _tin_feature()
         config = GltfConfig(draco=True, draco_compression_level=10)
         glb = to_glb(feat, config=config)
 

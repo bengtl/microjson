@@ -15,7 +15,6 @@ from geojson_pydantic import Polygon, MultiPolygon
 from .model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
     SliceStack,
 )
 from .transforms import translate_geometry
@@ -52,7 +51,7 @@ def _collect_xyz_from_coords(
 def geometry_bounds(geom: Any) -> Bounds | None:
     """Return 3-D bounding box as (xmin, ymin, zmin, xmax, ymax, zmax).
 
-    Uses ``.bbox3d()`` for 3D types (NeuronMorphology, TIN,
+    Uses ``.bbox3d()`` for 3D types (TIN,
     PolyhedralSurface, SliceStack) and recursive coordinate extraction
     for GeoJSON types.
 
@@ -203,7 +202,7 @@ def _grid_layout(
 
 def compute_collection_offsets(
     features: list[MicroFeature],
-    spacing: float = 0.0,
+    spacing: float | None = None,
     grid_max_x: int | None = None,
     grid_max_y: int | None = None,
     grid_max_z: int | None = None,
@@ -212,15 +211,13 @@ def compute_collection_offsets(
 
     Returns a list of (dx, dy, dz) offsets in source coordinates.
     The first feature always stays at its original position.
+
+    When *spacing* is ``None`` and no grid parameters are set, all
+    offsets are zero (coordinates are kept as-is).
     """
     n = len(features)
     if n <= 1:
         return [(0.0, 0.0, 0.0)] * n
-
-    bounds = [
-        geometry_bounds(f.geometry) if f.geometry else None
-        for f in features
-    ]
 
     has_grid = (
         grid_max_x is not None
@@ -228,14 +225,25 @@ def compute_collection_offsets(
         or grid_max_z is not None
     )
 
+    # No layout requested — keep coordinates as-is
+    if spacing is None and not has_grid:
+        return [(0.0, 0.0, 0.0)] * n
+
+    effective_spacing = spacing if spacing is not None else 0.0
+
+    bounds = [
+        geometry_bounds(f.geometry) if f.geometry else None
+        for f in features
+    ]
+
     if has_grid:
-        return _grid_layout(bounds, spacing, grid_max_x, grid_max_y, grid_max_z, n)
-    return _row_layout(bounds, spacing)
+        return _grid_layout(bounds, effective_spacing, grid_max_x, grid_max_y, grid_max_z, n)
+    return _row_layout(bounds, effective_spacing)
 
 
 def apply_layout(
     collection: MicroFeatureCollection,
-    spacing: float = 0.0,
+    spacing: float | None = None,
     grid_max_x: int | None = None,
     grid_max_y: int | None = None,
     grid_max_z: int | None = None,

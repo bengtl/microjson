@@ -11,13 +11,10 @@ import shapely
 from ..model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
     SliceStack,
 )
 from ._geometry import (
     geometry_type_name,
-    neuron_to_shapely,
-    neuron_tree_json,
     slice_geometry_to_shapely,
     to_shapely,
     to_wkb,
@@ -110,21 +107,6 @@ def _extract_rows(
                 row["_shapely_geom"] = shapely_geom
             continue
 
-        # NeuronMorphology
-        if isinstance(geom, NeuronMorphology):
-            shapely_geom = neuron_to_shapely(geom)
-            row = {
-                "id": str(feat.id) if feat.id is not None else None,
-                "featureClass": feat.featureClass,
-                gcol: to_wkb(shapely_geom),
-            }
-            if config.include_neuron_tree:
-                row["_neuron_tree"] = neuron_tree_json(geom)
-            row.update(props)
-            rows.append(row)
-            row["_shapely_geom"] = shapely_geom
-            continue
-
         # Standard geometry types
         shapely_geom = to_shapely(geom)
         row = {
@@ -143,7 +125,7 @@ def _extract_rows(
 # Schema construction
 # ---------------------------------------------------------------------------
 
-_RESERVED_KEYS = {"id", "featureClass", "_neuron_tree",
+_RESERVED_KEYS = {"id", "featureClass",
                    "_slice_z", "_slice_properties", "_shapely_geom"}
 
 
@@ -162,7 +144,6 @@ def _build_schema(
     reserved = _RESERVED_KEYS | {gcol}
 
     # Detect special columns needed
-    has_neuron_tree = any("_neuron_tree" in r for r in rows)
     has_slice_z = any("_slice_z" in r for r in rows)
 
     # Collect property keys (preserve insertion order)
@@ -184,8 +165,6 @@ def _build_schema(
         fields.append(pa.field(key, pa_type))
 
     # Add special columns
-    if has_neuron_tree:
-        fields.append(pa.field("_neuron_tree", pa.string()))
     if has_slice_z:
         fields.append(pa.field("_slice_z", pa.float64()))
         fields.append(pa.field("_slice_properties", pa.string()))

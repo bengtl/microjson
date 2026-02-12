@@ -27,10 +27,8 @@ from typing import Optional
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    NeuronMorphology,
-    SWCSample,
 )
-from microjson.swc import swc_to_microjson
+from microjson.swc import NeuronMorphology, SWCSample, _parse_swc, swc_to_microjson
 from microjson.neuroglancer import to_neuroglancer, write_skeleton
 from microjson.neuroglancer.properties_writer import write_segment_properties
 from microjson.neuroglancer.skeleton_writer import build_skeleton_info
@@ -230,9 +228,9 @@ def annotate_neuron(swc_path: str) -> MicroFeatureCollection:
       - Measurement lines between interesting points
       - Path traces from terminals back to soma
     """
-    # Load the neuron
+    # Load the neuron — TIN geometry for the collection, NeuronMorphology for analysis
     neuron_feature = swc_to_microjson(swc_path)
-    morphology = neuron_feature.geometry
+    morphology = _parse_swc(swc_path)
     neuron_feature.properties = {
         "name": Path(swc_path).stem,
         "file": Path(swc_path).name,
@@ -352,26 +350,27 @@ def main() -> None:
 
     # Step 2: Export to Neuroglancer
     output_dir = Path(args.output_dir)
+
+    # Write skeleton directly (to_neuroglancer handles Point/LineString only)
+    morphology = _parse_swc(str(swc_path))
+    skel_dir = output_dir / "skeletons"
+    write_skeleton(skel_dir, segment_id=1, morphology=morphology)
+
+    # Write Point/LineString annotations via orchestrator
     result = to_neuroglancer(collection, output_dir)
 
     print(f"\n  Neuroglancer output:")
+    print(f"    skeletons: {skel_dir}/")
     for key, path in result["paths"].items():
         print(f"    {key}: {path}/")
 
     # Step 3: Build viewer URL with all layers and segments pre-selected
     layers = []
 
-    if "skeletons" in result["paths"]:
-        skel_dir = Path(result["paths"]["skeletons"])
-        source = f"precomputed://http://localhost:{args.port}/skeletons"
-        layer = build_skeleton_layer("neuron_skeleton", source)
-        seg_ids = sorted(
-            f.name for f in skel_dir.iterdir()
-            if f.is_file() and f.name != "info" and not f.name.startswith(".")
-        )
-        if seg_ids:
-            layer["segments"] = seg_ids
-        layers.append(layer)
+    source = f"precomputed://http://localhost:{args.port}/skeletons"
+    layer = build_skeleton_layer("neuron_skeleton", source)
+    layer["segments"] = ["1"]
+    layers.append(layer)
 
     if "point_annotations" in result["paths"]:
         source = f"precomputed://http://localhost:{args.port}/point_annotations"
@@ -382,8 +381,7 @@ def main() -> None:
         layers.append(build_annotation_layer("measurements_and_paths", source))
 
     # Center on the neuron
-    morph_feat = collection.features[0]
-    center = list(morph_feat.geometry.centroid3d())
+    center = list(morphology.centroid3d())
     state = build_viewer_state(layers, position=center)
     url = viewer_state_to_url(state)
 
