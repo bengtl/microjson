@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Export MicroJSON data to GeoParquet for ML/data-science pipelines.
 
-Demonstrates three scenarios:
+Demonstrates two scenarios:
   1. SWC neuron files → GeoParquet (TIN geometry)
   2. Mixed 2D/3D geometry → GeoParquet
-  3. SliceStack → exploded GeoParquet (one row per slice)
 
 Usage:
     # Export SWC files from swcs/ directory
@@ -33,8 +32,7 @@ from microjson.arrow import ArrowConfig, to_arrow_table, to_geoparquet
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
-    Slice,
-    SliceStack,
+    PolyhedralSurface,
 )
 
 from geojson_pydantic import MultiLineString, MultiPolygon, Point, Polygon
@@ -97,52 +95,26 @@ def _demo_collection():
         featureClass="neuron",
     )
 
-    # A slice stack (2.5D contour)
-    stack_feat = MicroFeature(
+    # A 3D polyhedral surface (closed mesh)
+    surface_feat = MicroFeature(
         type="Feature",
-        id="stack_001",
-        geometry=SliceStack(
-            type="SliceStack",
-            slices=[
-                Slice(
-                    z=0.0,
-                    geometry=Polygon(
-                        type="Polygon",
-                        coordinates=[
-                            [(50, 50), (150, 50), (150, 150), (50, 150), (50, 50)]
-                        ],
-                    ),
-                    properties={"stain_intensity": 0.8},
-                ),
-                Slice(
-                    z=5.0,
-                    geometry=Polygon(
-                        type="Polygon",
-                        coordinates=[
-                            [(60, 60), (140, 60), (140, 140), (60, 140), (60, 60)]
-                        ],
-                    ),
-                    properties={"stain_intensity": 0.6},
-                ),
-                Slice(
-                    z=10.0,
-                    geometry=Polygon(
-                        type="Polygon",
-                        coordinates=[
-                            [(70, 70), (130, 70), (130, 130), (70, 130), (70, 70)]
-                        ],
-                    ),
-                    properties={"stain_intensity": 0.3},
-                ),
+        id="surface_001",
+        geometry=PolyhedralSurface(
+            type="PolyhedralSurface",
+            coordinates=[
+                [[(50, 50, 0), (150, 50, 0), (100, 100, 0), (50, 50, 0)]],
+                [[(50, 50, 0), (150, 50, 0), (100, 100, 10), (50, 50, 0)]],
+                [[(150, 50, 0), (100, 100, 0), (100, 100, 10), (150, 50, 0)]],
+                [[(100, 100, 0), (50, 50, 0), (100, 100, 10), (100, 100, 0)]],
             ],
         ),
-        properties={"structure": "soma_contour"},
-        featureClass="contour",
+        properties={"structure": "surface_mesh"},
+        featureClass="surface",
     )
 
     return MicroFeatureCollection(
         type="FeatureCollection",
-        features=[point_feat, region_feat, neuron_feat, stack_feat],
+        features=[point_feat, region_feat, neuron_feat, surface_feat],
     )
 
 

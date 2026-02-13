@@ -17,8 +17,6 @@ from microjson.model import (
     MicroFeatureCollection,
     PolyhedralSurface,
     TIN,
-    Slice,
-    SliceStack,
 )
 
 
@@ -317,145 +315,6 @@ class TestTIN:
 
 
 # ---------------------------------------------------------------------------
-# Step 4: SliceStack geometry type
-# ---------------------------------------------------------------------------
-
-
-class TestSlice:
-    """Tests for the Slice model."""
-
-    def test_create_slice(self):
-        s = Slice(
-            z=0.0,
-            geometry=Polygon(
-                type="Polygon",
-                coordinates=[[(0, 0), (10, 0), (10, 10), (0, 0)]],
-            ),
-        )
-        assert s.z == 0.0
-        assert s.geometry.type == "Polygon"
-
-    def test_slice_with_properties(self):
-        s = Slice(
-            z=1.5,
-            geometry=Polygon(
-                type="Polygon",
-                coordinates=[[(0, 0), (10, 0), (10, 10), (0, 0)]],
-            ),
-            properties={"slice_index": 3, "image_ref": "section_003.tif"},
-        )
-        assert s.properties["slice_index"] == 3
-
-    def test_slice_with_multipolygon(self):
-        s = Slice(
-            z=2.0,
-            geometry=MultiPolygon(
-                type="MultiPolygon",
-                coordinates=[[[(0, 0), (5, 0), (5, 5), (0, 0)]]],
-            ),
-        )
-        assert s.geometry.type == "MultiPolygon"
-
-
-class TestSliceStack:
-    """Tests for the SliceStack 2.5D geometry type."""
-
-    def _make_ring(self):
-        return [(0, 0), (100, 0), (100, 100), (0, 0)]
-
-    def _make_stack(self, z_values=None):
-        if z_values is None:
-            z_values = [0.0, 0.05, 0.10]
-        ring = self._make_ring()
-        slices = [
-            Slice(
-                z=z,
-                geometry=Polygon(type="Polygon", coordinates=[ring]),
-            )
-            for z in z_values
-        ]
-        return SliceStack(type="SliceStack", slices=slices)
-
-    def test_create_basic(self):
-        ss = self._make_stack()
-        assert ss.type == "SliceStack"
-        assert len(ss.slices) == 3
-        assert ss.axis == "z"
-
-    def test_default_axis(self):
-        ss = self._make_stack()
-        assert ss.axis == "z"
-
-    def test_custom_axis(self):
-        ring = self._make_ring()
-        ss = SliceStack(
-            type="SliceStack",
-            slices=[
-                Slice(z=0.0, geometry=Polygon(type="Polygon", coordinates=[ring])),
-            ],
-            axis="x",
-        )
-        assert ss.axis == "x"
-
-    def test_units(self):
-        ss = self._make_stack()
-        assert ss.units is None
-        ring = self._make_ring()
-        ss2 = SliceStack(
-            type="SliceStack",
-            slices=[
-                Slice(z=0.0, geometry=Polygon(type="Polygon", coordinates=[ring])),
-            ],
-            units="micrometers",
-        )
-        assert ss2.units == "micrometers"
-
-    def test_interpolation(self):
-        ring = self._make_ring()
-        ss = SliceStack(
-            type="SliceStack",
-            slices=[
-                Slice(z=0.0, geometry=Polygon(type="Polygon", coordinates=[ring])),
-            ],
-            interpolation="linear",
-        )
-        assert ss.interpolation == "linear"
-
-    def test_unsorted_z_rejected(self):
-        """Slices must be sorted by z value."""
-        with pytest.raises(ValidationError):
-            self._make_stack(z_values=[0.0, 0.10, 0.05])
-
-    def test_duplicate_z_rejected(self):
-        """No duplicate z values allowed."""
-        with pytest.raises(ValidationError):
-            self._make_stack(z_values=[0.0, 0.05, 0.05])
-
-    def test_bbox3d(self):
-        ss = self._make_stack(z_values=[0.0, 0.05, 0.10])
-        bb = ss.bbox3d()
-        # x: 0..100, y: 0..100, z: 0.0..0.10
-        assert bb[0] == 0.0   # minx
-        assert bb[1] == 0.0   # miny
-        assert bb[2] == 0.0   # minz
-        assert bb[3] == 100.0  # maxx
-        assert bb[4] == 100.0  # maxy
-        assert bb[5] == pytest.approx(0.10)  # maxz
-
-    def test_roundtrip_json(self):
-        ss = self._make_stack()
-        data = ss.model_dump()
-        ss2 = SliceStack.model_validate(data)
-        assert ss2.type == "SliceStack"
-        assert len(ss2.slices) == 3
-        assert ss2.slices[0].z == 0.0
-
-    def test_empty_slices_rejected(self):
-        with pytest.raises(ValidationError):
-            SliceStack(type="SliceStack", slices=[])
-
-
-# ---------------------------------------------------------------------------
 # Step 7: Integration -- MicroJSON with 3D geometry types
 # ---------------------------------------------------------------------------
 
@@ -480,33 +339,11 @@ FULL_3D_DOCUMENT = {
         {
             "type": "Feature",
             "geometry": {
-                "type": "SliceStack",
-                "slices": [
-                    {
-                        "z": 100.0,
-                        "geometry": {
-                            "type": "Polygon",
-                            "coordinates": [
-                                [[400, 200], [600, 200], [600, 400],
-                                 [400, 400], [400, 200]]
-                            ],
-                        },
-                        "properties": {"slice_index": 0},
-                    },
-                    {
-                        "z": 100.05,
-                        "geometry": {
-                            "type": "Polygon",
-                            "coordinates": [
-                                [[405, 205], [595, 205], [595, 395],
-                                 [405, 395], [405, 205]]
-                            ],
-                        },
-                        "properties": {"slice_index": 1},
-                    },
+                "type": "PolyhedralSurface",
+                "coordinates": [
+                    [[(0, 0, 0), (10, 0, 0), (5, 10, 0), (0, 0, 0)]],
+                    [[(0, 0, 0), (10, 0, 0), (5, 5, 10), (0, 0, 0)]],
                 ],
-                "axis": "z",
-                "units": "micrometers",
             },
             "properties": {"region_name": "CA1_stratum_pyramidale"},
         },
@@ -516,28 +353,6 @@ FULL_3D_DOCUMENT = {
 
 class TestMicroJSON3DIntegration:
     """Test MicroJSON root model with 3D geometry types."""
-
-    def test_feature_with_slicestack(self):
-        data = {
-            "type": "Feature",
-            "geometry": {
-                "type": "SliceStack",
-                "slices": [
-                    {
-                        "z": 0.0,
-                        "geometry": {
-                            "type": "Polygon",
-                            "coordinates": [
-                                [[0, 0], [10, 0], [10, 10], [0, 0]]
-                            ],
-                        },
-                    },
-                ],
-            },
-            "properties": {},
-        }
-        mj = MicroJSON.model_validate(data)
-        assert mj.root.geometry.type == "SliceStack"
 
     def test_feature_with_polyhedral_surface(self):
         face = [[(0, 0, 0), (10, 0, 0), (5, 10, 0), (0, 0, 0)]]
@@ -567,7 +382,7 @@ class TestMicroJSON3DIntegration:
         mfc = MicroFeatureCollection.model_validate(FULL_3D_DOCUMENT)
         assert len(mfc.features) == 2
         assert mfc.features[0].geometry.type == "TIN"
-        assert mfc.features[1].geometry.type == "SliceStack"
+        assert mfc.features[1].geometry.type == "PolyhedralSurface"
 
         # Round-trip through JSON
         dumped = mfc.model_dump()

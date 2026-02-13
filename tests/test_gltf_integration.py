@@ -10,8 +10,6 @@ from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
     TIN,
-    Slice,
-    SliceStack,
 )
 from microjson.swc import swc_to_tin
 from microjson.gltf import GltfConfig, to_glb, to_gltf
@@ -102,35 +100,6 @@ class TestMixedGeometryCollection:
         # point(1) + line(1) + polygon(1) + tin(1) = 4 meshes
         assert len(loaded.meshes) == 4
         assert len(loaded.nodes) == 4
-
-
-class TestSliceStackToGLB:
-    def test_slice_stack_glb(self, tmp_path):
-        from geojson_pydantic import Polygon as GeoPolygon
-
-        ss = SliceStack(
-            type="SliceStack",
-            slices=[
-                Slice(z=0.0, geometry=GeoPolygon(
-                    type="Polygon",
-                    coordinates=[[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
-                )),
-                Slice(z=5.0, geometry=GeoPolygon(
-                    type="Polygon",
-                    coordinates=[[[1, 1], [9, 1], [9, 9], [1, 9], [1, 1]]],
-                )),
-                Slice(z=10.0, geometry=GeoPolygon(
-                    type="Polygon",
-                    coordinates=[[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]],
-                )),
-            ],
-        )
-        feat = MicroFeature(type="Feature", geometry=ss, properties={"type": "stack"})
-        out = tmp_path / "stack.glb"
-        to_glb(feat, output_path=out)
-
-        loaded = GLTF2.load(str(out))
-        assert len(loaded.meshes) == 1
 
 
 class TestPublicAPIImports:

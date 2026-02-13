@@ -10,8 +10,6 @@ from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
     PolyhedralSurface,
-    Slice,
-    SliceStack,
     TIN,
 )
 from microjson.gltf.gltf_assembler import (
@@ -120,26 +118,6 @@ class TestFeatureToGltf:
         feat = MicroFeature(type="Feature", geometry=ps, properties=None)
         gltf = feature_to_gltf(feat)
 
-        assert len(gltf.meshes) == 1
-
-    def test_slice_stack(self):
-        from geojson_pydantic import Polygon as GeoPolygon
-
-        ss = SliceStack(
-            type="SliceStack",
-            slices=[
-                Slice(z=0.0, geometry=GeoPolygon(
-                    type="Polygon",
-                    coordinates=[[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
-                )),
-                Slice(z=5.0, geometry=GeoPolygon(
-                    type="Polygon",
-                    coordinates=[[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
-                )),
-            ],
-        )
-        feat = MicroFeature(type="Feature", geometry=ss, properties=None)
-        gltf = feature_to_gltf(feat)
         assert len(gltf.meshes) == 1
 
     def test_multipoint(self):

@@ -25,7 +25,6 @@ from microjson.arrow._geometry import (
     point_to_shapely,
     polyhedral_to_shapely,
     polygon_to_shapely,
-    slice_geometry_to_shapely,
     tin_to_shapely,
     to_shapely,
     to_wkb,
@@ -36,8 +35,6 @@ from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
     PolyhedralSurface,
-    Slice,
-    SliceStack,
     TIN,
 )
 
@@ -112,35 +109,6 @@ def _polyhedral_feature():
             ],
         ),
         properties={},
-    )
-
-
-def _slicestack_feature():
-    return MicroFeature(
-        type="Feature",
-        id="ss1",
-        geometry=SliceStack(
-            type="SliceStack",
-            slices=[
-                Slice(
-                    z=0.0,
-                    geometry=Polygon(
-                        type="Polygon",
-                        coordinates=[[(0, 0), (5, 0), (5, 5), (0, 5), (0, 0)]],
-                    ),
-                    properties={"label": "bottom"},
-                ),
-                Slice(
-                    z=10.0,
-                    geometry=Polygon(
-                        type="Polygon",
-                        coordinates=[[(1, 1), (4, 1), (4, 4), (1, 4), (1, 1)]],
-                    ),
-                    properties={"label": "top"},
-                ),
-            ],
-        ),
-        properties={"stack_name": "test"},
     )
 
 
@@ -228,21 +196,6 @@ class TestGeometryConversion:
         s = polyhedral_to_shapely(feat.geometry)
         assert isinstance(s, ShapelyMultiPolygon)
         assert len(s.geoms) == 1
-
-    def test_slicestack_fallback(self):
-        """SliceStack -> GeometryCollection (non-exploded path)."""
-        feat = _slicestack_feature()
-        s = to_shapely(feat.geometry)
-        assert s.geom_type == "GeometryCollection"
-        assert len(s.geoms) == 2
-
-    def test_slice_polygon(self):
-        geom = Polygon(
-            type="Polygon",
-            coordinates=[[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]],
-        )
-        s = slice_geometry_to_shapely(geom)
-        assert isinstance(s, ShapelyPolygon)
 
     def test_none_geometry(self):
         assert to_shapely(None) is None
@@ -346,26 +299,6 @@ class TestTableBuilder:
         assert len(table) == 2
         assert table["id"][0].as_py() == "a"
         assert table["id"][1].as_py() == "b"
-
-    def test_slicestack_exploded(self):
-        table = build_table(_slicestack_feature())
-        assert len(table) == 2  # 2 slices
-        assert "_slice_z" in table.column_names
-        assert "_slice_properties" in table.column_names
-        # Both rows have the same feature id
-        assert table["id"][0].as_py() == "ss1"
-        assert table["id"][1].as_py() == "ss1"
-        assert table["_slice_z"][0].as_py() == 0.0
-        assert table["_slice_z"][1].as_py() == 10.0
-        # Properties from slice
-        sp0 = json.loads(table["_slice_properties"][0].as_py())
-        assert sp0["label"] == "bottom"
-
-    def test_slicestack_not_exploded(self):
-        config = ArrowConfig(explode_slicestacks=False)
-        table = build_table(_slicestack_feature(), config)
-        assert len(table) == 1  # Single row
-        assert "_slice_z" not in table.column_names
 
     def test_tin_geometry(self):
         table = build_table(_tin_feature())

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import shapely
@@ -27,8 +26,6 @@ from geojson_pydantic import (
 )
 
 from ..model import (
-    Slice,
-    SliceStack,
     TIN,
 )
 
@@ -120,21 +117,3 @@ def shapely_to_microjson(geom: Any) -> Any:
     raise TypeError(f"Unsupported Shapely geometry type: {type(geom)}")
 
 
-def slicestack_from_rows(
-    rows: list[dict[str, Any]],
-) -> SliceStack:
-    """Reconstruct a SliceStack from exploded rows.
-
-    Each row must have ``_slice_z``, a Shapely geometry, and optionally
-    ``_slice_properties``.  Rows are sorted by ``_slice_z``.
-    """
-    sorted_rows = sorted(rows, key=lambda r: r["_slice_z"])
-    slices = []
-    for r in sorted_rows:
-        geom = shapely_to_microjson(r["_shapely_geom"])
-        props = None
-        sp = r.get("_slice_properties")
-        if sp:
-            props = json.loads(sp)
-        slices.append(Slice(z=r["_slice_z"], geometry=geom, properties=props))
-    return SliceStack(type="SliceStack", slices=slices)

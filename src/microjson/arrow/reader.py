@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from pathlib import Path
 from typing import Any, Union
 
@@ -10,13 +9,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import shapely
 
-from ..model import MicroFeature, MicroFeatureCollection
-from ._from_geometry import shapely_to_microjson, slicestack_from_rows
+from ..model import MicroFeature, MicroFeatureCollection, OntologyTerm, Vocabulary
+from ._from_geometry import shapely_to_microjson
 
 
 # Columns with special meaning — not copied to feature.properties
-_RESERVED_COLUMNS = {"id", "featureClass", "geometry",
-                      "_slice_z", "_slice_properties"}
+_RESERVED_COLUMNS = {"id", "featureClass", "geometry"}
 
 
 def _row_to_dict(table: pa.Table, idx: int) -> dict[str, Any]:
@@ -33,7 +31,7 @@ def _geometry_from_row(row: dict[str, Any], geom_col: str = "geometry") -> Any:
 
 
 def _feature_from_row(row: dict[str, Any], geom_col: str = "geometry") -> MicroFeature:
-    """Build a MicroFeature from a plain row (no SliceStack grouping)."""
+    """Build a MicroFeature from a plain row."""
     shapely_geom = _geometry_from_row(row, geom_col)
     geometry = shapely_to_microjson(shapely_geom)
 
@@ -52,31 +50,22 @@ def _feature_from_row(row: dict[str, Any], geom_col: str = "geometry") -> MicroF
     )
 
 
-def _group_slicestack_rows(
-    rows: list[dict[str, Any]],
-    geom_col: str,
-) -> MicroFeature:
-    """Re-aggregate exploded slice rows into a single MicroFeature with SliceStack geometry."""
-    # Attach decoded shapely geometry to each row
-    for r in rows:
-        r["_shapely_geom"] = _geometry_from_row(r, geom_col)
+def _parse_vocabularies(
+    raw: str | bytes,
+) -> dict[str, Vocabulary] | str | None:
+    """Parse vocabularies from schema metadata value."""
+    import json as _json
 
-    stack = slicestack_from_rows(rows)
-
-    # Feature-level metadata comes from the first row
-    first = rows[0]
-    props: dict[str, Any] = {}
-    for k, v in first.items():
-        if k not in _RESERVED_COLUMNS and k != geom_col and k != "_shapely_geom":
-            props[k] = v
-
-    return MicroFeature(
-        type="Feature",
-        id=first.get("id"),
-        geometry=stack,
-        properties=props if props else {},
-        featureClass=first.get("featureClass"),
-    )
+    text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+    parsed = _json.loads(text)
+    if isinstance(parsed, str):
+        return parsed
+    if isinstance(parsed, dict):
+        return {
+            k: Vocabulary(**v) if isinstance(v, dict) else v
+            for k, v in parsed.items()
+        }
+    return None
 
 
 def from_arrow_table(
@@ -85,9 +74,6 @@ def from_arrow_table(
 ) -> MicroFeatureCollection:
     """Convert a pyarrow.Table (with WKB geometry) to a MicroFeatureCollection.
 
-    Rows with non-null ``_slice_z`` are re-grouped by ``id`` into
-    SliceStack features.
-
     Args:
         table: A pyarrow.Table, typically read from a GeoParquet file.
         geometry_column: Name of the WKB geometry column.
@@ -95,32 +81,23 @@ def from_arrow_table(
     Returns:
         A MicroFeatureCollection.
     """
-    has_slice_z = "_slice_z" in table.column_names
-
-    # Separate slice rows from non-slice rows
-    slice_groups: dict[str | None, list[dict[str, Any]]] = defaultdict(list)
-    plain_rows: list[dict[str, Any]] = []
+    features: list[MicroFeature] = []
 
     for i in range(len(table)):
         row = _row_to_dict(table, i)
-        if has_slice_z and row.get("_slice_z") is not None:
-            slice_groups[row.get("id")].append(row)
-        else:
-            plain_rows.append(row)
-
-    features: list[MicroFeature] = []
-
-    # Build plain features (preserving order)
-    for row in plain_rows:
         features.append(_feature_from_row(row, geometry_column))
 
-    # Build SliceStack features (one per group)
-    for _fid, rows in slice_groups.items():
-        features.append(_group_slicestack_rows(rows, geometry_column))
+    # Read vocabularies from schema metadata
+    vocabularies = None
+    meta = table.schema.metadata or {}
+    vocab_raw = meta.get(b"microjson:vocabularies")
+    if vocab_raw is not None:
+        vocabularies = _parse_vocabularies(vocab_raw)
 
     return MicroFeatureCollection(
         type="FeatureCollection",
         features=features,
+        vocabularies=vocabularies,
     )
 
 

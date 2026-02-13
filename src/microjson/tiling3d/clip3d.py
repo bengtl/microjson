@@ -1,0 +1,200 @@
+"""3D axis-parallel clipping for octree tiling.
+
+Clips features against an axis-aligned plane at position k,
+for axis 0 (X), 1 (Y), or 2 (Z).  Follows the same pattern as
+the 2D ``microjson2vt/clip.py`` but extended to three axes.
+"""
+
+from __future__ import annotations
+
+from .convert3d import POINT3D, LINESTRING3D, POLYGON3D, TIN_TYPE, POLYHEDRALSURFACE
+
+
+def clip_3d(
+    features: list[dict],
+    k1: float,
+    k2: float,
+    axis: int,
+) -> list[dict]:
+    """Clip features to the range [k1, k2] along the given axis.
+
+    Parameters
+    ----------
+    features : list[dict]
+        Intermediate features with geometry/geometry_z/type/min*/max* keys.
+    k1, k2 : float
+        Clip bounds in normalized [0, 1] space.
+    axis : int
+        0 = X, 1 = Y, 2 = Z.
+
+    Returns
+    -------
+    Clipped features list (features fully outside are discarded).
+    """
+    clipped: list[dict] = []
+
+    for feat in features:
+        ft = feat["type"]
+
+        # Get min/max along the clip axis
+        if axis == 0:
+            a_min, a_max = feat["minX"], feat["maxX"]
+        elif axis == 1:
+            a_min, a_max = feat["minY"], feat["maxY"]
+        else:
+            a_min, a_max = feat["minZ"], feat["maxZ"]
+
+        # Trivial reject — half-open interval [k1, k2)
+        if a_min >= k2 or a_max < k1:
+            continue
+
+        # Trivial accept — fully within [k1, k2)
+        if a_min >= k1 and a_max < k2:
+            clipped.append(feat)
+            continue
+
+        # Surface types: include whole if any part overlaps
+        if ft in (TIN_TYPE, POLYHEDRALSURFACE):
+            clipped.append(feat)
+            continue
+
+        if ft == POINT3D:
+            clipped.extend(_clip_points(feat, k1, k2, axis))
+        elif ft == LINESTRING3D:
+            result = _clip_line(feat, k1, k2, axis)
+            if result is not None:
+                clipped.append(result)
+        elif ft == POLYGON3D:
+            result = _clip_polygon(feat, k1, k2, axis)
+            if result is not None:
+                clipped.append(result)
+
+    return clipped
+
+
+def _get_axis_val(feat: dict, idx: int, axis: int) -> float:
+    """Get the value along axis for vertex at index idx."""
+    if axis == 0:
+        return feat["geometry"][idx * 2]
+    elif axis == 1:
+        return feat["geometry"][idx * 2 + 1]
+    else:
+        return feat["geometry_z"][idx]
+
+
+def _clip_points(feat: dict, k1: float, k2: float, axis: int) -> list[dict]:
+    """Clip point features — keep points within [k1, k2]."""
+    xy = feat["geometry"]
+    z = feat["geometry_z"]
+    n = len(z)
+    results = []
+    for i in range(n):
+        val = _get_axis_val(feat, i, axis)
+        if k1 <= val < k2:
+            px, py = xy[i * 2], xy[i * 2 + 1]
+            pz = z[i]
+            results.append({
+                "geometry": [px, py],
+                "geometry_z": [pz],
+                "type": POINT3D,
+                "tags": feat.get("tags", {}),
+                "minX": px, "minY": py, "minZ": pz,
+                "maxX": px, "maxY": py, "maxZ": pz,
+            })
+    return results
+
+
+def _intersect(
+    xy: list[float], z: list[float],
+    i: int, j: int,
+    k: float, axis: int,
+) -> tuple[float, float, float]:
+    """Interpolate intersection point where the line (i→j) crosses axis=k."""
+    ax, ay, az = xy[i * 2], xy[i * 2 + 1], z[i]
+    bx, by, bz = xy[j * 2], xy[j * 2 + 1], z[j]
+
+    if axis == 0:
+        d = bx - ax
+        t = (k - ax) / d if d != 0.0 else 0.0
+    elif axis == 1:
+        d = by - ay
+        t = (k - ay) / d if d != 0.0 else 0.0
+    else:
+        d = bz - az
+        t = (k - az) / d if d != 0.0 else 0.0
+
+    return (
+        ax + (bx - ax) * t,
+        ay + (by - ay) * t,
+        az + (bz - az) * t,
+    )
+
+
+def _clip_line(feat: dict, k1: float, k2: float, axis: int) -> dict | None:
+    """Clip a LineString3D to [k1, k2] along axis."""
+    xy = feat["geometry"]
+    z = feat["geometry_z"]
+    n = len(z)
+    if n < 2:
+        return None
+
+    out_xy: list[float] = []
+    out_z: list[float] = []
+
+    for i in range(n - 1):
+        a_val = _get_axis_val(feat, i, axis)
+        b_val = _get_axis_val(feat, i + 1, axis)
+        a_in = k1 <= a_val < k2
+        b_in = k1 <= b_val < k2
+
+        if a_in:
+            out_xy.extend([xy[i * 2], xy[i * 2 + 1]])
+            out_z.append(z[i])
+
+        # Entering from below
+        if a_val < k1 and b_val > k1 or b_val < k1 and a_val > k1:
+            ix, iy, iz = _intersect(xy, z, i, i + 1, k1, axis)
+            out_xy.extend([ix, iy])
+            out_z.append(iz)
+
+        # Exiting at k2
+        if a_val < k2 and b_val > k2 or b_val < k2 and a_val > k2:
+            ix, iy, iz = _intersect(xy, z, i, i + 1, k2, axis)
+            out_xy.extend([ix, iy])
+            out_z.append(iz)
+
+    # Last point
+    if n > 0:
+        last_val = _get_axis_val(feat, n - 1, axis)
+        if k1 <= last_val < k2:
+            out_xy.extend([xy[(n - 1) * 2], xy[(n - 1) * 2 + 1]])
+            out_z.append(z[n - 1])
+
+    if len(out_z) < 2:
+        return None
+
+    nn = len(out_z)
+    return {
+        "geometry": out_xy,
+        "geometry_z": out_z,
+        "type": LINESTRING3D,
+        "tags": feat.get("tags", {}),
+        "ring_lengths": feat.get("ring_lengths"),
+        "minX": min(out_xy[i * 2] for i in range(nn)),
+        "minY": min(out_xy[i * 2 + 1] for i in range(nn)),
+        "minZ": min(out_z),
+        "maxX": max(out_xy[i * 2] for i in range(nn)),
+        "maxY": max(out_xy[i * 2 + 1] for i in range(nn)),
+        "maxZ": max(out_z),
+    }
+
+
+def _clip_polygon(feat: dict, k1: float, k2: float, axis: int) -> dict | None:
+    """Clip a Polygon3D — Sutherland-Hodgman style per ring.
+
+    For simplicity, uses the same include-whole-face approach as surfaces
+    when the polygon straddles the boundary. This avoids complex polygon
+    clipping while still producing correct octree splits.
+    """
+    # Include the whole polygon if any part overlaps
+    return feat

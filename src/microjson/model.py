@@ -122,54 +122,35 @@ class TIN(BaseModel):
         return _centroid3d(self.coordinates)
 
 
+
 # ---------------------------------------------------------------------------
-# SliceStack — ordered Z-stack of 2D slices (the key "2.5D" type)
+# Ontology Vocabulary Support
 # ---------------------------------------------------------------------------
 
-class Slice(BaseModel):
-    """A single 2D slice at a given position along the stack axis."""
+class OntologyTerm(BaseModel):
+    """A reference to a formal ontology term.
 
-    z: float
-    geometry: Union[Polygon, MultiPolygon]
-    properties: Optional[Dict[str, Any]] = None
-
-
-class SliceStack(BaseModel):
-    """An ordered collection of 2D slices at specified positions along an axis.
-
-    Represents the MicroJSON 2.5D goal: 2D contours stacked in 3D.
+    Attributes:
+        uri: Full URI of the ontology term (e.g. "http://purl.obolibrary.org/obo/CL_0000598").
+        label: Human-readable label (e.g. "pyramidal neuron").
+        description: Optional longer description of the term.
     """
+    uri: str
+    label: Optional[str] = None
+    description: Optional[str] = None
 
-    type: Literal["SliceStack"]
-    slices: List[Slice]
-    axis: Literal["x", "y", "z"] = "z"
-    units: Optional[str] = None
-    interpolation: Optional[Literal["linear", "nearest", "cubic"]] = None
 
-    @field_validator("slices")
-    @classmethod
-    def _validate_slices(cls, v: List[Slice]) -> List[Slice]:
-        if len(v) == 0:
-            raise ValueError("SliceStack must have at least one slice")
-        z_values = [s.z for s in v]
-        if z_values != sorted(z_values):
-            raise ValueError("SliceStack slices must be sorted by z value")
-        if len(z_values) != len(set(z_values)):
-            raise ValueError("SliceStack slices must not have duplicate z values")
-        return v
+class Vocabulary(BaseModel):
+    """Maps property values to formal ontology terms.
 
-    def bbox3d(self) -> Tuple[float, float, float, float, float, float]:
-        """Compute 3D bbox from all slice geometries + z positions."""
-        all_positions: list[Position] = []
-        for s in self.slices:
-            all_positions.extend(_iter_positions(list(s.geometry.coordinates)))
-        xs = [p[0] for p in all_positions]
-        ys = [p[1] for p in all_positions]
-        z_values = [s.z for s in self.slices]
-        return (
-            min(xs), min(ys), min(z_values),
-            max(xs), max(ys), max(z_values),
-        )
+    Attributes:
+        namespace: Common URI prefix for the ontology (e.g. "http://purl.obolibrary.org/obo/CL_").
+        description: Optional description of this vocabulary.
+        terms: Mapping from property values to ontology terms.
+    """
+    namespace: Optional[str] = None
+    description: Optional[str] = None
+    terms: Dict[str, OntologyTerm]
 
 
 GeometryType = Union[  # type: ignore
@@ -182,7 +163,6 @@ GeometryType = Union[  # type: ignore
     GeometryCollection,
     PolyhedralSurface,
     TIN,
-    SliceStack,
     type(None),
 ]
 
@@ -215,6 +195,7 @@ class MicroFeature(Feature):
     # for now, only string feature class is supported
     # in the future, it may be expanded with a class registry
     featureClass: Optional[str] = None
+    vocabularies: Optional[Union[Dict[str, Vocabulary], str]] = None
 
 
 class MicroFeatureCollection(FeatureCollection):
@@ -238,6 +219,7 @@ class MicroFeatureCollection(FeatureCollection):
     provenance: Optional[
         Union[Workflow, WorkflowCollection, Artifact, ArtifactCollection]
     ] = None
+    vocabularies: Optional[Union[Dict[str, Vocabulary], str]] = None
 
 
 class MicroJSON(RootModel):

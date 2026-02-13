@@ -24,14 +24,11 @@ from microjson.arrow import (
 )
 from microjson.arrow._from_geometry import (
     shapely_to_microjson,
-    slicestack_from_rows,
 )
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
     PolyhedralSurface,
-    Slice,
-    SliceStack,
     TIN,
 )
 
@@ -94,35 +91,6 @@ def _linestring_feat():
             coordinates=[(0, 0, 0), (1, 1, 1), (2, 0, 2)],
         ),
         properties={"name": "line1"},
-    )
-
-
-def _slicestack_feat():
-    return MicroFeature(
-        type="Feature",
-        id="ss1",
-        geometry=SliceStack(
-            type="SliceStack",
-            slices=[
-                Slice(
-                    z=0.0,
-                    geometry=Polygon(
-                        type="Polygon",
-                        coordinates=[[(0, 0), (5, 0), (5, 5), (0, 5), (0, 0)]],
-                    ),
-                    properties={"label": "bottom"},
-                ),
-                Slice(
-                    z=10.0,
-                    geometry=Polygon(
-                        type="Polygon",
-                        coordinates=[[(1, 1), (4, 1), (4, 4), (1, 4), (1, 1)]],
-                    ),
-                    properties={"label": "top"},
-                ),
-            ],
-        ),
-        properties={"stack_name": "test"},
     )
 
 
@@ -197,28 +165,6 @@ class TestShapelyToMicroJSON:
             shapely_to_microjson("not a geometry")
 
 
-class TestSliceStackFromRows:
-    def test_basic(self):
-        rows = [
-            {
-                "_slice_z": 10.0,
-                "_slice_properties": json.dumps({"label": "top"}),
-                "_shapely_geom": ShapelyPolygon([(1, 1), (4, 1), (4, 4), (1, 1)]),
-            },
-            {
-                "_slice_z": 0.0,
-                "_slice_properties": json.dumps({"label": "bottom"}),
-                "_shapely_geom": ShapelyPolygon([(0, 0), (5, 0), (5, 5), (0, 0)]),
-            },
-        ]
-        ss = slicestack_from_rows(rows)
-        assert isinstance(ss, SliceStack)
-        assert len(ss.slices) == 2
-        # Sorted by z
-        assert ss.slices[0].z == 0.0
-        assert ss.slices[1].z == 10.0
-
-
 # ===== Arrow Round-trip Tests =====
 
 
@@ -257,20 +203,6 @@ class TestArrowRoundTrip:
         f = fc.features[0]
         assert isinstance(f.geometry, LineString)
         assert len(f.geometry.coordinates) == 3
-
-    def test_slicestack(self):
-        orig = _slicestack_feat()
-        table = to_arrow_table(orig)
-        fc = from_arrow_table(table)
-        # SliceStack rows are re-aggregated
-        ss_feats = [f for f in fc.features if isinstance(f.geometry, SliceStack)]
-        assert len(ss_feats) == 1
-        ss = ss_feats[0]
-        assert len(ss.geometry.slices) == 2
-        assert ss.geometry.slices[0].z == 0.0
-        assert ss.geometry.slices[1].z == 10.0
-        assert ss.geometry.slices[0].properties["label"] == "bottom"
-        assert ss.properties["stack_name"] == "test"
 
     def test_collection(self):
         fc_orig = MicroFeatureCollection(
@@ -335,14 +267,6 @@ class TestGeoParquetRoundTrip:
         assert len(fc.features) == 2
         assert fc.features[0].id == "a"
 
-    def test_slicestack_file_roundtrip(self, tmp_path):
-        path = tmp_path / "slices.parquet"
-        to_geoparquet(_slicestack_feat(), path)
-        fc = from_geoparquet(path)
-        ss_feats = [f for f in fc.features if isinstance(f.geometry, SliceStack)]
-        assert len(ss_feats) == 1
-        assert len(ss_feats[0].geometry.slices) == 2
-
     def test_tin_file_roundtrip(self, tmp_path):
         """TIN -> Parquet -> TIN (triangle-only 3D MultiPolygon reconstructed)."""
         path = tmp_path / "tin.parquet"
@@ -358,18 +282,15 @@ class TestGeoParquetRoundTrip:
             type="FeatureCollection",
             features=[
                 _point_feat("p"),
-                _slicestack_feat(),
                 _tin_feat(),
             ],
         )
         to_geoparquet(fc_orig, path)
         fc = from_geoparquet(path)
 
-        # 1 point + 1 re-aggregated slicestack + 1 tin (as MultiPolygon) = 3 features
-        assert len(fc.features) == 3
+        assert len(fc.features) == 2
         geom_types = {type(f.geometry).__name__ for f in fc.features}
         assert "Point" in geom_types
-        assert "SliceStack" in geom_types
         assert "TIN" in geom_types  # TIN reconstructed from triangle-only 3D MultiPolygon
 
     def test_custom_geometry_column(self, tmp_path):

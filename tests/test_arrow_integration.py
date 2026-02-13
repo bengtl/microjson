@@ -12,14 +12,14 @@ import pyarrow.parquet as pq
 import pytest
 import shapely
 
-from microjson.arrow import ArrowConfig, to_arrow_table, to_geoparquet
+from microjson.arrow import ArrowConfig, to_arrow_table, to_geoparquet, from_arrow_table, from_geoparquet
 from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
+    OntologyTerm,
     PolyhedralSurface,
-    Slice,
-    SliceStack,
     TIN,
+    Vocabulary,
 )
 
 from geojson_pydantic import (
@@ -66,34 +66,6 @@ def _tin_feat():
             ],
         ),
         properties={},
-    )
-
-
-def _slicestack_feat():
-    return MicroFeature(
-        type="Feature",
-        id="ss1",
-        geometry=SliceStack(
-            type="SliceStack",
-            slices=[
-                Slice(
-                    z=0.0,
-                    geometry=Polygon(
-                        type="Polygon",
-                        coordinates=[[(0, 0), (5, 0), (5, 5), (0, 5), (0, 0)]],
-                    ),
-                    properties={"label": "slice0"},
-                ),
-                Slice(
-                    z=5.0,
-                    geometry=Polygon(
-                        type="Polygon",
-                        coordinates=[[(1, 1), (4, 1), (4, 4), (1, 4), (1, 1)]],
-                    ),
-                ),
-            ],
-        ),
-        properties={"stack_id": 42},
     )
 
 
@@ -215,18 +187,6 @@ class TestMixedGeometry:
         assert "Point Z" in types
         assert "MultiPolygon Z" in types  # TIN stored as MultiPolygon
 
-    def test_slicestack_with_other_features(self):
-        fc = MicroFeatureCollection(
-            type="FeatureCollection",
-            features=[_slicestack_feat(), _point_feat()],
-        )
-        table = to_arrow_table(fc)
-        # 2 slices + 1 point = 3 rows
-        assert len(table) == 3
-        assert "_slice_z" in table.column_names
-        # Point row should have null _slice_z
-        assert table["_slice_z"][2].as_py() is None
-
     def test_all_3d_types(self):
         fc = MicroFeatureCollection(
             type="FeatureCollection",
@@ -290,37 +250,6 @@ class TestEdgeCases:
         table = to_arrow_table(feat)
         assert table["geometry"][0].as_py() is None
 
-    def test_slicestack_with_null_slice_properties(self):
-        feat = MicroFeature(
-            type="Feature",
-            id="ss_null",
-            geometry=SliceStack(
-                type="SliceStack",
-                slices=[
-                    Slice(
-                        z=0.0,
-                        geometry=Polygon(
-                            type="Polygon",
-                            coordinates=[
-                                [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]
-                            ],
-                        ),
-                    ),
-                ],
-            ),
-            properties={},
-        )
-        table = to_arrow_table(feat)
-        assert table["_slice_properties"][0].as_py() is None
-
-    def test_feature_properties_propagated_to_slices(self):
-        """Feature-level properties appear on every exploded slice row."""
-        table = to_arrow_table(_slicestack_feat())
-        assert len(table) == 2
-        # Both rows have stack_id
-        assert table["stack_id"][0].as_py() == 42
-        assert table["stack_id"][1].as_py() == 42
-
     def test_multipoint_3d(self):
         feat = MicroFeature(
             type="Feature",
@@ -373,3 +302,86 @@ class TestEdgeCases:
         geom = shapely.from_wkb(wkb)
         assert geom.geom_type == "MultiPolygon"
         assert len(geom.geoms) == 2
+
+
+# ===== Vocabulary Arrow Round-Trip =====
+
+
+class TestVocabularyArrowRoundTrip:
+    def _make_collection_with_vocab(self):
+        return MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[
+                MicroFeature(
+                    type="Feature",
+                    id="v1",
+                    geometry=Point(type="Point", coordinates=(1.0, 2.0)),
+                    properties={"cell_type": "pyramidal"},
+                ),
+            ],
+            vocabularies={
+                "cell_type": Vocabulary(
+                    namespace="http://purl.obolibrary.org/obo/CL_",
+                    terms={
+                        "pyramidal": OntologyTerm(
+                            uri="http://purl.obolibrary.org/obo/CL_0000598",
+                            label="pyramidal neuron",
+                        ),
+                    },
+                ),
+            },
+        )
+
+    def test_vocabulary_in_table_metadata(self):
+        fc = self._make_collection_with_vocab()
+        table = to_arrow_table(fc)
+        raw = table.schema.metadata.get(b"microjson:vocabularies")
+        assert raw is not None
+        vocab = json.loads(raw)
+        assert "cell_type" in vocab
+        assert vocab["cell_type"]["terms"]["pyramidal"]["uri"] == "http://purl.obolibrary.org/obo/CL_0000598"
+
+    def test_vocabulary_arrow_roundtrip(self):
+        fc = self._make_collection_with_vocab()
+        table = to_arrow_table(fc)
+        fc2 = from_arrow_table(table)
+        assert fc2.vocabularies is not None
+        assert "cell_type" in fc2.vocabularies
+        assert fc2.vocabularies["cell_type"].terms["pyramidal"].uri == "http://purl.obolibrary.org/obo/CL_0000598"
+        assert fc2.vocabularies["cell_type"].terms["pyramidal"].label == "pyramidal neuron"
+
+    def test_vocabulary_geoparquet_roundtrip(self, tmp_path):
+        fc = self._make_collection_with_vocab()
+        path = tmp_path / "vocab.parquet"
+        to_geoparquet(fc, path)
+        fc2 = from_geoparquet(path)
+        assert fc2.vocabularies is not None
+        assert "cell_type" in fc2.vocabularies
+        assert fc2.vocabularies["cell_type"].namespace == "http://purl.obolibrary.org/obo/CL_"
+
+    def test_uri_reference_roundtrip(self):
+        fc = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[
+                MicroFeature(
+                    type="Feature",
+                    id="u1",
+                    geometry=Point(type="Point", coordinates=(0.0, 0.0)),
+                    properties={},
+                ),
+            ],
+            vocabularies="https://neuromorpho.org/vocab/neuroscience-v1.json",
+        )
+        table = to_arrow_table(fc)
+        fc2 = from_arrow_table(table)
+        assert fc2.vocabularies == "https://neuromorpho.org/vocab/neuroscience-v1.json"
+
+    def test_no_vocabularies_metadata_absent(self):
+        fc = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[_point_feat()],
+        )
+        table = to_arrow_table(fc)
+        assert b"microjson:vocabularies" not in table.schema.metadata
+        fc2 = from_arrow_table(table)
+        assert fc2.vocabularies is None

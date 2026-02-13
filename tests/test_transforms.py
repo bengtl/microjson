@@ -12,8 +12,6 @@ from microjson.transforms import (
 from microjson.model import (
     TIN,
     PolyhedralSurface,
-    Slice,
-    SliceStack,
 )
 from geojson_pydantic import Point, LineString, Polygon, MultiPolygon
 
@@ -188,48 +186,6 @@ class TestApplyTransform3D:
         assert result.coordinates[0][0][0][0] == pytest.approx(5.0)
         assert result.coordinates[0][0][0][1] == pytest.approx(10.0)
         assert result.coordinates[0][0][0][2] == pytest.approx(15.0)
-
-    def test_translate_slice_stack(self):
-        ss = SliceStack(
-            type="SliceStack",
-            slices=[
-                Slice(z=0.0, geometry=Polygon(
-                    type="Polygon",
-                    coordinates=[[(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0), (0, 0, 0)]],
-                )),
-                Slice(z=5.0, geometry=Polygon(
-                    type="Polygon",
-                    coordinates=[[(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0), (0, 0, 0)]],
-                )),
-            ],
-        )
-        result = apply_transform(ss, self._translation(100, 200, 300))
-        assert isinstance(result, SliceStack)
-        assert result.slices[0].z == pytest.approx(300.0)
-        assert result.slices[1].z == pytest.approx(305.0)
-        # Check polygon coordinates shifted
-        assert result.slices[0].geometry.coordinates[0][0][0] == pytest.approx(100.0)
-        assert result.slices[0].geometry.coordinates[0][0][1] == pytest.approx(200.0)
-
-    def test_slice_stack_preserves_properties(self):
-        ss = SliceStack(
-            type="SliceStack",
-            slices=[
-                Slice(z=0.0, geometry=Polygon(
-                    type="Polygon",
-                    coordinates=[[(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 0, 0)]],
-                ), properties={"label": "top"}),
-            ],
-            axis="z",
-            units="um",
-            interpolation="linear",
-        )
-        result = apply_transform(ss, self._translation())
-        assert result.slices[0].properties == {"label": "top"}
-        assert result.axis == "z"
-        assert result.units == "um"
-        assert result.interpolation == "linear"
-
 
 class TestTranslateGeometry:
     """Tests for translate_geometry() convenience function."""

@@ -27,7 +27,6 @@ from geojson_pydantic import (
 
 from ..model import (
     PolyhedralSurface,
-    SliceStack,
     TIN,
 )
 
@@ -101,15 +100,6 @@ def polyhedral_to_shapely(geom: PolyhedralSurface) -> ShapelyMultiPolygon:
     return ShapelyMultiPolygon(polys)
 
 
-def slice_geometry_to_shapely(
-    geom: Polygon | MultiPolygon,
-) -> ShapelyPolygon | ShapelyMultiPolygon:
-    """Convert a slice's 2D geometry to Shapely."""
-    if isinstance(geom, Polygon):
-        return polygon_to_shapely(geom)
-    return multipolygon_to_shapely(geom)
-
-
 def to_shapely(geom: Any) -> Any:
     """Convert any MicroJSON/GeoJSON geometry to a Shapely geometry.
 
@@ -135,11 +125,6 @@ def to_shapely(geom: Any) -> Any:
         return tin_to_shapely(geom)
     if isinstance(geom, PolyhedralSurface):
         return polyhedral_to_shapely(geom)
-    if isinstance(geom, SliceStack):
-        # SliceStack handled specially by the table builder (exploded)
-        # Fallback: convert to GeometryCollection of slice geometries
-        parts = [slice_geometry_to_shapely(s.geometry) for s in geom.slices]
-        return ShapelyGeometryCollection(parts)
     raise TypeError(f"Unsupported geometry type: {type(geom)}")
 
 

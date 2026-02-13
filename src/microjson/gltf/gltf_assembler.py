@@ -42,7 +42,6 @@ from ..model import (
     MicroFeature,
     MicroFeatureCollection,
     PolyhedralSurface,
-    SliceStack,
     TIN,
 )
 from ..layout import apply_layout
@@ -345,55 +344,6 @@ def _convert_multipolygon(
     return _add_triangle_mesh(gltf, verts, indices, None, config, material_idx)
 
 
-def _convert_slice_stack(
-    gltf: GLTF2,
-    geom: SliceStack,
-    config: GltfConfig,
-    material_idx: int = 0,
-) -> int:
-    from shapely.geometry import Polygon as ShapelyPolygon
-    from shapely.geometry import MultiPolygon as ShapelyMultiPolygon
-
-    all_verts: list[np.ndarray] = []
-    all_indices: list[np.ndarray] = []
-    offset = 0
-
-    for slc in geom.slices:
-        slice_geom = slc.geometry
-        if isinstance(slice_geom, Polygon):
-            outer = [(p[0], p[1]) for p in slice_geom.coordinates[0]]
-            holes = [[(p[0], p[1]) for p in ring] for ring in slice_geom.coordinates[1:]]
-            poly = ShapelyPolygon(outer, holes)
-            verts, idxs = polygon_to_mesh(poly, z=slc.z)
-        elif isinstance(slice_geom, MultiPolygon):
-            polys = []
-            for pc in slice_geom.coordinates:
-                outer = [(p[0], p[1]) for p in pc[0]]
-                holes = [[(p[0], p[1]) for p in ring] for ring in pc[1:]]
-                polys.append(ShapelyPolygon(outer, holes))
-            mp = ShapelyMultiPolygon(polys)
-            verts, idxs = multipolygon_to_mesh(mp, z=slc.z)
-        else:
-            continue
-
-        if verts.shape[0] == 0:
-            continue
-        all_verts.append(verts)
-        all_indices.append(idxs + offset)
-        offset += verts.shape[0]
-
-    if not all_verts:
-        return -1
-    return _add_triangle_mesh(
-        gltf,
-        np.concatenate(all_verts),
-        np.concatenate(all_indices),
-        None,
-        config,
-        material_idx,
-    )
-
-
 def _convert_linestring(
     gltf: GLTF2,
     geom: LineString,
@@ -488,8 +438,6 @@ def _convert_geometry(
         return _convert_tin(gltf, geom, config, material_idx)
     elif isinstance(geom, PolyhedralSurface):
         return _convert_polyhedral_surface(gltf, geom, config, material_idx)
-    elif isinstance(geom, SliceStack):
-        return _convert_slice_stack(gltf, geom, config, material_idx)
     elif isinstance(geom, Polygon):
         return _convert_polygon(gltf, geom, config, material_idx)
     elif isinstance(geom, MultiPolygon):

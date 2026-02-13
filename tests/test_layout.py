@@ -7,8 +7,6 @@ from microjson.model import (
     MicroFeature,
     MicroFeatureCollection,
     PolyhedralSurface,
-    Slice,
-    SliceStack,
     TIN,
 )
 from microjson.layout import (
@@ -55,25 +53,6 @@ class TestGeometryBounds:
         assert b[0] == 0.0
         assert b[3] == 10.0
         assert b[5] == 5.0  # zmax
-
-    def test_slice_stack(self):
-        ss = SliceStack(
-            type="SliceStack",
-            slices=[
-                Slice(z=0.0, geometry=Polygon(
-                    type="Polygon",
-                    coordinates=[[(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]],
-                )),
-                Slice(z=5.0, geometry=Polygon(
-                    type="Polygon",
-                    coordinates=[[(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]],
-                )),
-            ],
-        )
-        b = geometry_bounds(ss)
-        assert b is not None
-        assert b[2] == 0.0   # zmin
-        assert b[5] == 5.0   # zmax
 
     def test_none_geometry(self):
         assert geometry_bounds(None) is None

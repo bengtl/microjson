@@ -15,7 +15,6 @@ from geojson_pydantic import Polygon, MultiPolygon
 from .model import (
     MicroFeature,
     MicroFeatureCollection,
-    SliceStack,
 )
 from .transforms import translate_geometry
 
@@ -52,7 +51,7 @@ def geometry_bounds(geom: Any) -> Bounds | None:
     """Return 3-D bounding box as (xmin, ymin, zmin, xmax, ymax, zmax).
 
     Uses ``.bbox3d()`` for 3D types (TIN,
-    PolyhedralSurface, SliceStack) and recursive coordinate extraction
+    PolyhedralSurface) and recursive coordinate extraction
     for GeoJSON types.
 
     Returns None if the geometry is empty or None.

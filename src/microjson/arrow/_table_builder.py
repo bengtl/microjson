@@ -11,11 +11,9 @@ import shapely
 from ..model import (
     MicroFeature,
     MicroFeatureCollection,
-    SliceStack,
 )
 from ._geometry import (
     geometry_type_name,
-    slice_geometry_to_shapely,
     to_shapely,
     to_wkb,
 )
@@ -86,30 +84,8 @@ def _extract_rows(
         geom = feat.geometry
         props = dict(feat.properties) if feat.properties else {}
 
-        # SliceStack explosion
-        if isinstance(geom, SliceStack) and config.explode_slicestacks:
-            for sl in geom.slices:
-                shapely_geom = slice_geometry_to_shapely(sl.geometry)
-                row: dict[str, Any] = {
-                    "id": str(feat.id) if feat.id is not None else None,
-                    "featureClass": feat.featureClass,
-                    gcol: to_wkb(shapely_geom),
-                    "_slice_z": sl.z,
-                    "_slice_properties": (
-                        json.dumps(sl.properties, separators=(",", ":"))
-                        if sl.properties
-                        else None
-                    ),
-                }
-                row.update(props)
-                rows.append(row)
-                # Track geometry type
-                row["_shapely_geom"] = shapely_geom
-            continue
-
-        # Standard geometry types
         shapely_geom = to_shapely(geom)
-        row = {
+        row: dict[str, Any] = {
             "id": str(feat.id) if feat.id is not None else None,
             "featureClass": feat.featureClass,
             gcol: to_wkb(shapely_geom),
@@ -125,8 +101,7 @@ def _extract_rows(
 # Schema construction
 # ---------------------------------------------------------------------------
 
-_RESERVED_KEYS = {"id", "featureClass",
-                   "_slice_z", "_slice_properties", "_shapely_geom"}
+_RESERVED_KEYS = {"id", "featureClass", "_shapely_geom"}
 
 
 def _build_schema(
@@ -142,9 +117,6 @@ def _build_schema(
     ]
 
     reserved = _RESERVED_KEYS | {gcol}
-
-    # Detect special columns needed
-    has_slice_z = any("_slice_z" in r for r in rows)
 
     # Collect property keys (preserve insertion order)
     prop_keys: list[str] = []
@@ -163,11 +135,6 @@ def _build_schema(
     for key in prop_keys:
         pa_type = _infer_pa_type(prop_values[key])
         fields.append(pa.field(key, pa_type))
-
-    # Add special columns
-    if has_slice_z:
-        fields.append(pa.field("_slice_z", pa.float64()))
-        fields.append(pa.field("_slice_properties", pa.string()))
 
     return pa.schema(fields)
 
@@ -260,6 +227,16 @@ def build_table(
         **existing,
         b"geo": json.dumps(geo_meta).encode("utf-8"),
     }
+
+    # Store collection-level vocabularies in schema metadata
+    if isinstance(data, MicroFeatureCollection) and data.vocabularies is not None:
+        if isinstance(data.vocabularies, str):
+            vocab_json = json.dumps(data.vocabularies)
+        else:
+            vocab_json = json.dumps(
+                {k: v.model_dump(exclude_none=True) for k, v in data.vocabularies.items()}
+            )
+        new_meta[b"microjson:vocabularies"] = vocab_json.encode("utf-8")
 
     return pa.table(
         {f.name: arr for f, arr in zip(schema, arrays)},

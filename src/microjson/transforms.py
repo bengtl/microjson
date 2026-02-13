@@ -23,8 +23,6 @@ from .tilemodel import CoordinateTransformation
 from .model import (
     TIN,
     PolyhedralSurface,
-    SliceStack,
-    Slice,
 )
 
 
@@ -114,42 +112,13 @@ def _transform_polyhedral(
     return PolyhedralSurface(type="PolyhedralSurface", coordinates=new_coords)
 
 
-def _transform_slice_stack(
-    geom: SliceStack, matrix: List[List[float]]
-) -> SliceStack:
-    """Transform each slice's geometry and z position."""
-    new_slices = []
-    for slc in geom.slices:
-        # Transform the slice's 2D geometry coordinates
-        new_geom_coords = _transform_coords(
-            list(slc.geometry.coordinates), matrix,
-        )
-        new_geom = type(slc.geometry)(
-            type=slc.geometry.type, coordinates=new_geom_coords,
-        )
-        # Transform the z position through the matrix
-        _, _, new_z = _transform_position((0, 0, slc.z), matrix)
-        new_slices.append(Slice(
-            z=new_z, geometry=new_geom, properties=slc.properties,
-        ))
-    # Sort slices by z to satisfy validator
-    new_slices.sort(key=lambda s: s.z)
-    return SliceStack(
-        type="SliceStack",
-        slices=new_slices,
-        axis=geom.axis,
-        units=geom.units,
-        interpolation=geom.interpolation,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Geometry union + dispatch
 # ---------------------------------------------------------------------------
 
 Geometry = Union[
     Point, MultiPoint, LineString, MultiLineString, Polygon, MultiPolygon,
-    TIN, PolyhedralSurface, SliceStack,
+    TIN, PolyhedralSurface,
 ]
 
 
@@ -157,7 +126,7 @@ def apply_transform(geometry: Geometry, transform: AffineTransform) -> Geometry:
     """Apply an affine transform to a geometry, returning a new geometry.
 
     Supports all GeoJSON geometry types plus MicroJSON 3D types
-    (TIN, PolyhedralSurface, SliceStack).
+    (TIN, PolyhedralSurface).
 
     Args:
         geometry: A geometry with 3D coordinates.
@@ -172,8 +141,6 @@ def apply_transform(geometry: Geometry, transform: AffineTransform) -> Geometry:
         return _transform_tin(geometry, matrix)
     if isinstance(geometry, PolyhedralSurface):
         return _transform_polyhedral(geometry, matrix)
-    if isinstance(geometry, SliceStack):
-        return _transform_slice_stack(geometry, matrix)
 
     # GeoJSON types — all have .coordinates
     new_coords = _transform_coords(list(geometry.coordinates), matrix)
