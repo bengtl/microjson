@@ -19,3 +19,4 @@ data/
 neuroglancer_output
 swcs
 testdir
+tiles_out

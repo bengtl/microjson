@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import struct
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,89 @@ _GEOM_TYPE_NAMES = {
     4: "PolyhedralSurface",
     5: "TIN",
 }
+
+
+class _LazyMeshXY(Sequence):
+    """Lazy list of (x, y) tuples from mesh_positions bytes.
+
+    Defers struct.unpack until first element access.  len() and bool()
+    are answered from the byte length alone — ML consumers that only use
+    the raw ``mesh_positions`` bytes never pay for the unpack.
+    """
+
+    __slots__ = ("_data", "_n_verts", "_cache")
+
+    def __init__(self, mesh_pos_bytes: bytes, n_verts: int) -> None:
+        self._data = mesh_pos_bytes
+        self._n_verts = n_verts
+        self._cache: list[tuple[int, int]] | None = None
+
+    def _materialize(self) -> list[tuple[int, int]]:
+        if self._cache is None:
+            n_floats = self._n_verts * 3
+            floats = struct.unpack(f"<{n_floats}f", self._data)
+            self._cache = [
+                (int(floats[i * 3]), int(floats[i * 3 + 1]))
+                for i in range(self._n_verts)
+            ]
+        return self._cache
+
+    def __len__(self) -> int:
+        return self._n_verts
+
+    def __getitem__(self, idx):  # type: ignore[override]
+        return self._materialize()[idx]
+
+    def __eq__(self, other: object) -> bool:
+        return self._materialize() == other
+
+    def __bool__(self) -> bool:
+        return self._n_verts > 0
+
+    def __iter__(self):
+        return iter(self._materialize())
+
+    def __repr__(self) -> str:
+        return f"_LazyMeshXY(n_verts={self._n_verts}, materialized={self._cache is not None})"
+
+
+class _LazyMeshZ(Sequence):
+    """Lazy list of integer Z values from mesh_positions bytes.
+
+    Same deferred-unpack strategy as ``_LazyMeshXY``.
+    """
+
+    __slots__ = ("_data", "_n_verts", "_cache")
+
+    def __init__(self, mesh_pos_bytes: bytes, n_verts: int) -> None:
+        self._data = mesh_pos_bytes
+        self._n_verts = n_verts
+        self._cache: list[int] | None = None
+
+    def _materialize(self) -> list[int]:
+        if self._cache is None:
+            n_floats = self._n_verts * 3
+            floats = struct.unpack(f"<{n_floats}f", self._data)
+            self._cache = [int(floats[i * 3 + 2]) for i in range(self._n_verts)]
+        return self._cache
+
+    def __len__(self) -> int:
+        return self._n_verts
+
+    def __getitem__(self, idx):  # type: ignore[override]
+        return self._materialize()[idx]
+
+    def __eq__(self, other: object) -> bool:
+        return self._materialize() == other
+
+    def __bool__(self) -> bool:
+        return self._n_verts > 0
+
+    def __iter__(self):
+        return iter(self._materialize())
+
+    def __repr__(self) -> str:
+        return f"_LazyMeshZ(n_verts={self._n_verts}, materialized={self._cache is not None})"
 
 
 def _decode_commands(geometry: list[int]) -> list[tuple[int, list[tuple[int, int]]]]:
@@ -112,15 +196,10 @@ def decode_tile(data: bytes) -> list[dict]:
             if mesh_pos_bytes:
                 # Indexed mesh path (TIN/PolyhedralSurface)
                 # Return raw bytes — consumer uses struct/numpy/torch
-                # Reconstruct xy/z for backward-compat consumers
-                n_floats = len(mesh_pos_bytes) // 4
-                n_verts = n_floats // 3
-                floats = struct.unpack(f"<{n_floats}f", mesh_pos_bytes)
-                xy_points = [
-                    (int(floats[i * 3]), int(floats[i * 3 + 1]))
-                    for i in range(n_verts)
-                ]
-                z_abs = [int(floats[i * 3 + 2]) for i in range(n_verts)]
+                # xy/z are lazy — only materialized on first access
+                n_verts = len(mesh_pos_bytes) // 12  # 3 floats × 4 bytes
+                xy_points = _LazyMeshXY(mesh_pos_bytes, n_verts)
+                z_abs = _LazyMeshZ(mesh_pos_bytes, n_verts)
             else:
                 # Ring-based decode path (Point, Line, Polygon)
                 commands = _decode_commands(list(feat.geometry))

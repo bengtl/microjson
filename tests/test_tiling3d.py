@@ -1254,3 +1254,107 @@ class TestIndexedMesh:
         n_tris = len(idx) // 12   # 3 indices × 4 bytes
         assert n_verts >= 3
         assert n_tris == 2
+
+
+class TestLazyMeshXYZ:
+    """Tests for lazy xy/z reconstruction in indexed mesh features."""
+
+    def _encode_tin(self):
+        """Helper: encode a TIN tile and return decoded feature."""
+        tile_data = {
+            "features": [{
+                "geometry": [0, 0, 1000, 2000, 4096, 4096, 0, 0],
+                "geometry_z": [100, 300, 200, 100],
+                "ring_lengths": [4],
+                "type": TIN_TYPE,
+                "tags": {},
+            }],
+        }
+        data = encode_tile_3d(tile_data, extent=4096, extent_z=4096)
+        layers = decode_tile(data)
+        return layers[0]["features"][0]
+
+    def test_lazy_not_materialized_on_decode(self):
+        """xy/z should NOT be materialized until accessed."""
+        from microjson.tiling3d.reader3d import _LazyMeshXY, _LazyMeshZ
+
+        feat = self._encode_tin()
+        xy = feat["xy"]
+        z = feat["z"]
+        assert isinstance(xy, _LazyMeshXY)
+        assert isinstance(z, _LazyMeshZ)
+        # Internal cache should be None (not yet materialized)
+        assert xy._cache is None
+        assert z._cache is None
+
+    def test_lazy_materializes_on_index(self):
+        """Accessing an element should trigger materialization."""
+        from microjson.tiling3d.reader3d import _LazyMeshXY, _LazyMeshZ
+
+        feat = self._encode_tin()
+        xy = feat["xy"]
+        z = feat["z"]
+        # Access element → materializes
+        _ = xy[0]
+        _ = z[0]
+        assert xy._cache is not None
+        assert z._cache is not None
+
+    def test_lazy_len_without_materialize(self):
+        """len() should work without materializing."""
+        from microjson.tiling3d.reader3d import _LazyMeshXY, _LazyMeshZ
+
+        feat = self._encode_tin()
+        xy = feat["xy"]
+        z = feat["z"]
+        assert len(xy) == 3
+        assert len(z) == 3
+        # Still not materialized
+        assert xy._cache is None
+        assert z._cache is None
+
+    def test_lazy_bool_without_materialize(self):
+        """bool() should work without materializing."""
+        from microjson.tiling3d.reader3d import _LazyMeshXY, _LazyMeshZ
+
+        feat = self._encode_tin()
+        assert bool(feat["xy"]) is True
+        assert bool(feat["z"]) is True
+        assert feat["xy"]._cache is None
+
+    def test_lazy_iteration(self):
+        """Iteration should work and produce correct values."""
+        feat = self._encode_tin()
+        xy_list = list(feat["xy"])
+        z_list = list(feat["z"])
+        assert len(xy_list) == 3
+        assert len(z_list) == 3
+        assert xy_list[0] == (0, 0)
+        assert xy_list[1] == (1000, 2000)
+        assert xy_list[2] == (4096, 4096)
+        assert z_list == [100, 300, 200]
+
+    def test_lazy_equality(self):
+        """== comparison with plain list should work."""
+        feat = self._encode_tin()
+        assert feat["xy"] == [(0, 0), (1000, 2000), (4096, 4096)]
+        assert feat["z"] == [100, 300, 200]
+
+    def test_ring_based_features_not_lazy(self):
+        """Point/Line features should return plain lists, not lazy objects."""
+        from microjson.tiling3d.reader3d import _LazyMeshXY
+
+        tile_data = {
+            "features": [{
+                "geometry": [(10 << 3) | 1, 200, 400],
+                "geometry_z": [500],
+                "ring_lengths": None,
+                "type": POINT3D,
+                "tags": {},
+            }],
+        }
+        data = encode_tile_3d(tile_data, extent=4096, extent_z=4096)
+        layers = decode_tile(data)
+        feat = layers[0]["features"][0]
+        assert not isinstance(feat["xy"], _LazyMeshXY)
+        assert isinstance(feat["xy"], list)
