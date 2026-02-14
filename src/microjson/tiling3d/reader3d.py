@@ -7,6 +7,7 @@ a MicroJSON FeatureCollection from a zoom level.
 from __future__ import annotations
 
 import json
+import struct
 from pathlib import Path
 from typing import Any
 
@@ -105,21 +106,36 @@ def decode_tile(data: bytes) -> list[dict]:
 
         features = []
         for feat in layer.features:
-            # Decode commands → absolute XY
-            commands = _decode_commands(list(feat.geometry))
-            abs_x, abs_y = 0, 0
-            xy_points: list[tuple[int, int]] = []
+            mesh_pos_bytes = bytes(feat.mesh_positions)
+            mesh_idx_bytes = bytes(feat.mesh_indices)
 
-            for cmd, points in commands:
-                if cmd == 7:  # ClosePath — don't add duplicate point
-                    continue
-                for dx, dy in points:
-                    abs_x += dx
-                    abs_y += dy
-                    xy_points.append((abs_x, abs_y))
+            if mesh_pos_bytes:
+                # Indexed mesh path (TIN/PolyhedralSurface)
+                # Return raw bytes — consumer uses struct/numpy/torch
+                # Reconstruct xy/z for backward-compat consumers
+                n_floats = len(mesh_pos_bytes) // 4
+                n_verts = n_floats // 3
+                floats = struct.unpack(f"<{n_floats}f", mesh_pos_bytes)
+                xy_points = [
+                    (int(floats[i * 3]), int(floats[i * 3 + 1]))
+                    for i in range(n_verts)
+                ]
+                z_abs = [int(floats[i * 3 + 2]) for i in range(n_verts)]
+            else:
+                # Ring-based decode path (Point, Line, Polygon)
+                commands = _decode_commands(list(feat.geometry))
+                abs_x, abs_y = 0, 0
+                xy_points = []
 
-            # Decode Z
-            z_abs = _decode_z(list(feat.geometry_z))
+                for cmd, points in commands:
+                    if cmd == 7:  # ClosePath — don't add duplicate point
+                        continue
+                    for dx, dy in points:
+                        abs_x += dx
+                        abs_y += dy
+                        xy_points.append((abs_x, abs_y))
+
+                z_abs = _decode_z(list(feat.geometry_z))
 
             features.append({
                 "id": feat.id,
@@ -128,6 +144,8 @@ def decode_tile(data: bytes) -> list[dict]:
                 "tags": _decode_tags(list(feat.tags), keys, values),
                 "xy": xy_points,
                 "z": z_abs,
+                "mesh_positions": mesh_pos_bytes,
+                "mesh_indices": mesh_idx_bytes,
                 "radii": list(feat.radii) if feat.radii else [],
             })
 

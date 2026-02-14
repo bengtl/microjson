@@ -6,6 +6,7 @@ format with delta-encoded XY, zigzag Z, and dictionary-encoded tags.
 
 from __future__ import annotations
 
+import struct
 from typing import Any, Union
 
 from .proto import microjson_3d_tile_pb2 as pb
@@ -135,6 +136,61 @@ def _encode_z(z_coords: list[int]) -> list[int]:
     return result
 
 
+def _build_indexed_mesh(
+    xy: list[int],
+    z_coords: list[int],
+    ring_lengths: list[int] | None,
+) -> tuple[bytes, bytes]:
+    """Build indexed triangle mesh from ring-based face data.
+
+    Deduplicates shared vertices and returns raw bytes for positions
+    and indices (float32 LE / uint32 LE).
+
+    Parameters
+    ----------
+    xy : list[int]
+        Flat XY integer coords [x0,y0, x1,y1, ...].
+    z_coords : list[int]
+        Z integer coords, one per vertex.
+    ring_lengths : list[int] | None
+        Number of vertices per closed ring (triangle = 4: 3 + closing).
+
+    Returns
+    -------
+    (positions_bytes, indices_bytes) where positions_bytes is raw
+    float32 LE [x,y,z, ...] and indices_bytes is raw uint32 LE [i0,i1,i2, ...].
+    """
+    if ring_lengths is None:
+        ring_lengths = [len(xy) // 2]
+
+    vertex_map: dict[tuple[int, int, int], int] = {}
+    positions: list[float] = []
+    indices: list[int] = []
+
+    offset = 0
+    for ring_len in ring_lengths:
+        # Each closed ring is a triangle: 4 verts (last == first), take first 3
+        n_verts = min(ring_len - 1, 3) if ring_len >= 4 else ring_len
+        tri_indices: list[int] = []
+        for i in range(n_verts):
+            vi = offset + i
+            x = xy[vi * 2]
+            y = xy[vi * 2 + 1]
+            z = z_coords[vi] if vi < len(z_coords) else 0
+            key = (x, y, z)
+            if key not in vertex_map:
+                vertex_map[key] = len(vertex_map)
+                positions.extend([float(x), float(y), float(z)])
+            tri_indices.append(vertex_map[key])
+        if len(tri_indices) == 3:
+            indices.extend(tri_indices)
+        offset += ring_len
+
+    pos_bytes = struct.pack(f"<{len(positions)}f", *positions) if positions else b""
+    idx_bytes = struct.pack(f"<{len(indices)}I", *indices) if indices else b""
+    return pos_bytes, idx_bytes
+
+
 def _write_value(pb_value: Any, value: Union[bool, str, int, float]) -> None:
     """Write a tag value to a protobuf Value message."""
     if isinstance(value, bool):
@@ -212,15 +268,20 @@ def encode_tile_3d(
 
         if gt == 1:  # POINT3D
             pb_feat.geometry.extend(_encode_point_geometry(xy))
+            pb_feat.geometry_z.extend(_encode_z(z_coords))
         elif gt == 2:  # LINESTRING3D
             pb_feat.geometry.extend(_encode_line_geometry(xy))
-        elif gt in (3, 4, 5):  # POLYGON3D, POLYHEDRALSURFACE, TIN
+            pb_feat.geometry_z.extend(_encode_z(z_coords))
+        elif gt in (4, 5):  # POLYHEDRALSURFACE, TIN — indexed mesh
+            pos_bytes, idx_bytes = _build_indexed_mesh(xy, z_coords, ring_lengths)
+            pb_feat.mesh_positions = pos_bytes
+            pb_feat.mesh_indices = idx_bytes
+        elif gt == 3:  # POLYGON3D — ring-based
             pb_feat.geometry.extend(_encode_polygon_geometry(xy, ring_lengths))
+            pb_feat.geometry_z.extend(_encode_z(z_coords))
         else:
             pb_feat.geometry.extend(_encode_line_geometry(xy))
-
-        # Delta-encode Z
-        pb_feat.geometry_z.extend(_encode_z(z_coords))
+            pb_feat.geometry_z.extend(_encode_z(z_coords))
 
         # Per-vertex radii
         radii = feat.get("radii")

@@ -44,6 +44,12 @@ message Tile {
 
     // Per-vertex radii (for tube/sphere representations)
     repeated float radii = 6 [packed = true];
+
+    // Indexed mesh encoding (TIN/PolyhedralSurface only)
+    // Raw float32 LE bytes: [x,y,z, x,y,z, ...] in tile-local float space
+    bytes mesh_positions = 7;
+    // Raw uint32 LE bytes: [i0,i1,i2, i0,i1,i2, ...]
+    bytes mesh_indices = 8;
   }
 
   message Layer {

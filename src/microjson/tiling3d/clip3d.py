@@ -53,9 +53,11 @@ def clip_3d(
             clipped.append(feat)
             continue
 
-        # Surface types: include whole if any part overlaps
+        # Surface types: clip per-face (keep only faces that overlap)
         if ft in (TIN_TYPE, POLYHEDRALSURFACE):
-            clipped.append(feat)
+            result = _clip_surface(feat, k1, k2, axis)
+            if result is not None:
+                clipped.append(result)
             continue
 
         if ft == POINT3D:
@@ -223,6 +225,67 @@ def _clip_line(feat: dict, k1: float, k2: float, axis: int) -> list[dict]:
 
     _flush()
     return segments
+
+
+def _clip_surface(feat: dict, k1: float, k2: float, axis: int) -> dict | None:
+    """Clip a TIN/PolyhedralSurface per-face — keep only faces that overlap [k1, k2).
+
+    Each face is delineated by ring_lengths. A face is kept if any of its
+    vertices fall within [k1, k2) or its bounding box along the axis
+    straddles the range.
+    """
+    xy = feat["geometry"]
+    z = feat["geometry_z"]
+    ring_lengths = feat.get("ring_lengths") or [len(z)]
+
+    out_xy: list[float] = []
+    out_z: list[float] = []
+    out_ring_lengths: list[int] = []
+
+    offset = 0
+    for rl in ring_lengths:
+        # Compute face min/max along clip axis
+        if axis == 0:
+            face_vals = [xy[(offset + j) * 2] for j in range(rl)]
+        elif axis == 1:
+            face_vals = [xy[(offset + j) * 2 + 1] for j in range(rl)]
+        else:
+            face_vals = [z[offset + j] for j in range(rl)]
+
+        f_min = min(face_vals)
+        f_max = max(face_vals)
+
+        # Half-open interval [k1, k2): reject if fully outside
+        if f_min >= k2 or f_max < k1:
+            offset += rl
+            continue
+
+        # Face overlaps — keep it whole
+        out_xy.extend(xy[offset * 2:(offset + rl) * 2])
+        out_z.extend(z[offset:offset + rl])
+        out_ring_lengths.append(rl)
+        offset += rl
+
+    if not out_ring_lengths:
+        return None
+
+    n = len(out_z)
+    min_x = min(out_xy[j * 2] for j in range(n))
+    max_x = max(out_xy[j * 2] for j in range(n))
+    min_y = min(out_xy[j * 2 + 1] for j in range(n))
+    max_y = max(out_xy[j * 2 + 1] for j in range(n))
+    min_z = min(out_z)
+    max_z = max(out_z)
+
+    return {
+        "geometry": out_xy,
+        "geometry_z": out_z,
+        "ring_lengths": out_ring_lengths,
+        "type": feat["type"],
+        "tags": feat.get("tags", {}),
+        "minX": min_x, "minY": min_y, "minZ": min_z,
+        "maxX": max_x, "maxY": max_y, "maxZ": max_z,
+    }
 
 
 def _clip_polygon(feat: dict, k1: float, k2: float, axis: int) -> dict | None:

@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import json
 import math
+import struct
 import tempfile
 from pathlib import Path
 
 import pytest
 from geojson_pydantic import LineString, Point, Polygon
 
-from microjson.model import MicroFeature, MicroFeatureCollection, TIN
+from microjson.model import (
+    MicroFeature, MicroFeatureCollection, OntologyTerm, TIN, Vocabulary,
+)
 
 # --- Proto imports ---
 from microjson.tiling3d.proto import microjson_3d_tile_pb2 as pb
@@ -39,7 +42,7 @@ from microjson.tiling3d.convert3d import (
     convert_feature_3d,
 )
 from microjson.tiling3d.tile3d import create_tile_3d, transform_tile_3d
-from microjson.tiling3d.encoder3d import encode_tile_3d
+from microjson.tiling3d.encoder3d import encode_tile_3d, _build_indexed_mesh
 from microjson.tiling3d.reader3d import TileReader3D, decode_tile
 from microjson.tiling3d.octree import Octree, OctreeConfig
 from microjson.tiling3d.generator3d import TileGenerator3D
@@ -875,3 +878,379 @@ class TestRoundTrip:
         reader = TileReader3D(tmp_path / "tilejson3d.json")
         tiles = reader.tiles_at_zoom(1)
         assert len(tiles) >= 2
+
+
+# ===========================================================================
+# Metadata pipeline tests (field types, ranges, enums, vocabularies)
+# ===========================================================================
+
+
+class TestMetadataPipeline:
+    """Test that feature properties flow through tiling into tilejson3d.json."""
+
+    def test_field_types_detected(self, tmp_path):
+        """Numeric, string, and boolean field types are detected."""
+        coll = _collection(
+            _point_feature(1, 2, 3, height=10.5, name="cell_a", active=True),
+            _point_feature(4, 5, 6, height=20.0, name="cell_b", active=False),
+        )
+        gen = TileGenerator3D(OctreeConfig(max_zoom=0))
+        gen.add_features(coll)
+        gen.generate(tmp_path)
+        gen.write_tilejson(tmp_path / "tilejson3d.json")
+
+        tj = json.loads((tmp_path / "tilejson3d.json").read_text())
+        layer = tj["vector_layers"][0]
+        assert layer["fields"]["height"] == "Number"
+        assert layer["fields"]["name"] == "String"
+        assert layer["fields"]["active"] == "Boolean"
+
+    def test_field_ranges_numeric(self, tmp_path):
+        """Numeric fields have correct min/max ranges."""
+        coll = _collection(
+            _point_feature(0, 0, 0, score=1.5),
+            _point_feature(5, 5, 5, score=9.0),
+            _point_feature(3, 3, 3, score=4.2),
+        )
+        gen = TileGenerator3D(OctreeConfig(max_zoom=0))
+        gen.add_features(coll)
+        gen.generate(tmp_path)
+        gen.write_tilejson(tmp_path / "tilejson3d.json")
+
+        tj = json.loads((tmp_path / "tilejson3d.json").read_text())
+        layer = tj["vector_layers"][0]
+        assert layer["fieldranges"]["score"] == [1.5, 9.0]
+
+    def test_field_enums_string(self, tmp_path):
+        """String fields collect unique enum values (sorted)."""
+        coll = _collection(
+            _point_feature(0, 0, 0, compartment="soma"),
+            _point_feature(5, 5, 5, compartment="axon"),
+            _point_feature(3, 3, 3, compartment="dendrite"),
+            _point_feature(7, 7, 7, compartment="axon"),  # duplicate
+        )
+        gen = TileGenerator3D(OctreeConfig(max_zoom=0))
+        gen.add_features(coll)
+        gen.generate(tmp_path)
+        gen.write_tilejson(tmp_path / "tilejson3d.json")
+
+        tj = json.loads((tmp_path / "tilejson3d.json").read_text())
+        layer = tj["vector_layers"][0]
+        assert layer["fieldenums"]["compartment"] == ["axon", "dendrite", "soma"]
+
+    def test_no_metadata_when_no_properties(self, tmp_path):
+        """Empty properties produce empty fields, no ranges/enums."""
+        coll = _collection(_point_feature(1, 2, 3))
+        gen = TileGenerator3D(OctreeConfig(max_zoom=0))
+        gen.add_features(coll)
+        gen.generate(tmp_path)
+        gen.write_tilejson(tmp_path / "tilejson3d.json")
+
+        tj = json.loads((tmp_path / "tilejson3d.json").read_text())
+        layer = tj["vector_layers"][0]
+        assert layer["fields"] == {}
+        assert "fieldranges" not in layer
+        assert "fieldenums" not in layer
+
+    def test_mixed_types_numeric_wins(self, tmp_path):
+        """When a field has mixed numeric/string values, Number type wins."""
+        coll = _collection(
+            _point_feature(0, 0, 0, val=42),
+            _point_feature(5, 5, 5, val="text"),
+        )
+        gen = TileGenerator3D(OctreeConfig(max_zoom=0))
+        gen.add_features(coll)
+        assert gen._field_types["val"] == "Number"
+
+    def test_vocabularies_propagated(self, tmp_path):
+        """Vocabularies from collection flow into tilejson3d.json."""
+        vocab = Vocabulary(
+            namespace="http://purl.obolibrary.org/obo/",
+            terms={
+                "soma": OntologyTerm(
+                    uri="GO_0043025", label="neuronal cell body",
+                ),
+                "axon": OntologyTerm(
+                    uri="GO_0030424", label="axon",
+                ),
+            },
+        )
+        coll = MicroFeatureCollection(
+            type="FeatureCollection",
+            features=[
+                _point_feature(0, 0, 0, compartment="soma"),
+                _point_feature(5, 5, 5, compartment="axon"),
+            ],
+            vocabularies={"compartment": vocab},
+        )
+        gen = TileGenerator3D(OctreeConfig(max_zoom=0))
+        gen.add_features(coll)
+        gen.generate(tmp_path)
+        gen.write_tilejson(tmp_path / "tilejson3d.json")
+
+        tj = json.loads((tmp_path / "tilejson3d.json").read_text())
+        layer = tj["vector_layers"][0]
+        assert "vocabularies" in layer
+        v = layer["vocabularies"]["compartment"]
+        assert v["namespace"] == "http://purl.obolibrary.org/obo/"
+        assert v["terms"]["soma"]["uri"] == "GO_0043025"
+        assert v["terms"]["axon"]["label"] == "axon"
+
+    def test_no_vocabularies_when_none(self, tmp_path):
+        """No vocabularies key if collection has no vocabularies."""
+        coll = _collection(_point_feature(1, 2, 3, val=1))
+        gen = TileGenerator3D(OctreeConfig(max_zoom=0))
+        gen.add_features(coll)
+        gen.generate(tmp_path)
+        gen.write_tilejson(tmp_path / "tilejson3d.json")
+
+        tj = json.loads((tmp_path / "tilejson3d.json").read_text())
+        layer = tj["vector_layers"][0]
+        assert "vocabularies" not in layer
+
+    def test_metadata_round_trip_via_reader(self, tmp_path):
+        """Full round-trip: features → tiles → tilejson → reader → verify."""
+        coll = _collection(
+            _point_feature(0, 0, 0, height=5.0, category="a"),
+            _point_feature(9, 9, 9, height=15.0, category="b"),
+        )
+        gen = TileGenerator3D(OctreeConfig(max_zoom=1))
+        gen.add_features(coll)
+        gen.generate(tmp_path)
+        gen.write_tilejson(tmp_path / "tilejson3d.json")
+
+        reader = TileReader3D(tmp_path / "tilejson3d.json")
+        meta = reader.metadata
+        layer = meta["vector_layers"][0]
+        assert layer["fields"]["height"] == "Number"
+        assert layer["fields"]["category"] == "String"
+        assert layer["fieldranges"]["height"] == [5.0, 15.0]
+        assert layer["fieldenums"]["category"] == ["a", "b"]
+
+
+# ===========================================================================
+# Indexed Mesh Encoding tests
+# ===========================================================================
+
+
+class TestIndexedMesh:
+    """Tests for indexed mesh encoding (TIN/PolyhedralSurface).
+
+    mesh_positions and mesh_indices are raw bytes (float32 LE / uint32 LE).
+    """
+
+    def test_proto_roundtrip_mesh_bytes(self):
+        """bytes mesh fields survive proto serialization."""
+        tile = pb.Tile()
+        feat = tile.layers.add().features.add()
+        feat.type = pb.Tile.TIN
+        feat.mesh_positions = struct.pack("<9f", 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 1.0, 0.5)
+        feat.mesh_indices = struct.pack("<3I", 0, 1, 2)
+
+        data = tile.SerializeToString()
+        tile2 = pb.Tile()
+        tile2.ParseFromString(data)
+        f = tile2.layers[0].features[0]
+        pos = struct.unpack(f"<{len(f.mesh_positions)//4}f", f.mesh_positions)
+        idx = struct.unpack(f"<{len(f.mesh_indices)//4}I", f.mesh_indices)
+        assert list(pos) == pytest.approx([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 1.0, 0.5])
+        assert list(idx) == [0, 1, 2]
+
+    def test_vertex_dedup_shared_edge(self):
+        """Two triangles sharing an edge should produce 5 unique vertices, not 6."""
+        # Triangle 1: (0,0,0), (10,0,0), (5,10,5)  closed ring = 4 verts
+        # Triangle 2: (10,0,0), (20,0,0), (15,10,5) closed ring = 4 verts
+        # Shared vertex: (10,0,0)
+        xy = [0, 0, 10, 0, 5, 10, 0, 0,   10, 0, 20, 0, 15, 10, 10, 0]
+        z = [0, 0, 5, 0,   0, 0, 5, 0]
+        ring_lengths = [4, 4]
+
+        pos_bytes, idx_bytes = _build_indexed_mesh(xy, z, ring_lengths)
+
+        n_unique = len(pos_bytes) // 12  # 3 floats × 4 bytes
+        assert n_unique == 5  # (0,0,0), (10,0,0), (5,10,5), (20,0,0), (15,10,5)
+        n_indices = len(idx_bytes) // 4
+        assert n_indices == 6  # 2 triangles × 3
+
+    def test_single_triangle(self):
+        """Single triangle should produce 3 vertices, 3 indices."""
+        xy = [100, 200, 300, 200, 200, 400, 100, 200]
+        z = [10, 10, 20, 10]
+        ring_lengths = [4]
+
+        pos_bytes, idx_bytes = _build_indexed_mesh(xy, z, ring_lengths)
+
+        assert len(pos_bytes) == 36  # 3 verts × 3 floats × 4 bytes
+        assert len(idx_bytes) == 12  # 3 indices × 4 bytes
+        indices = struct.unpack("<3I", idx_bytes)
+        assert list(indices) == [0, 1, 2]
+
+    def test_empty_mesh(self):
+        """Empty input produces empty output."""
+        pos_bytes, idx_bytes = _build_indexed_mesh([], [], [])
+        assert pos_bytes == b""
+        assert idx_bytes == b""
+
+    def test_encode_decode_tin_indexed(self):
+        """TIN feature encodes as indexed mesh bytes and decodes correctly."""
+        tile_data = {
+            "features": [{
+                "geometry": [0, 0, 4096, 0, 2048, 4096, 0, 0],
+                "geometry_z": [0, 0, 4096, 0],
+                "ring_lengths": [4],
+                "type": TIN_TYPE,
+                "tags": {"label": "mesh1"},
+            }],
+        }
+        data = encode_tile_3d(tile_data)
+        layers = decode_tile(data)
+        feat = layers[0]["features"][0]
+
+        # Should have indexed mesh data as bytes
+        assert len(feat["mesh_positions"]) == 36  # 3 verts × 3 × 4 bytes
+        assert len(feat["mesh_indices"]) == 12    # 3 indices × 4 bytes
+        assert isinstance(feat["mesh_positions"], bytes)
+        assert isinstance(feat["mesh_indices"], bytes)
+        # Backward-compat xy/z should also be populated
+        assert len(feat["xy"]) == 3
+        assert len(feat["z"]) == 3
+        # Tags survive
+        assert feat["tags"]["label"] == "mesh1"
+
+    def test_encode_decode_polyhedral_indexed(self):
+        """PolyhedralSurface also uses indexed mesh encoding."""
+        from microjson.tiling3d.convert3d import POLYHEDRALSURFACE as PS_TYPE
+        tile_data = {
+            "features": [{
+                "geometry": [0, 0, 100, 0, 50, 100, 0, 0],
+                "geometry_z": [0, 0, 50, 0],
+                "ring_lengths": [4],
+                "type": PS_TYPE,
+                "tags": {},
+            }],
+        }
+        data = encode_tile_3d(tile_data)
+        layers = decode_tile(data)
+        feat = layers[0]["features"][0]
+        assert len(feat["mesh_positions"]) == 36  # 3 verts × 12 bytes
+        assert len(feat["mesh_indices"]) == 12
+
+    def test_points_still_ring_based(self):
+        """Point features should NOT use indexed mesh encoding."""
+        tile_data = {
+            "features": [{
+                "geometry": [2048, 2048],
+                "geometry_z": [1024],
+                "type": POINT3D,
+                "tags": {},
+            }],
+        }
+        data = encode_tile_3d(tile_data)
+        layers = decode_tile(data)
+        feat = layers[0]["features"][0]
+        assert feat["mesh_positions"] == b""
+        assert feat["mesh_indices"] == b""
+        assert len(feat["xy"]) == 1
+
+    def test_lines_still_ring_based(self):
+        """LineString features should NOT use indexed mesh encoding."""
+        tile_data = {
+            "features": [{
+                "geometry": [0, 0, 1000, 2000],
+                "geometry_z": [0, 100],
+                "type": LINESTRING3D,
+                "tags": {},
+            }],
+        }
+        data = encode_tile_3d(tile_data)
+        layers = decode_tile(data)
+        feat = layers[0]["features"][0]
+        assert feat["mesh_positions"] == b""
+        assert feat["mesh_indices"] == b""
+
+    def test_polygon_still_ring_based(self):
+        """Polygon3D should still use ring-based encoding, not indexed mesh."""
+        tile_data = {
+            "features": [{
+                "geometry": [0, 0, 4096, 0, 4096, 4096, 0, 4096, 0, 0],
+                "geometry_z": [0, 0, 4096, 4096, 0],
+                "ring_lengths": [5],
+                "type": POLYGON3D,
+                "tags": {},
+            }],
+        }
+        data = encode_tile_3d(tile_data)
+        layers = decode_tile(data)
+        feat = layers[0]["features"][0]
+        assert feat["mesh_positions"] == b""
+        assert feat["mesh_indices"] == b""
+
+    def test_full_pipeline_tin_indexed(self, tmp_path):
+        """Full pipeline: TIN → octree → tile → encode → decode → verify indexed."""
+        coll = _collection(_tin_feature(mesh="tin1"))
+        config = OctreeConfig(max_zoom=0)
+        gen = TileGenerator3D(config)
+        gen.add_features(coll)
+        gen.generate(tmp_path)
+
+        tile_file = list(tmp_path.rglob("*.mvt3"))[0]
+        layers = decode_tile(tile_file.read_bytes())
+
+        # Find a TIN feature
+        tin_feats = [
+            f for layer in layers for f in layer["features"]
+            if f["type"] == 5  # TIN
+        ]
+        assert len(tin_feats) >= 1
+        feat = tin_feats[0]
+        assert len(feat["mesh_positions"]) > 0
+        assert len(feat["mesh_indices"]) > 0
+        assert len(feat["mesh_indices"]) % 12 == 0  # complete triangles (3 × 4 bytes)
+
+    def test_coordinate_space(self):
+        """Indexed mesh positions should be in [0, extent] tile-local range."""
+        tile_data = {
+            "features": [{
+                "geometry": [0, 0, 4096, 0, 2048, 4096, 0, 0],
+                "geometry_z": [0, 0, 4096, 0],
+                "ring_lengths": [4],
+                "type": TIN_TYPE,
+                "tags": {},
+            }],
+        }
+        data = encode_tile_3d(tile_data, extent=4096, extent_z=4096)
+        layers = decode_tile(data)
+        feat = layers[0]["features"][0]
+
+        pos_bytes = feat["mesh_positions"]
+        n_floats = len(pos_bytes) // 4
+        positions = struct.unpack(f"<{n_floats}f", pos_bytes)
+        for i in range(0, len(positions), 3):
+            x, y, z = positions[i], positions[i + 1], positions[i + 2]
+            assert 0.0 <= x <= 4096.0
+            assert 0.0 <= y <= 4096.0
+            assert 0.0 <= z <= 4096.0
+
+    def test_zero_copy_struct_unpack(self):
+        """Verify mesh bytes can be unpacked with struct for zero-copy path."""
+        tile_data = {
+            "features": [{
+                "geometry": [0, 0, 4096, 0, 2048, 4096, 0, 0,
+                             4096, 0, 4096, 4096, 2048, 4096, 4096, 0],
+                "geometry_z": [0, 0, 4096, 0, 0, 4096, 4096, 0],
+                "ring_lengths": [4, 4],
+                "type": TIN_TYPE,
+                "tags": {},
+            }],
+        }
+        data = encode_tile_3d(tile_data)
+        layers = decode_tile(data)
+        feat = layers[0]["features"][0]
+
+        # Unpack directly from bytes — this is the zero-copy path
+        pos = feat["mesh_positions"]
+        idx = feat["mesh_indices"]
+        n_verts = len(pos) // 12  # 3 floats × 4 bytes
+        n_tris = len(idx) // 12   # 3 indices × 4 bytes
+        assert n_verts >= 3
+        assert n_tris == 2

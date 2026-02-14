@@ -1,14 +1,18 @@
 """TileGenerator3D — high-level API for 3D vector tile generation.
 
 Orchestrates the full pipeline: convert → index (octree) → transform →
-encode → write to disk as ``{z}/{x}/{y}/{d}.mvt3`` files.
+encode → write to disk as ``{z}/{x}/{y}/{d}.mvt3`` (or ``.glb``) files.
+
+Supports two output formats:
+- ``"mvt3"`` (default): protobuf-encoded 3D vector tiles + tilejson3d.json
+- ``"3dtiles"``: OGC 3D Tiles 1.1 with glTF/GLB content + tileset.json
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ..model import MicroFeatureCollection, Vocabulary
 from .convert3d import compute_bounds_3d, convert_collection_3d
@@ -35,15 +39,29 @@ class TileGenerator3D:
 
     Usage::
 
-        gen = TileGenerator3D(config)
+        gen = TileGenerator3D(config, output_format="mvt3")
         gen.add_features(collection)
         gen.generate(Path("output/tiles"))
-        gen.write_tilejson(Path("output/tiles/tilejson3d.json"))
+        gen.write_metadata(Path("output/tiles"))
+
+    Parameters
+    ----------
+    config : OctreeConfig, optional
+        Octree configuration.
+    output_format : {"mvt3", "3dtiles"}
+        ``"mvt3"`` produces protobuf tiles + tilejson3d.json.
+        ``"3dtiles"`` produces glTF/GLB tiles + tileset.json.
     """
 
-    def __init__(self, config: OctreeConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: OctreeConfig | None = None,
+        output_format: Literal["mvt3", "3dtiles"] = "mvt3",
+    ) -> None:
         self.config = config or OctreeConfig()
+        self.output_format = output_format
         self._octree: Octree | None = None
+        self._proj: CartesianProjector3D | None = None
         self._bounds: tuple[float, float, float, float, float, float] | None = None
         self._layer_name = "default"
         # Metadata collected during add_features()
@@ -134,34 +152,42 @@ class TileGenerator3D:
 
         # Project features to normalized [0,1]³
         proj = CartesianProjector3D(bounds)
+        self._proj = proj
         features = convert_collection_3d(collection, proj)
 
         # Build octree
         self._octree = Octree(features, self.config)
 
     def generate(self, output_dir: Path | str) -> int:
-        """Write tiles to disk as {z}/{x}/{y}/{d}.mvt3 files.
+        """Write tiles to disk.
+
+        For ``"mvt3"`` format: ``{z}/{x}/{y}/{d}.mvt3``
+        For ``"3dtiles"`` format: ``{z}/{x}/{y}/{d}.glb``
 
         Returns the number of tiles written.
         """
         if self._octree is None:
             raise RuntimeError("Call add_features() before generate()")
 
-        output_dir = Path(output_dir)
+        if self.output_format == "3dtiles":
+            return self._generate_3dtiles(Path(output_dir))
+        return self._generate_mvt3(Path(output_dir))
+
+    def _generate_mvt3(self, output_dir: Path) -> int:
+        """Write protobuf-encoded .mvt3 tiles."""
+        assert self._octree is not None
         count = 0
 
         for (z, x, y, d), tile in self._octree.all_tiles.items():
             if z < self.config.min_zoom:
                 continue
 
-            # Transform to integer coords
             transformed = transform_tile_3d(
                 tile,
                 extent=self.config.extent,
                 extent_z=self.config.extent_z,
             )
 
-            # Encode to protobuf
             data = encode_tile_3d(
                 transformed,
                 layer_name=self._layer_name,
@@ -169,7 +195,6 @@ class TileGenerator3D:
                 extent_z=self.config.extent_z,
             )
 
-            # Write file
             tile_path = output_dir / str(z) / str(x) / str(y) / f"{d}.mvt3"
             tile_path.parent.mkdir(parents=True, exist_ok=True)
             tile_path.write_bytes(data)
@@ -177,8 +202,41 @@ class TileGenerator3D:
 
         return count
 
+    def _generate_3dtiles(self, output_dir: Path) -> int:
+        """Write GLB tiles for OGC 3D Tiles output."""
+        from .gltf_encoder3d import tile_to_glb
+
+        assert self._octree is not None
+        assert self._proj is not None
+        count = 0
+
+        for (z, x, y, d), tile in self._octree.all_tiles.items():
+            if z < self.config.min_zoom:
+                continue
+
+            data = tile_to_glb(tile, self._proj)
+
+            tile_path = output_dir / str(z) / str(x) / str(y) / f"{d}.glb"
+            tile_path.parent.mkdir(parents=True, exist_ok=True)
+            tile_path.write_bytes(data)
+            count += 1
+
+        return count
+
+    def write_metadata(self, output_dir: Path | str) -> None:
+        """Write the appropriate metadata file for the output format.
+
+        For ``"mvt3"``: writes ``tilejson3d.json``
+        For ``"3dtiles"``: writes ``tileset.json``
+        """
+        output_dir = Path(output_dir)
+        if self.output_format == "3dtiles":
+            self.write_tileset_json(output_dir / "tileset.json")
+        else:
+            self.write_tilejson(output_dir / "tilejson3d.json")
+
     def write_tilejson(self, path: Path | str) -> None:
-        """Write TileJSON 3D metadata file."""
+        """Write TileJSON 3D metadata file (.mvt3 format)."""
         if self._bounds is None:
             raise RuntimeError("Call add_features() before write_tilejson()")
 
@@ -216,3 +274,19 @@ class TileGenerator3D:
         )
 
         path.write_text(model.model_dump_json(indent=2, exclude_none=True))
+
+    def write_tileset_json(self, path: Path | str) -> None:
+        """Write OGC 3D Tiles tileset.json metadata file."""
+        if self._bounds is None or self._octree is None or self._proj is None:
+            raise RuntimeError("Call add_features() before write_tileset_json()")
+
+        from .tileset_json import generate_tileset_json, write_tileset_json
+
+        tileset = generate_tileset_json(
+            all_tiles=self._octree.all_tiles,
+            world_bounds=self._bounds,
+            proj=self._proj,
+            min_zoom=self.config.min_zoom,
+            max_zoom=self.config.max_zoom,
+        )
+        write_tileset_json(tileset, path)
