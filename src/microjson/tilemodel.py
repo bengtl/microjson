@@ -4,6 +4,8 @@ from pydantic import BaseModel, AnyUrl, conlist, RootModel
 from pydantic import StrictStr
 from pathlib import Path
 
+from .model import Vocabulary
+
 
 class TileLayer(BaseModel):
     """A vector layer in a TileJSON file.
@@ -20,6 +22,8 @@ class TileLayer(BaseModel):
             The enums of the fields.
         fielddescriptions (Optional[Dict[str, str]]):
             The descriptions of the fields.
+        vocabularies (Optional[Dict[str, Vocabulary]]):
+            Ontology vocabularies mapping property values to formal terms.
     """
 
     id: str
@@ -30,6 +34,7 @@ class TileLayer(BaseModel):
     fieldranges: Optional[Dict[str, List[Union[int, float, str]]]] = None
     fieldenums: Optional[Dict[str, List[str]]] = None
     fielddescriptions: Optional[Dict[str, str]] = None
+    vocabularies: Optional[Dict[str, Vocabulary]] = None
 
 
 class Unit(StrEnum):

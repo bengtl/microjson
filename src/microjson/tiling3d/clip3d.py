@@ -61,9 +61,7 @@ def clip_3d(
         if ft == POINT3D:
             clipped.extend(_clip_points(feat, k1, k2, axis))
         elif ft == LINESTRING3D:
-            result = _clip_line(feat, k1, k2, axis)
-            if result is not None:
-                clipped.append(result)
+            clipped.extend(_clip_line(feat, k1, k2, axis))
         elif ft == POLYGON3D:
             result = _clip_polygon(feat, k1, k2, axis)
             if result is not None:
@@ -130,38 +128,91 @@ def _intersect(
     )
 
 
-def _clip_line(feat: dict, k1: float, k2: float, axis: int) -> dict | None:
-    """Clip a LineString3D to [k1, k2] along axis."""
+def _clip_line(feat: dict, k1: float, k2: float, axis: int) -> list[dict]:
+    """Clip a LineString3D to [k1, k2) along axis.
+
+    Returns zero or more clipped line segments.  Fixes two issues from the
+    original single-result implementation:
+
+    1. Intersection ordering — when a segment crosses both k1 and k2,
+       intersections are now emitted in parameter-order along the segment.
+    2. Exit/re-enter splitting — a line that leaves and re-enters the clip
+       range produces separate line features instead of one spurious polyline.
+    """
     xy = feat["geometry"]
     z = feat["geometry_z"]
     n = len(z)
     if n < 2:
-        return None
+        return []
 
+    segments: list[dict] = []
     out_xy: list[float] = []
     out_z: list[float] = []
+
+    def _flush() -> None:
+        nonlocal out_xy, out_z
+        if len(out_z) >= 2:
+            nn = len(out_z)
+            segments.append({
+                "geometry": out_xy,
+                "geometry_z": out_z,
+                "type": LINESTRING3D,
+                "tags": feat.get("tags", {}),
+                "ring_lengths": feat.get("ring_lengths"),
+                "minX": min(out_xy[j * 2] for j in range(nn)),
+                "minY": min(out_xy[j * 2 + 1] for j in range(nn)),
+                "minZ": min(out_z),
+                "maxX": max(out_xy[j * 2] for j in range(nn)),
+                "maxY": max(out_xy[j * 2 + 1] for j in range(nn)),
+                "maxZ": max(out_z),
+            })
+        out_xy = []
+        out_z = []
 
     for i in range(n - 1):
         a_val = _get_axis_val(feat, i, axis)
         b_val = _get_axis_val(feat, i + 1, axis)
         a_in = k1 <= a_val < k2
-        b_in = k1 <= b_val < k2
 
         if a_in:
             out_xy.extend([xy[i * 2], xy[i * 2 + 1]])
             out_z.append(z[i])
 
-        # Entering from below
-        if a_val < k1 and b_val > k1 or b_val < k1 and a_val > k1:
-            ix, iy, iz = _intersect(xy, z, i, i + 1, k1, axis)
-            out_xy.extend([ix, iy])
-            out_z.append(iz)
+        # Detect boundary crossings
+        cross_k1 = (a_val < k1 and b_val > k1) or (b_val < k1 and a_val > k1)
+        # Use >= for k2 so vertices exactly on the boundary (from prior-zoom
+        # clipping) are detected as exit/entry crossings rather than silently
+        # dropped by the half-open interval.
+        cross_k2 = (a_val < k2 and b_val >= k2) or (b_val < k2 and a_val >= k2)
 
-        # Exiting at k2
-        if a_val < k2 and b_val > k2 or b_val < k2 and a_val > k2:
+        # Collect crossings with parameter t and enter/exit flag
+        crossings: list[tuple[float, float, float, float, bool]] = []
+        if cross_k1:
+            ix, iy, iz = _intersect(xy, z, i, i + 1, k1, axis)
+            d = b_val - a_val
+            t = (k1 - a_val) / d if d != 0.0 else 0.0
+            # Entering = crossing k1 in the direction that goes into [k1, k2)
+            entering = b_val > a_val  # upward → entering at k1
+            crossings.append((t, ix, iy, iz, entering))
+        if cross_k2:
             ix, iy, iz = _intersect(xy, z, i, i + 1, k2, axis)
-            out_xy.extend([ix, iy])
-            out_z.append(iz)
+            d = b_val - a_val
+            t = (k2 - a_val) / d if d != 0.0 else 0.0
+            # Entering = crossing k2 in the direction that goes into [k1, k2)
+            entering = b_val < a_val  # downward → entering at k2
+            crossings.append((t, ix, iy, iz, entering))
+
+        # Emit in segment order
+        crossings.sort(key=lambda c: c[0])
+        for _, ix, iy, iz, entering in crossings:
+            if entering:
+                _flush()  # close previous segment
+                out_xy.extend([ix, iy])
+                out_z.append(iz)
+            else:
+                out_xy.extend([ix, iy])
+                out_z.append(iz)
+                _flush()  # close current segment at exit
 
     # Last point
     if n > 0:
@@ -170,23 +221,8 @@ def _clip_line(feat: dict, k1: float, k2: float, axis: int) -> dict | None:
             out_xy.extend([xy[(n - 1) * 2], xy[(n - 1) * 2 + 1]])
             out_z.append(z[n - 1])
 
-    if len(out_z) < 2:
-        return None
-
-    nn = len(out_z)
-    return {
-        "geometry": out_xy,
-        "geometry_z": out_z,
-        "type": LINESTRING3D,
-        "tags": feat.get("tags", {}),
-        "ring_lengths": feat.get("ring_lengths"),
-        "minX": min(out_xy[i * 2] for i in range(nn)),
-        "minY": min(out_xy[i * 2 + 1] for i in range(nn)),
-        "minZ": min(out_z),
-        "maxX": max(out_xy[i * 2] for i in range(nn)),
-        "maxY": max(out_xy[i * 2 + 1] for i in range(nn)),
-        "maxZ": max(out_z),
-    }
+    _flush()
+    return segments
 
 
 def _clip_polygon(feat: dict, k1: float, k2: float, axis: int) -> dict | None:
