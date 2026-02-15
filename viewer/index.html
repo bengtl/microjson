@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MicroJSON 3D Tiles Viewer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #1a1a2e; font-family: system-ui, sans-serif; }
+
+  #canvas { display: block; position: absolute; top: 0; left: 300px; width: calc(100vw - 300px); height: 100vh; }
+
+  /* Sidebar */
+  #sidebar {
+    position: fixed; top: 0; left: 0;
+    width: 300px; height: 100vh;
+    background: #16162a; color: #ddd;
+    display: flex; flex-direction: column;
+    border-right: 1px solid rgba(255,255,255,0.08);
+    z-index: 20;
+  }
+  #sidebar h2 {
+    padding: 14px 16px 10px; flex-shrink: 0;
+    font-size: 14px; color: #6fdfaf;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  #pyramid-selector {
+    flex-shrink: 0;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  #pyramid-selector select:focus { border-color: #6fdfaf; outline: none; }
+
+  #feature-selector {
+    display: flex; flex-direction: column;
+    flex: 1; min-height: 0;  /* critical: allows flex child to scroll */
+  }
+
+  .feature-search {
+    width: calc(100% - 24px); margin: 10px 12px 6px; flex-shrink: 0;
+    padding: 7px 10px; border-radius: 5px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.06); color: #eee;
+    font-size: 13px; outline: none;
+  }
+  .feature-search::placeholder { color: #777; }
+  .feature-search:focus { border-color: #6fdfaf; }
+
+  .feature-toolbar {
+    display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+    padding: 4px 12px 8px; font-size: 12px; color: #999;
+  }
+  .feature-toolbar button {
+    padding: 3px 10px; border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.06); color: #ccc;
+    font-size: 11px; cursor: pointer;
+  }
+  .feature-toolbar button:hover { background: rgba(255,255,255,0.12); }
+  .feature-count { flex: 1; }
+
+  .feature-list {
+    flex: 1; overflow-y: auto;
+    padding: 0 4px;
+  }
+  .feature-list::-webkit-scrollbar { width: 6px; }
+  .feature-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+
+  .feature-item {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px; cursor: pointer;
+    font-size: 12px; border-radius: 4px;
+  }
+  .feature-item:hover { background: rgba(255,255,255,0.06); }
+  .feature-item input[type="checkbox"] { flex-shrink: 0; accent-color: #6fdfaf; }
+
+  .feature-swatch {
+    display: inline-block; width: 10px; height: 10px;
+    border-radius: 2px; flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.2);
+  }
+  .feature-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* LOD Controls */
+  #lod-controls {
+    flex-shrink: 0;
+    padding: 10px 12px;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    font-size: 12px;
+  }
+  #lod-controls h3 {
+    font-size: 11px; color: #999; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 8px;
+  }
+  .lod-mode-row {
+    display: flex; gap: 14px; margin-bottom: 8px;
+  }
+  .lod-mode-row label {
+    display: flex; align-items: center; gap: 4px; cursor: pointer; color: #ccc;
+  }
+  .lod-mode-row input[type="radio"] { accent-color: #6fdfaf; }
+  #zoom-slider-row {
+    display: flex; align-items: center; gap: 8px;
+  }
+  #zoom-slider-row .label { color: #999; }
+  #zoom-slider {
+    flex: 1; height: 4px; accent-color: #6fdfaf; cursor: pointer;
+  }
+  #zoom-slider:disabled {
+    opacity: 0.3; cursor: not-allowed;
+  }
+  #zoom-label { color: #6fdfaf; font-weight: 600; min-width: 16px; }
+  #zoom-distribution {
+    margin-top: 6px; color: #777; font-size: 11px;
+  }
+
+  /* Stats */
+  #stats {
+    position: fixed; bottom: 12px; left: 312px;
+    background: rgba(0,0,0,0.75); color: #ccc;
+    padding: 8px 12px; border-radius: 6px;
+    font-size: 12px; line-height: 1.6;
+    z-index: 10;
+    font-variant-numeric: tabular-nums;
+  }
+  #stats .val { color: #6fdfaf; font-weight: 600; }
+  #gpu-budget-row {
+    display: flex; align-items: center; gap: 6px; margin-top: 4px;
+  }
+  #gpu-budget-slider {
+    width: 120px; height: 4px; accent-color: #6fdfaf;
+    cursor: pointer;
+  }
+
+  /* Info panel */
+  #info-panel {
+    position: fixed; top: 12px; right: 12px;
+    background: rgba(0,0,0,0.85); color: #eee;
+    padding: 14px 18px; border-radius: 8px;
+    min-width: 240px; max-width: 340px;
+    font-size: 13px; line-height: 1.5;
+    display: none; z-index: 10;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  #info-panel h3 {
+    margin-bottom: 8px; font-size: 15px; color: #fff;
+    border-bottom: 1px solid rgba(255,255,255,0.15);
+    padding-bottom: 6px;
+  }
+  #info-panel table { width: 100%; }
+  #info-panel td { padding: 2px 0; vertical-align: top; }
+  #info-panel td:first-child { color: #999; padding-right: 12px; white-space: nowrap; }
+  #info-panel .color-swatch {
+    display: inline-block; width: 14px; height: 14px;
+    border-radius: 3px; vertical-align: middle;
+    margin-right: 6px; border: 1px solid rgba(255,255,255,0.3);
+  }
+
+  /* Loading */
+  #loading {
+    position: fixed; top: 50%; left: calc(150px + 50%);
+    transform: translate(-50%, -50%);
+    color: #6fdfaf; font-size: 16px; z-index: 20;
+  }
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="sidebar">
+  <h2>MicroJSON 3D Viewer</h2>
+  <div id="pyramid-selector" style="padding:10px 12px;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,0.08);"></div>
+  <div id="feature-selector"></div>
+  <div id="lod-controls">
+    <h3>Level of Detail</h3>
+    <div class="lod-mode-row">
+      <label><input type="radio" name="lod-mode" value="dynamic" checked> Dynamic</label>
+      <label><input type="radio" name="lod-mode" value="forced"> Force Zoom</label>
+    </div>
+    <div id="zoom-slider-row">
+      <span class="label">Zoom:</span>
+      <input type="range" id="zoom-slider" min="0" max="3" step="1" value="3" disabled>
+      <span id="zoom-label">3</span>
+    </div>
+    <div id="zoom-distribution"></div>
+  </div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<div id="loading">Loading feature index...</div>
+
+<div id="stats">
+  Tiles: <span class="val" id="stat-loaded">0</span> loaded,
+  meshes: <span class="val" id="stat-visible">0</span> visible |
+  FPS: <span class="val" id="stat-fps">0</span><br>
+  GPU: ~<span class="val" id="stat-memory">0</span> MB
+  <div id="gpu-budget-row">
+    Budget: <input type="range" id="gpu-budget-slider"
+      min="256" max="4096" step="256" value="1024">
+    <span class="val" id="gpu-budget-label">1024</span> MB
+  </div>
+</div>
+
+<div id="info-panel">
+  <h3 id="info-title">Region</h3>
+  <table id="info-table"><tbody></tbody></table>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

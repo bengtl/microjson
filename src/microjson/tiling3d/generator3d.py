@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import sys
+import warnings
 from pathlib import Path
 from typing import Any, Literal
 
@@ -26,12 +28,34 @@ from .tilejson3d import TileModel3D
 # Below this tile count, process spawn overhead outweighs parallelism.
 _MIN_TILES_FOR_MP = 16
 
+# --- Shared state for fork-based multiprocessing -------------------------
+# Workers read tile data from this dict (inherited via fork COW) instead of
+# receiving it through pickle, avoiding serialization of huge tile dicts.
+_SHARED_TILES: dict[tuple, dict] = {}
+_SHARED_BOUNDS: tuple[float, ...] | None = None
 
-# --- Module-level worker functions (picklable for spawn context) ----------
+
+def _get_mp_context() -> multiprocessing.context.BaseContext:
+    """Return the best multiprocessing context for the platform.
+
+    Uses ``fork`` on Unix (tiles shared via COW, no pickle overhead).
+    Falls back to ``spawn`` on Windows where fork is unavailable.
+    """
+    if sys.platform == "win32":
+        return multiprocessing.get_context("spawn")
+    # fork is safe here — workers only use numpy, struct, protobuf (no macOS
+    # GUI frameworks).  Suppress the Python 3.12+ deprecation warning.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", ".*fork.*", DeprecationWarning)
+        return multiprocessing.get_context("fork")
+
+
+# --- Module-level worker functions (fork: read from _SHARED_TILES) --------
 
 def _worker_mvt3(args: tuple) -> int:
     """Process a single mvt3 tile: transform → encode → write."""
-    key, tile, extent, extent_z, layer_name, output_dir = args
+    key, extent, extent_z, layer_name, output_dir = args
+    tile = _SHARED_TILES[key]
     z, x, y, d = key
 
     transformed = transform_tile_3d(
@@ -48,14 +72,32 @@ def _worker_mvt3(args: tuple) -> int:
     return 1
 
 
+def _simplify_ratio(zoom: int, max_zoom: int) -> float:
+    """Compute mesh simplification ratio for a zoom level.
+
+    Leaf tiles (zoom == max_zoom) get full resolution. Each level above
+    keeps 1/4 of the faces (area-based reduction for octree).
+    """
+    if zoom >= max_zoom:
+        return 1.0
+    levels_above = max_zoom - zoom
+    return 1.0 / (4 ** levels_above)
+
+
 def _worker_3dtiles(args: tuple) -> int:
     """Process a single 3dtiles tile: encode to GLB → write."""
-    key, tile, bounds6, output_dir = args
+    key, output_dir, max_zoom = args
+    tile = _SHARED_TILES[key]
+    bounds6 = _SHARED_BOUNDS
     z, x, y, d = key
 
     from .gltf_encoder3d import tile_to_glb
     proj = CartesianProjector3D(bounds6)
-    data = tile_to_glb(tile, proj)
+    ratio = _simplify_ratio(z, max_zoom)
+    data = tile_to_glb(
+        tile, proj, simplify_ratio=ratio,
+        world_bounds=bounds6, zoom=z,
+    )
 
     tile_path = Path(output_dir) / str(z) / str(x) / str(y) / f"{d}.glb"
     tile_path.parent.mkdir(parents=True, exist_ok=True)
@@ -266,16 +308,23 @@ class TileGenerator3D:
     def _generate_mvt3_parallel(
         self, tiles: list, output_dir: Path, n_workers: int,
     ) -> int:
-        """Multiprocessing mvt3 tile generation."""
+        """Multiprocessing mvt3 tile generation.
+
+        Uses fork context: tile data is shared via COW memory, only
+        lightweight keys are passed through the pool.
+        """
+        global _SHARED_TILES
+        _SHARED_TILES = {key: tile for key, tile in tiles}
         args = [
-            (key, tile, self.config.extent, self.config.extent_z,
+            (key, self.config.extent, self.config.extent_z,
              self._layer_name, str(output_dir))
-            for key, tile in tiles
+            for key, _ in tiles
         ]
         chunksize = max(1, len(args) // (n_workers * 4))
-        ctx = multiprocessing.get_context("spawn")
+        ctx = _get_mp_context()
         with ctx.Pool(n_workers) as pool:
             results = pool.map(_worker_mvt3, args, chunksize=chunksize)
+        _SHARED_TILES = {}
         return sum(results)
 
     def _generate_3dtiles(self, output_dir: Path) -> int:
@@ -300,9 +349,14 @@ class TileGenerator3D:
         """Single-threaded 3dtiles generation."""
         from .gltf_encoder3d import tile_to_glb
 
+        max_z = self.config.max_zoom
         count = 0
         for (z, x, y, d), tile in tiles:
-            data = tile_to_glb(tile, self._proj)
+            ratio = _simplify_ratio(z, max_z)
+            data = tile_to_glb(
+                tile, self._proj, simplify_ratio=ratio,
+                world_bounds=self._bounds, zoom=z,
+            )
             tile_path = output_dir / str(z) / str(x) / str(y) / f"{d}.glb"
             tile_path.parent.mkdir(parents=True, exist_ok=True)
             tile_path.write_bytes(data)
@@ -312,15 +366,24 @@ class TileGenerator3D:
     def _generate_3dtiles_parallel(
         self, tiles: list, output_dir: Path, n_workers: int,
     ) -> int:
-        """Multiprocessing 3dtiles generation."""
+        """Multiprocessing 3dtiles generation.
+
+        Uses fork context: tile data + bounds shared via COW memory.
+        """
+        global _SHARED_TILES, _SHARED_BOUNDS
+        _SHARED_TILES = {key: tile for key, tile in tiles}
+        _SHARED_BOUNDS = self._bounds
+        max_z = self.config.max_zoom
         args = [
-            (key, tile, self._bounds, str(output_dir))
-            for key, tile in tiles
+            (key, str(output_dir), max_z)
+            for key, _ in tiles
         ]
         chunksize = max(1, len(args) // (n_workers * 4))
-        ctx = multiprocessing.get_context("spawn")
+        ctx = _get_mp_context()
         with ctx.Pool(n_workers) as pool:
             results = pool.map(_worker_3dtiles, args, chunksize=chunksize)
+        _SHARED_TILES = {}
+        _SHARED_BOUNDS = None
         return sum(results)
 
     def write_metadata(self, output_dir: Path | str) -> None:
