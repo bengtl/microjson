@@ -11,6 +11,8 @@ Supports two output formats:
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -21,6 +23,45 @@ from .octree import Octree, OctreeConfig
 from .projector3d import CartesianProjector3D
 from .tile3d import transform_tile_3d
 from .tilejson3d import TileModel3D
+
+# Below this tile count, process spawn overhead outweighs parallelism.
+_MIN_TILES_FOR_MP = 16
+
+
+# --- Module-level worker functions (picklable for spawn context) ----------
+
+def _worker_mvt3(args: tuple) -> int:
+    """Process a single mvt3 tile: transform → encode → write."""
+    key, tile, extent, extent_z, layer_name, output_dir = args
+    z, x, y, d = key
+
+    transformed = transform_tile_3d(
+        tile, extent=extent, extent_z=extent_z,
+    )
+    data = encode_tile_3d(
+        transformed, layer_name=layer_name,
+        extent=extent, extent_z=extent_z,
+    )
+
+    tile_path = Path(output_dir) / str(z) / str(x) / str(y) / f"{d}.mvt3"
+    tile_path.parent.mkdir(parents=True, exist_ok=True)
+    tile_path.write_bytes(data)
+    return 1
+
+
+def _worker_3dtiles(args: tuple) -> int:
+    """Process a single 3dtiles tile: encode to GLB → write."""
+    key, tile, bounds6, output_dir = args
+    z, x, y, d = key
+
+    from .gltf_encoder3d import tile_to_glb
+    proj = CartesianProjector3D(bounds6)
+    data = tile_to_glb(tile, proj)
+
+    tile_path = Path(output_dir) / str(z) / str(x) / str(y) / f"{d}.glb"
+    tile_path.parent.mkdir(parents=True, exist_ok=True)
+    tile_path.write_bytes(data)
+    return 1
 
 
 def _infer_field_type(value: Any) -> str | None:
@@ -51,15 +92,22 @@ class TileGenerator3D:
     output_format : {"mvt3", "3dtiles"}
         ``"mvt3"`` produces protobuf tiles + tilejson3d.json.
         ``"3dtiles"`` produces glTF/GLB tiles + tileset.json.
+    workers : int or None
+        Number of parallel worker processes for tile generation.
+        ``None`` or ``0`` = auto (``os.cpu_count()``).
+        ``1`` = single-threaded (current behavior).
+        ``N > 1`` = explicit worker count.
     """
 
     def __init__(
         self,
         config: OctreeConfig | None = None,
         output_format: Literal["mvt3", "3dtiles"] = "mvt3",
+        workers: int | None = None,
     ) -> None:
         self.config = config or OctreeConfig()
         self.output_format = output_format
+        self._workers = workers
         self._octree: Octree | None = None
         self._proj: CartesianProjector3D | None = None
         self._bounds: tuple[float, float, float, float, float, float] | None = None
@@ -69,6 +117,12 @@ class TileGenerator3D:
         self._field_ranges: dict[str, list[int | float]] = {}
         self._field_enums: dict[str, list[str]] = {}
         self._vocabularies: dict[str, Vocabulary] | None = None
+
+    def _effective_workers(self) -> int:
+        """Resolve worker count: None/0 → cpu_count, else use as-is."""
+        if self._workers is None or self._workers == 0:
+            return os.cpu_count() or 1
+        return max(1, self._workers)
 
     def _scan_properties(self, collection: MicroFeatureCollection) -> None:
         """Scan all feature properties to compute field types, ranges, enums."""
@@ -176,52 +230,99 @@ class TileGenerator3D:
     def _generate_mvt3(self, output_dir: Path) -> int:
         """Write protobuf-encoded .mvt3 tiles."""
         assert self._octree is not None
+
+        tiles = [
+            (k, t) for k, t in self._octree.all_tiles.items()
+            if k[0] >= self.config.min_zoom
+        ]
+
+        n_workers = self._effective_workers()
+        if n_workers <= 1 or len(tiles) < _MIN_TILES_FOR_MP:
+            return self._generate_mvt3_serial(tiles, output_dir)
+        return self._generate_mvt3_parallel(tiles, output_dir, n_workers)
+
+    def _generate_mvt3_serial(
+        self, tiles: list, output_dir: Path,
+    ) -> int:
+        """Single-threaded mvt3 tile generation."""
         count = 0
-
-        for (z, x, y, d), tile in self._octree.all_tiles.items():
-            if z < self.config.min_zoom:
-                continue
-
+        for (z, x, y, d), tile in tiles:
             transformed = transform_tile_3d(
                 tile,
                 extent=self.config.extent,
                 extent_z=self.config.extent_z,
             )
-
             data = encode_tile_3d(
                 transformed,
                 layer_name=self._layer_name,
                 extent=self.config.extent,
                 extent_z=self.config.extent_z,
             )
-
             tile_path = output_dir / str(z) / str(x) / str(y) / f"{d}.mvt3"
             tile_path.parent.mkdir(parents=True, exist_ok=True)
             tile_path.write_bytes(data)
             count += 1
-
         return count
+
+    def _generate_mvt3_parallel(
+        self, tiles: list, output_dir: Path, n_workers: int,
+    ) -> int:
+        """Multiprocessing mvt3 tile generation."""
+        args = [
+            (key, tile, self.config.extent, self.config.extent_z,
+             self._layer_name, str(output_dir))
+            for key, tile in tiles
+        ]
+        chunksize = max(1, len(args) // (n_workers * 4))
+        ctx = multiprocessing.get_context("spawn")
+        with ctx.Pool(n_workers) as pool:
+            results = pool.map(_worker_mvt3, args, chunksize=chunksize)
+        return sum(results)
 
     def _generate_3dtiles(self, output_dir: Path) -> int:
         """Write GLB tiles for OGC 3D Tiles output."""
-        from .gltf_encoder3d import tile_to_glb
-
         assert self._octree is not None
         assert self._proj is not None
+        assert self._bounds is not None
+
+        tiles = [
+            (k, t) for k, t in self._octree.all_tiles.items()
+            if k[0] >= self.config.min_zoom
+        ]
+
+        n_workers = self._effective_workers()
+        if n_workers <= 1 or len(tiles) < _MIN_TILES_FOR_MP:
+            return self._generate_3dtiles_serial(tiles, output_dir)
+        return self._generate_3dtiles_parallel(tiles, output_dir, n_workers)
+
+    def _generate_3dtiles_serial(
+        self, tiles: list, output_dir: Path,
+    ) -> int:
+        """Single-threaded 3dtiles generation."""
+        from .gltf_encoder3d import tile_to_glb
+
         count = 0
-
-        for (z, x, y, d), tile in self._octree.all_tiles.items():
-            if z < self.config.min_zoom:
-                continue
-
+        for (z, x, y, d), tile in tiles:
             data = tile_to_glb(tile, self._proj)
-
             tile_path = output_dir / str(z) / str(x) / str(y) / f"{d}.glb"
             tile_path.parent.mkdir(parents=True, exist_ok=True)
             tile_path.write_bytes(data)
             count += 1
-
         return count
+
+    def _generate_3dtiles_parallel(
+        self, tiles: list, output_dir: Path, n_workers: int,
+    ) -> int:
+        """Multiprocessing 3dtiles generation."""
+        args = [
+            (key, tile, self._bounds, str(output_dir))
+            for key, tile in tiles
+        ]
+        chunksize = max(1, len(args) // (n_workers * 4))
+        ctx = multiprocessing.get_context("spawn")
+        with ctx.Pool(n_workers) as pool:
+            results = pool.map(_worker_3dtiles, args, chunksize=chunksize)
+        return sum(results)
 
     def write_metadata(self, output_dir: Path | str) -> None:
         """Write the appropriate metadata file for the output format.

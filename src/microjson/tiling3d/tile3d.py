@@ -137,3 +137,14 @@ def transform_tile_3d(
         "extent": extent,
         "extent_z": extent_z,
     }
+
+
+# ---------------------------------------------------------------------------
+# Cython dispatch: save Python reference, try to import compiled version.
+# ---------------------------------------------------------------------------
+transform_tile_3d_py = transform_tile_3d
+
+try:
+    from .tile3d_cy import transform_tile_3d  # noqa: F811
+except ImportError:
+    pass

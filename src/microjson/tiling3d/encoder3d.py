@@ -289,3 +289,15 @@ def encode_tile_3d(
             pb_feat.radii.extend(radii)
 
     return tile_pb.SerializeToString()
+
+
+# ---------------------------------------------------------------------------
+# Cython dispatch: save Python references, try to import compiled versions.
+# ---------------------------------------------------------------------------
+_build_indexed_mesh_py = _build_indexed_mesh
+encode_tile_3d_py = encode_tile_3d
+
+try:
+    from .encoder3d_cy import _build_indexed_mesh, encode_tile_3d  # noqa: F811
+except ImportError:
+    pass

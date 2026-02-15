@@ -297,3 +297,17 @@ def _clip_polygon(feat: dict, k1: float, k2: float, axis: int) -> dict | None:
     """
     # Include the whole polygon if any part overlaps
     return feat
+
+
+# ---------------------------------------------------------------------------
+# Cython dispatch: save Python references, try to import compiled versions.
+# External callers use clip_3d() which delegates to _clip_surface/_clip_line —
+# whichever version is bound here when the module finishes loading.
+# ---------------------------------------------------------------------------
+_clip_surface_py = _clip_surface
+_clip_line_py = _clip_line
+
+try:
+    from .clip3d_cy import _clip_surface, _clip_line  # noqa: F811
+except ImportError:
+    pass
