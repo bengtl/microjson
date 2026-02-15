@@ -20,3 +20,7 @@ neuroglancer_output
 swcs
 testdir
 tiles_out
+*.so
+*.pyd
+src/microjson/tiling3d/*.c
+build

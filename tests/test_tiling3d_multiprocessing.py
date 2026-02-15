@@ -6,10 +6,8 @@ bit-identical output, auto-detection, both mvt3 and 3dtiles formats.
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
-import pytest
 from geojson_pydantic import Point
 
 from microjson.model import MicroFeature, MicroFeatureCollection, TIN
