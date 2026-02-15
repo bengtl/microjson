@@ -72,7 +72,7 @@ def _tile_feature_to_world(
     n: int,
     proj: CartesianProjector3D,
 ) -> list[tuple[float, float, float]]:
-    """Convert a decoded tile feature to world coordinates."""
+    """Convert a decoded tile feature to world coordinates (ring-based)."""
     xy = feat["xy"]
     z_vals = feat["z"]
     world = []
@@ -83,6 +83,56 @@ def _tile_feature_to_world(
         wx, wy, wz = proj.unproject(nx, ny, nz)
         world.append((wx, wy, wz))
     return world
+
+
+def _mesh_feature_to_triangles(
+    feat: dict,
+    tx: int, ty: int, td: int,
+    extent: int, extent_z: int,
+    n: int,
+    proj: CartesianProjector3D,
+) -> list[list[tuple[float, float, float]]]:
+    """Convert an indexed mesh feature to a list of world-space triangles.
+
+    Unpacks mesh_positions (float32 LE xyz triples) and mesh_indices
+    (uint32 LE triangle vertex indices) into individual triangles.
+    """
+    import struct
+
+    mesh_pos = feat.get("mesh_positions", b"")
+    mesh_idx = feat.get("mesh_indices", b"")
+    if not mesh_pos:
+        return []
+
+    n_verts = len(mesh_pos) // 12  # 3 floats × 4 bytes
+    floats = struct.unpack(f"<{n_verts * 3}f", mesh_pos)
+
+    # Convert tile-local float coords → world coords
+    world_verts: list[tuple[float, float, float]] = []
+    for i in range(n_verts):
+        ix, iy, iz = floats[i * 3], floats[i * 3 + 1], floats[i * 3 + 2]
+        nx = (ix / extent + tx) / n
+        ny = (iy / extent + ty) / n
+        nz = (iz / extent_z + td) / n
+        wx, wy, wz = proj.unproject(nx, ny, nz)
+        world_verts.append((wx, wy, wz))
+
+    # Unpack triangle indices
+    if mesh_idx:
+        n_indices = len(mesh_idx) // 4
+        indices = struct.unpack(f"<{n_indices}I", mesh_idx)
+    else:
+        # No indices — sequential triangles
+        indices = tuple(range(n_verts))
+
+    # Build triangles (3 indices per triangle)
+    triangles: list[list[tuple[float, float, float]]] = []
+    for i in range(0, len(indices) - 2, 3):
+        i0, i1, i2 = indices[i], indices[i + 1], indices[i + 2]
+        if i0 < n_verts and i1 < n_verts and i2 < n_verts:
+            triangles.append([world_verts[i0], world_verts[i1], world_verts[i2]])
+
+    return triangles
 
 
 # ---------- main plotting ----------
@@ -138,58 +188,84 @@ def plot_tiles(
 
     # Draw features — colored by geometry type for consistency across zooms
     total_feats = 0
+    total_tris = 0
     legend_added: set[int] = set()
     for tile_idx, (tz, tx, ty, td, layers) in enumerate(tiles):
         for layer in layers:
             extent = layer.get("extent", 4096)
             extent_z = layer.get("extent_z", 4096)
             for feat in layer.get("features", []):
-                world = _tile_feature_to_world(
-                    feat, tx, ty, td, extent, extent_z, n, proj,
-                )
-                if not world:
-                    continue
-                total_feats += 1
                 gtype = feat.get("type", 0)
                 style = _TYPE_STYLE.get(gtype, {"color": "gray", "label": "?"})
                 color = style["color"]
-                xs = [p[0] for p in world]
-                ys = [p[1] for p in world]
-                zs = [p[2] for p in world]
-
                 lbl = style["label"] if gtype not in legend_added else None
-                legend_added.add(gtype)
 
-                if gtype == _GEOM_TYPE_POINT:
-                    ax.scatter(
-                        xs, ys, zs, c=color, s=40,
-                        depthshade=True, label=lbl, zorder=5,
+                has_mesh = bool(feat.get("mesh_positions", b""))
+
+                if has_mesh and gtype in (4, 5):
+                    # Indexed mesh (TIN / PolyhedralSurface) — render individual triangles
+                    triangles = _mesh_feature_to_triangles(
+                        feat, tx, ty, td, extent, extent_z, n, proj,
                     )
-                elif gtype == _GEOM_TYPE_LINE:
-                    ax.plot(
-                        xs, ys, zs, color=color, linewidth=1.8,
-                        alpha=0.85, label=lbl,
+                    if not triangles:
+                        continue
+                    total_feats += 1
+                    total_tris += len(triangles)
+
+                    poly = Poly3DCollection(
+                        triangles, alpha=0.35,
+                        facecolor=color, edgecolor=color,
+                        linewidths=0.15,
                     )
+                    ax.add_collection3d(poly)
+                    if lbl:
+                        ax.scatter([], [], [], c=color, label=lbl)
+                    legend_added.add(gtype)
                 else:
-                    if len(world) >= 3:
-                        verts = [list(world)]
-                        poly = Poly3DCollection(
-                            verts, alpha=0.4,
-                            facecolor=color, edgecolor=color,
-                            linewidths=0.5,
+                    # Ring-based features (Point, Line, Polygon)
+                    world = _tile_feature_to_world(
+                        feat, tx, ty, td, extent, extent_z, n, proj,
+                    )
+                    if not world:
+                        continue
+                    total_feats += 1
+
+                    xs = [p[0] for p in world]
+                    ys = [p[1] for p in world]
+                    zs = [p[2] for p in world]
+
+                    if gtype == _GEOM_TYPE_POINT:
+                        ax.scatter(
+                            xs, ys, zs, c=color, s=40,
+                            depthshade=True, label=lbl, zorder=5,
                         )
-                        ax.add_collection3d(poly)
-                        if lbl:
-                            # Invisible scatter for legend entry
-                            ax.scatter([], [], [], c=color, label=lbl)
+                    elif gtype == _GEOM_TYPE_LINE:
+                        ax.plot(
+                            xs, ys, zs, color=color, linewidth=1.8,
+                            alpha=0.85, label=lbl,
+                        )
+                    else:
+                        if len(world) >= 3:
+                            verts = [list(world)]
+                            poly = Poly3DCollection(
+                                verts, alpha=0.4,
+                                facecolor=color, edgecolor=color,
+                                linewidths=0.5,
+                            )
+                            ax.add_collection3d(poly)
+                            if lbl:
+                                ax.scatter([], [], [], c=color, label=lbl)
+
+                    legend_added.add(gtype)
 
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
     ax.legend(loc="upper left", fontsize=9)
+    tri_info = f", {total_tris:,} triangles" if total_tris else ""
     ax.set_title(
         f"3D Tiles — zoom {zoom}  |  "
-        f"{len(tiles)} tiles, {total_feats} features"
+        f"{len(tiles)} tiles, {total_feats} features{tri_info}"
     )
 
     if save_path:
