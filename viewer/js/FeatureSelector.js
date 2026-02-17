@@ -23,6 +23,9 @@ export class FeatureSelector {
         const resp = await fetch(featuresUrl);
         const data = await resp.json();
         this.features = data.features;
+        this.selected.clear();
+        this.checkboxes.clear();
+        this._allItems = [];
         this._render();
     }
 

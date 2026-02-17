@@ -58,7 +58,7 @@ export class PyramidSelector {
         for (const p of this.pyramids) {
             const opt = document.createElement('option');
             opt.value = p.id;
-            opt.textContent = `${p.label} (${p.featureCount} regions)`;
+            opt.textContent = `${p.label} (${p.features ?? p.featureCount ?? '?'} regions)`;
             select.appendChild(opt);
         }
 
