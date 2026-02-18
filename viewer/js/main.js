@@ -9,6 +9,7 @@ import { TileManager } from './TileManager.js';
 import { FeatureSelector } from './FeatureSelector.js';
 import { InfoPanel } from './InfoPanel.js';
 import { PyramidSelector } from './PyramidSelector.js';
+import { SlicePlanePanel } from './SlicePlanePanel.js';
 
 // --- Scene setup ---
 const canvas = document.getElementById('canvas');
@@ -44,8 +45,13 @@ scene.add(dirLight2);
 // --- Tile Manager (baseUrl set after pyramid selection) ---
 let tileManager = new TileManager(scene, '/tiles/default/');
 
+// --- Slice Plane ---
+const sliceContainer = document.getElementById('slice-controls');
+const slicePlanePanel = new SlicePlanePanel(sliceContainer, { renderer, scene });
+
 // --- Info Panel ---
 const infoPanel = new InfoPanel(camera, scene, canvas);
+infoPanel.slicePanel = slicePlanePanel;
 
 // --- Feature Selector ---
 const selectorContainer = document.getElementById('feature-selector');
@@ -151,6 +157,8 @@ function resetCamera() {
     camera.lookAt(center);
     controls.target.copy(center);
     controls.update();
+
+    slicePlanePanel.updateBounds(box);
 }
 
 /**

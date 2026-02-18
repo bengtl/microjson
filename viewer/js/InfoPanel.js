@@ -23,6 +23,7 @@ export class InfoPanel {
         this.canvas = canvas;
         this.raycaster = new THREE.Raycaster();
         this.mouse = new THREE.Vector2();
+        this.slicePanel = null;  // set from main.js
 
         this.panel = document.getElementById('info-panel');
         this.title = document.getElementById('info-title');
@@ -46,6 +47,10 @@ export class InfoPanel {
         for (const hit of intersects) {
             // Skip invisible meshes (non-selected features still in scene)
             if (!hit.object.visible) continue;
+            // Skip the slice plane helper mesh
+            if (hit.object.userData?._isSliceHelper) continue;
+            // Skip hits behind the clip plane (clipped geometry)
+            if (this.slicePanel?.enabled && this.slicePanel.clipPlane.distanceToPoint(hit.point) < 0) continue;
             const props = this._findProperties(hit.object);
             if (props) {
                 this._showPanel(props);
