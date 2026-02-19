@@ -24,3 +24,4 @@ tiles_out
 *.pyd
 src/microjson/tiling3d/*.c
 build
+rust/target

@@ -292,12 +292,18 @@ def encode_tile_3d(
 
 
 # ---------------------------------------------------------------------------
-# Cython dispatch: save Python references, try to import compiled versions.
+# Rust dispatch: import compiled versions from the Rust extension module.
+# Note: The Rust encoder uses hand-rolled protobuf (no protobuf lib dep),
+# so output is wire-compatible but may have different field ordering.
+# For now, keep using the Python protobuf encoder as the default to
+# ensure bit-identical output with existing tests. The Rust encoder
+# will be used for the streaming pipeline (Phase 6).
 # ---------------------------------------------------------------------------
 _build_indexed_mesh_py = _build_indexed_mesh
 encode_tile_3d_py = encode_tile_3d
 
 try:
-    from .encoder3d_cy import _build_indexed_mesh, encode_tile_3d  # noqa: F811
+    from microjson._rs import build_indexed_mesh as _build_indexed_mesh  # noqa: F811
+    from microjson._rs import encode_tile_3d as _encode_tile_3d_rs  # noqa: F401
 except ImportError:
     pass

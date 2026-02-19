@@ -2,10 +2,14 @@
 """Development HTTP server for the Three.js 3D Tiles viewer.
 
 Routes:
-    /                        → viewer/index.html
-    /js/*                    → viewer/js/*
-    /tiles/pyramids.json     → manifest file
-    /tiles/{pyramid_id}/*    → {tiles_base}/{pyramid_id}/3dtiles/*
+    /                                  → viewer/index.html
+    /js/*                              → viewer/js/*
+    /tiles/pyramids.json               → manifest file
+    /tiles/{pyramid_id}/*              → {tiles_base}/{pyramid_id}/3dtiles/*
+    /neuroglancer/{pyramid_id}/info    → Neuroglancer mesh info
+    /neuroglancer/{pyramid_id}/<id>    → Neuroglancer binary mesh
+    /neuroglancer/{pyramid_id}/<id>:0  → Neuroglancer fragment manifest
+    /neuroglancer/{pyramid_id}/segment_properties/info → segment properties
 """
 
 import argparse
@@ -29,6 +33,14 @@ class ViewerHandler(SimpleHTTPRequestHandler):
         if path == "/tiles/pyramids.json":
             return os.path.join(self.tiles_base, "pyramids.json")
 
+        if path.startswith("/neuroglancer/"):
+            # /neuroglancer/{pyramid_id}/rest → {tiles_base}/{pyramid_id}/neuroglancer/rest
+            rel = path[len("/neuroglancer/"):]
+            parts = rel.split("/", 1)
+            pyramid_id = parts[0]
+            rest = parts[1] if len(parts) > 1 else ""
+            return os.path.join(self.tiles_base, pyramid_id, "neuroglancer", rest)
+
         if path.startswith("/tiles/"):
             # /tiles/{pyramid_id}/rest → {tiles_base}/{pyramid_id}/3dtiles/rest
             rel = path[len("/tiles/"):]
@@ -50,6 +62,8 @@ class ViewerHandler(SimpleHTTPRequestHandler):
         # Cache .glb files aggressively (they don't change)
         if self.path.endswith(".glb"):
             self.send_header("Cache-Control", "public, max-age=86400")
+        elif self.path.endswith(".js") or self.path.endswith(".html"):
+            self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
 

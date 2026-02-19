@@ -300,14 +300,21 @@ def _clip_polygon(feat: dict, k1: float, k2: float, axis: int) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Cython dispatch: save Python references, try to import compiled versions.
-# External callers use clip_3d() which delegates to _clip_surface/_clip_line —
-# whichever version is bound here when the module finishes loading.
+# Rust dispatch: import compiled versions from the Rust extension module.
+# Falls back to pure Python if the Rust extension is not available.
 # ---------------------------------------------------------------------------
 _clip_surface_py = _clip_surface
 _clip_line_py = _clip_line
 
 try:
-    from .clip3d_cy import _clip_surface, _clip_line  # noqa: F811
+    from microjson._rs import clip_surface as _clip_surface_rs  # noqa: F401
+    from microjson._rs import clip_line as _clip_line_rs  # noqa: F401
+
+    def _clip_surface(feat, k1, k2, axis):  # noqa: F811
+        return _clip_surface_rs(feat, k1, k2, axis)
+
+    def _clip_line(feat, k1, k2, axis):  # noqa: F811
+        return _clip_line_rs(feat, k1, k2, axis)
+
 except ImportError:
     pass

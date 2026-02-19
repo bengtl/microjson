@@ -1,7 +1,7 @@
 """Tests for multiprocessing support in TileGenerator3D.
 
 Covers: workers parameter, serial fallback, parallel generation,
-bit-identical output, auto-detection, both mvt3 and 3dtiles formats.
+bit-identical output, auto-detection, both mjb and 3dtiles formats.
 """
 
 from __future__ import annotations
@@ -122,7 +122,7 @@ class TestWorkersParameter:
 class TestSerialFallback:
     """Small collections should use serial path even with workers > 1."""
 
-    def test_few_tiles_uses_serial_mvt3(self, tmp_path):
+    def test_few_tiles_uses_serial_mjb(self, tmp_path):
         """With very few features, tile count < _MIN_TILES_FOR_MP → serial."""
         collection = _collection(
             _point_feature(1, 2, 3),
@@ -158,7 +158,7 @@ class TestSerialFallback:
 class TestBitIdentical:
     """Parallel output must match serial output byte-for-byte."""
 
-    def test_mvt3_bit_identical(self, tmp_path):
+    def test_mjb_bit_identical(self, tmp_path):
         collection = _large_point_collection(50)
 
         # Serial
@@ -184,8 +184,8 @@ class TestBitIdentical:
             f"Need >= {_MIN_TILES_FOR_MP} tiles to test parallel path, got {count_serial}"
         )
 
-        serial_tiles = _collect_tiles(serial_dir, "mvt3")
-        parallel_tiles = _collect_tiles(parallel_dir, "mvt3")
+        serial_tiles = _collect_tiles(serial_dir, "mjb")
+        parallel_tiles = _collect_tiles(parallel_dir, "mjb")
 
         assert set(serial_tiles.keys()) == set(parallel_tiles.keys())
         for path in serial_tiles:
@@ -193,7 +193,7 @@ class TestBitIdentical:
                 f"Tile {path} differs between serial and parallel"
             )
 
-    def test_mvt3_tin_bit_identical(self, tmp_path):
+    def test_mjb_tin_bit_identical(self, tmp_path):
         collection = _large_tin_collection(30)
 
         gen_serial = TileGenerator3D(
@@ -214,8 +214,8 @@ class TestBitIdentical:
 
         assert count_serial == count_parallel
 
-        serial_tiles = _collect_tiles(serial_dir, "mvt3")
-        parallel_tiles = _collect_tiles(parallel_dir, "mvt3")
+        serial_tiles = _collect_tiles(serial_dir, "mjb")
+        parallel_tiles = _collect_tiles(parallel_dir, "mjb")
 
         assert set(serial_tiles.keys()) == set(parallel_tiles.keys())
         for path in serial_tiles:
@@ -263,7 +263,7 @@ class TestBitIdentical:
 class TestAutoDetect:
     """workers=None should auto-detect and still produce correct output."""
 
-    def test_auto_workers_mvt3(self, tmp_path):
+    def test_auto_workers_mjb(self, tmp_path):
         collection = _large_point_collection(50)
 
         gen = TileGenerator3D(
@@ -311,6 +311,6 @@ class TestWorkersOneMatchesOriginal:
         c2 = gen2.generate(dir2)
 
         assert c1 == c2
-        tiles1 = _collect_tiles(dir1, "mvt3")
-        tiles2 = _collect_tiles(dir2, "mvt3")
+        tiles1 = _collect_tiles(dir1, "mjb")
+        tiles2 = _collect_tiles(dir2, "mjb")
         assert tiles1 == tiles2

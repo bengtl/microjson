@@ -21,15 +21,15 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1a2e);
 
 // --- Camera (Z-up) ---
-const camera = new THREE.PerspectiveCamera(50, 1, 1, 200000);
+const camera = new THREE.PerspectiveCamera(50, 1, 1, 2000000);
 camera.up.set(0, 0, 1);
 
 // --- Controls ---
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.1;
-controls.minDistance = 500;
-controls.maxDistance = 100000;
+controls.minDistance = 10;
+controls.maxDistance = 1e9;
 
 // --- Lighting ---
 scene.add(new THREE.AmbientLight(0xffffff, 0.6));
@@ -148,6 +148,11 @@ function resetCamera() {
     const size = new THREE.Vector3();
     box.getSize(size);
     const maxDim = Math.max(size.x, size.y, size.z);
+
+    // Adapt clipping planes to dataset scale
+    camera.near = maxDim * 0.0001;
+    camera.far = maxDim * 10;
+    camera.updateProjectionMatrix();
 
     camera.position.set(
         center.x + maxDim * 0.6,

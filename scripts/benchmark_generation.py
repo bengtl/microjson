@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark tile generation speed — Python vs Cython backend.
+"""Benchmark tile generation speed — Python vs Rust backend.
 
 Usage::
 
@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from microjson.tiling3d import CYTHON_AVAILABLE, TileGenerator3D, OctreeConfig
+from microjson.tiling3d import RUST_AVAILABLE, TileGenerator3D, OctreeConfig
 
 
 def _generate_collection(
@@ -109,7 +109,7 @@ def main():
     parser.add_argument("--profile", action="store_true", help="Run cProfile on one generation")
     args = parser.parse_args()
 
-    backend = "Cython" if CYTHON_AVAILABLE else "Python"
+    backend = "Rust" if RUST_AVAILABLE else "Python"
     workers = args.workers
     effective = workers if workers and workers >= 1 else (os.cpu_count() or 1)
     print(f"Backend: {backend}")

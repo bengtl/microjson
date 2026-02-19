@@ -16,6 +16,14 @@ from .properties_writer import (  # noqa: F401
     write_segment_properties,
     features_to_segment_properties,
 )
+from .mesh_models import MeshInfo  # noqa: F401
+from .mesh_writer import (  # noqa: F401
+    mesh_to_binary,
+    decode_mesh_binary,
+    write_mesh,
+    write_mesh_info,
+    fragments_to_mesh,
+)
 from .state import (  # noqa: F401
     build_skeleton_layer,
     build_annotation_layer,

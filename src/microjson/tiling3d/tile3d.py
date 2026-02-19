@@ -140,11 +140,11 @@ def transform_tile_3d(
 
 
 # ---------------------------------------------------------------------------
-# Cython dispatch: save Python reference, try to import compiled version.
+# Rust dispatch: import compiled version from the Rust extension module.
 # ---------------------------------------------------------------------------
 transform_tile_3d_py = transform_tile_3d
 
 try:
-    from .tile3d_cy import transform_tile_3d  # noqa: F811
+    from microjson._rs import transform_tile_3d  # noqa: F811
 except ImportError:
     pass

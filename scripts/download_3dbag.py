@@ -453,13 +453,13 @@ def tile_and_benchmark(
         results["tile"] = tile_results
 
     if do_benchmark:
-        mvt3_dir = output_dir / "mvt3"
+        mjb_dir = output_dir / "mjb"
         tiles3d_dir = output_dir / "3dtiles" if not skip_3dtiles else None
 
-        decode_mvt3: dict = {}
-        if mvt3_dir.exists():
-            print(f"\nBenchmarking mvt3 decode...")
-            decode_mvt3 = bench_decode(mvt3_dir)
+        decode_mjb: dict = {}
+        if mjb_dir.exists():
+            print(f"\nBenchmarking mjb decode...")
+            decode_mjb = bench_decode(mjb_dir)
 
         decode_3dt: dict = {}
         if tiles3d_dir and tiles3d_dir.exists():
@@ -468,20 +468,20 @@ def tile_and_benchmark(
 
         print("Measuring peak memory...")
         memory = bench_memory(
-            mvt3_dir if mvt3_dir.exists() else Path("/dev/null"),
+            mjb_dir if mjb_dir.exists() else Path("/dev/null"),
             tiles3d_dir if tiles3d_dir and tiles3d_dir.exists() else None,
         )
 
-        results["decode_mvt3"] = decode_mvt3
+        results["decode_mjb"] = decode_mjb
         results["decode_3dt"] = decode_3dt
         results["memory"] = memory
 
         if do_tile:
-            print_report(0, tile_results, decode_mvt3, decode_3dt, memory, None)
+            print_report(0, tile_results, decode_mjb, decode_3dt, memory, None)
 
         if csv_path:
             export_csv(csv_path, 0, tile_results if do_tile else {},
-                       decode_mvt3, decode_3dt, memory, None)
+                       decode_mjb, decode_3dt, memory, None)
 
     return results
 

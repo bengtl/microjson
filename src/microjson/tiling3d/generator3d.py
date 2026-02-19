@@ -1,10 +1,10 @@
 """TileGenerator3D — high-level API for 3D vector tile generation.
 
 Orchestrates the full pipeline: convert → index (octree) → transform →
-encode → write to disk as ``{z}/{x}/{y}/{d}.mvt3`` (or ``.glb``) files.
+encode → write to disk as ``{z}/{x}/{y}/{d}.mjb`` (or ``.glb``) files.
 
 Supports two output formats:
-- ``"mvt3"`` (default): protobuf-encoded 3D vector tiles + tilejson3d.json
+- ``"mjb"`` (default): protobuf-encoded 3D vector tiles + tilejson3d.json
 - ``"3dtiles"``: OGC 3D Tiles 1.1 with glTF/GLB content + tileset.json
 """
 
@@ -52,8 +52,8 @@ def _get_mp_context() -> multiprocessing.context.BaseContext:
 
 # --- Module-level worker functions (fork: read from _SHARED_TILES) --------
 
-def _worker_mvt3(args: tuple) -> int:
-    """Process a single mvt3 tile: transform → encode → write."""
+def _worker_mjb(args: tuple) -> int:
+    """Process a single mjb tile: transform → encode → write."""
     key, extent, extent_z, layer_name, output_dir = args
     tile = _SHARED_TILES[key]
     z, x, y, d = key
@@ -66,7 +66,7 @@ def _worker_mvt3(args: tuple) -> int:
         extent=extent, extent_z=extent_z,
     )
 
-    tile_path = Path(output_dir) / str(z) / str(x) / str(y) / f"{d}.mvt3"
+    tile_path = Path(output_dir) / str(z) / str(x) / str(y) / f"{d}.mjb"
     tile_path.parent.mkdir(parents=True, exist_ok=True)
     tile_path.write_bytes(data)
     return 1
@@ -121,7 +121,7 @@ class TileGenerator3D:
 
     Usage::
 
-        gen = TileGenerator3D(config, output_format="mvt3")
+        gen = TileGenerator3D(config, output_format="mjb")
         gen.add_features(collection)
         gen.generate(Path("output/tiles"))
         gen.write_metadata(Path("output/tiles"))
@@ -130,8 +130,8 @@ class TileGenerator3D:
     ----------
     config : OctreeConfig, optional
         Octree configuration.
-    output_format : {"mvt3", "3dtiles"}
-        ``"mvt3"`` produces protobuf tiles + tilejson3d.json.
+    output_format : {"mjb", "3dtiles"}
+        ``"mjb"`` produces protobuf tiles + tilejson3d.json.
         ``"3dtiles"`` produces glTF/GLB tiles + tileset.json.
     workers : int or None
         Number of parallel worker processes for tile generation.
@@ -143,7 +143,7 @@ class TileGenerator3D:
     def __init__(
         self,
         config: OctreeConfig | None = None,
-        output_format: Literal["mvt3", "3dtiles"] = "mvt3",
+        output_format: Literal["mjb", "3dtiles"] = "mjb",
         workers: int | None = None,
     ) -> None:
         self.config = config or OctreeConfig()
@@ -256,7 +256,7 @@ class TileGenerator3D:
     def generate(self, output_dir: Path | str) -> int:
         """Write tiles to disk.
 
-        For ``"mvt3"`` format: ``{z}/{x}/{y}/{d}.mvt3``
+        For ``"mjb"`` format: ``{z}/{x}/{y}/{d}.mjb``
         For ``"3dtiles"`` format: ``{z}/{x}/{y}/{d}.glb``
 
         Returns the number of tiles written.
@@ -266,10 +266,10 @@ class TileGenerator3D:
 
         if self.output_format == "3dtiles":
             return self._generate_3dtiles(Path(output_dir))
-        return self._generate_mvt3(Path(output_dir))
+        return self._generate_mjb(Path(output_dir))
 
-    def _generate_mvt3(self, output_dir: Path) -> int:
-        """Write protobuf-encoded .mvt3 tiles."""
+    def _generate_mjb(self, output_dir: Path) -> int:
+        """Write protobuf-encoded .mjb tiles."""
         assert self._octree is not None
 
         tiles = [
@@ -279,13 +279,13 @@ class TileGenerator3D:
 
         n_workers = self._effective_workers()
         if n_workers <= 1 or len(tiles) < _MIN_TILES_FOR_MP:
-            return self._generate_mvt3_serial(tiles, output_dir)
-        return self._generate_mvt3_parallel(tiles, output_dir, n_workers)
+            return self._generate_mjb_serial(tiles, output_dir)
+        return self._generate_mjb_parallel(tiles, output_dir, n_workers)
 
-    def _generate_mvt3_serial(
+    def _generate_mjb_serial(
         self, tiles: list, output_dir: Path,
     ) -> int:
-        """Single-threaded mvt3 tile generation."""
+        """Single-threaded mjb tile generation."""
         count = 0
         for (z, x, y, d), tile in tiles:
             transformed = transform_tile_3d(
@@ -299,16 +299,16 @@ class TileGenerator3D:
                 extent=self.config.extent,
                 extent_z=self.config.extent_z,
             )
-            tile_path = output_dir / str(z) / str(x) / str(y) / f"{d}.mvt3"
+            tile_path = output_dir / str(z) / str(x) / str(y) / f"{d}.mjb"
             tile_path.parent.mkdir(parents=True, exist_ok=True)
             tile_path.write_bytes(data)
             count += 1
         return count
 
-    def _generate_mvt3_parallel(
+    def _generate_mjb_parallel(
         self, tiles: list, output_dir: Path, n_workers: int,
     ) -> int:
-        """Multiprocessing mvt3 tile generation.
+        """Multiprocessing mjb tile generation.
 
         Uses fork context: tile data is shared via COW memory, only
         lightweight keys are passed through the pool.
@@ -323,7 +323,7 @@ class TileGenerator3D:
         chunksize = max(1, len(args) // (n_workers * 4))
         ctx = _get_mp_context()
         with ctx.Pool(n_workers) as pool:
-            results = pool.map(_worker_mvt3, args, chunksize=chunksize)
+            results = pool.map(_worker_mjb, args, chunksize=chunksize)
         _SHARED_TILES = {}
         return sum(results)
 
@@ -389,7 +389,7 @@ class TileGenerator3D:
     def write_metadata(self, output_dir: Path | str) -> None:
         """Write the appropriate metadata file for the output format.
 
-        For ``"mvt3"``: writes ``tilejson3d.json``
+        For ``"mjb"``: writes ``tilejson3d.json``
         For ``"3dtiles"``: writes ``tileset.json``
         """
         output_dir = Path(output_dir)
@@ -399,7 +399,7 @@ class TileGenerator3D:
             self.write_tilejson(output_dir / "tilejson3d.json")
 
     def write_tilejson(self, path: Path | str) -> None:
-        """Write TileJSON 3D metadata file (.mvt3 format)."""
+        """Write TileJSON 3D metadata file (.mjb format)."""
         if self._bounds is None:
             raise RuntimeError("Call add_features() before write_tilejson()")
 
@@ -408,7 +408,7 @@ class TileGenerator3D:
 
         model = TileModel3D(
             tilejson="3.0.0",
-            tiles=["{z}/{x}/{y}/{d}.mvt3"],
+            tiles=["{z}/{x}/{y}/{d}.mjb"],
             name=self._layer_name,
             minzoom=self.config.min_zoom,
             maxzoom=self.config.max_zoom,

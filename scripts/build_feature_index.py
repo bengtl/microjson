@@ -57,7 +57,7 @@ def extract_features(glb_json: dict) -> list[dict]:
     features = []
     for node in glb_json.get("nodes", []):
         extras = node.get("extras")
-        if extras and ("name" in extras or "acronym" in extras):
+        if extras and ("name" in extras or "acronym" in extras or "body_id" in extras):
             features.append(extras)
     return features
 
@@ -87,17 +87,23 @@ def build_index(tiles_dir: Path) -> dict:
         features = extract_features(glb_json)
 
         for feat in features:
-            name = feat.get("name", feat.get("acronym", ""))
+            name = (feat.get("name")
+                    or feat.get("acronym")
+                    or feat.get("instance")
+                    or str(feat.get("body_id", "")))
             if not name:
                 continue
 
             if name not in feature_map:
-                feature_map[name] = {
+                entry: dict = {
                     "color": feat.get("color", "#888888"),
-                    "acronym": feat.get("acronym", ""),
-                    "ccf_id": feat.get("ccf_id"),
                     "tiles": {},
                 }
+                # Include whichever metadata fields are present
+                for key in ("acronym", "ccf_id", "body_id", "cell_type", "instance"):
+                    if feat.get(key) is not None:
+                        entry[key] = feat[key]
+                feature_map[name] = entry
 
             zstr = str(z)
             if zstr not in feature_map[name]["tiles"]:

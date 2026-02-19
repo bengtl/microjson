@@ -5,7 +5,7 @@ Runs decode/memory/DataLoader benchmarks across all 5 benchmark datasets
 and produces a comparison table (console, CSV, and LaTeX).
 
 Assumes each dataset has already been downloaded, converted, and tiled.
-Looks for tiles in: data/{dataset}/tiles/{mvt3,3dtiles}/
+Looks for tiles in: data/{dataset}/tiles/{mjb,3dtiles}/
 
 Usage::
 
@@ -44,7 +44,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_ROOT / "scripts"))
 
-from microjson.tiling3d import CYTHON_AVAILABLE
+from microjson.tiling3d import RUST_AVAILABLE
 from microjson.tiling3d.reader3d import decode_tile
 
 
@@ -145,13 +145,13 @@ def benchmark_dataset(
 ) -> dict[str, Any] | None:
     """Run benchmarks for a single dataset. Returns results dict or None."""
     tiles_dir = info["tiles_dir"]
-    mvt3_dir = tiles_dir / "mvt3"
+    mjb_dir = tiles_dir / "mjb"
     tiles3d_dir = tiles_dir / "3dtiles"
 
-    has_mvt3 = mvt3_dir.exists() and list(mvt3_dir.rglob("*.mvt3"))
+    has_mjb = mjb_dir.exists() and list(mjb_dir.rglob("*.mjb"))
     has_3dt = tiles3d_dir.exists() and list(tiles3d_dir.rglob("*.glb"))
 
-    if not has_mvt3 and not has_3dt:
+    if not has_mjb and not has_3dt:
         print(f"  SKIP: No tiles found at {tiles_dir}")
         return None
 
@@ -163,11 +163,11 @@ def benchmark_dataset(
     }
 
     # --- Tile stats ---
-    if has_mvt3:
-        mvt3_files = _collect_files(mvt3_dir, ".mvt3")
-        results["mvt3_tile_count"] = len(mvt3_files)
-        results["mvt3_size_raw"] = _dir_size(mvt3_dir)
-        results["mvt3_size_gzip"] = _dir_size_gzipped(mvt3_dir)
+    if has_mjb:
+        mjb_files = _collect_files(mjb_dir, ".mjb")
+        results["mjb_tile_count"] = len(mjb_files)
+        results["mjb_size_raw"] = _dir_size(mjb_dir)
+        results["mjb_size_gzip"] = _dir_size_gzipped(mjb_dir)
 
     if has_3dt:
         glb_files = _collect_files(tiles3d_dir, ".glb")
@@ -193,10 +193,10 @@ def benchmark_dataset(
         except Exception:
             pass
 
-    # --- mvt3 decode benchmark ---
-    if has_mvt3:
-        mvt3_files = _collect_files(mvt3_dir, ".mvt3")
-        sample = mvt3_files
+    # --- mjb decode benchmark ---
+    if has_mjb:
+        mjb_files = _collect_files(mjb_dir, ".mjb")
+        sample = mjb_files
         if len(sample) > max_sample:
             sample = random.sample(sample, max_sample)
 
@@ -228,8 +228,8 @@ def benchmark_dataset(
                 decode_tile(data)
                 times.append(time.perf_counter() - t0)
 
-        results["mvt3_decode_median_us"] = statistics.median(times) * 1_000_000
-        results["mvt3_decode_p95_us"] = sorted(times)[int(len(times) * 0.95)] * 1_000_000
+        results["mjb_decode_median_us"] = statistics.median(times) * 1_000_000
+        results["mjb_decode_p95_us"] = sorted(times)[int(len(times) * 0.95)] * 1_000_000
 
     # --- 3D Tiles decode benchmark ---
     if has_3dt:
@@ -261,14 +261,14 @@ def benchmark_dataset(
             results["3dt_decode_p95_us"] = sorted(times)[int(len(times) * 0.95)] * 1_000_000
 
     # --- Memory benchmark ---
-    if has_mvt3:
-        mvt3_bytes = [f.read_bytes() for f in _collect_files(mvt3_dir, ".mvt3")]
+    if has_mjb:
+        mjb_bytes = [f.read_bytes() for f in _collect_files(mjb_dir, ".mjb")]
         tracemalloc.start()
-        for data in mvt3_bytes:
+        for data in mjb_bytes:
             decode_tile(data)
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        results["mvt3_peak_mb"] = peak / (1024 * 1024)
+        results["mjb_peak_mb"] = peak / (1024 * 1024)
 
     if has_3dt and pygltflib:
         glb_bytes = [f.read_bytes() for f in _collect_files(tiles3d_dir, ".glb")]
@@ -279,10 +279,10 @@ def benchmark_dataset(
         tracemalloc.stop()
         results["3dt_peak_mb"] = peak / (1024 * 1024)
 
-    # --- Metadata extraction benchmark (mvt3) ---
-    if has_mvt3:
-        mvt3_files = _collect_files(mvt3_dir, ".mvt3")
-        sample = mvt3_files[:max_sample]
+    # --- Metadata extraction benchmark (mjb) ---
+    if has_mjb:
+        mjb_files = _collect_files(mjb_dir, ".mjb")
+        sample = mjb_files[:max_sample]
         tile_bytes = [f.read_bytes() for f in sample]
 
         meta_times: list[float] = []
@@ -295,17 +295,17 @@ def benchmark_dataset(
             meta_times.append(time.perf_counter() - t0)
 
         if meta_times:
-            results["mvt3_metadata_median_us"] = statistics.median(meta_times) * 1_000_000
+            results["mjb_metadata_median_us"] = statistics.median(meta_times) * 1_000_000
 
     # --- DataLoader benchmark (optional) ---
-    if do_dataloader and has_mvt3:
+    if do_dataloader and has_mjb:
         try:
             import torch
             from torch.utils.data import DataLoader, Dataset
 
             class Mvt3Dataset(Dataset):
                 def __init__(self, tile_dir: Path):
-                    self._data = [f.read_bytes() for f in _collect_files(tile_dir, ".mvt3")]
+                    self._data = [f.read_bytes() for f in _collect_files(tile_dir, ".mjb")]
                 def __len__(self):
                     return len(self._data)
                 def __getitem__(self, idx):
@@ -318,7 +318,7 @@ def benchmark_dataset(
                                 parts.append(torch.frombuffer(bytearray(mesh), dtype=torch.float32))
                     return torch.cat(parts) if parts else torch.zeros(1)
 
-            ds = Mvt3Dataset(mvt3_dir)
+            ds = Mvt3Dataset(mjb_dir)
             if len(ds) > 0:
                 loader = DataLoader(ds, batch_size=4, num_workers=0, collate_fn=lambda x: x)
                 total = 0
@@ -327,7 +327,7 @@ def benchmark_dataset(
                     for batch in loader:
                         total += len(batch)
                 elapsed = time.perf_counter() - t0
-                results["mvt3_dataloader_tps"] = total / elapsed if elapsed > 0 else 0
+                results["mjb_dataloader_tps"] = total / elapsed if elapsed > 0 else 0
         except ImportError:
             pass
 
@@ -342,7 +342,7 @@ def print_comparison_table(all_results: list[dict]) -> None:
     """Print formatted comparison table to console."""
     print(f"\n{'=' * 120}")
     print(f"  Multi-Dataset Benchmark Comparison")
-    print(f"  Backend: {'Cython' if CYTHON_AVAILABLE else 'Python'}")
+    print(f"  Backend: {'Rust' if RUST_AVAILABLE else 'Python'}")
     print(f"{'=' * 120}")
 
     # Header
@@ -367,46 +367,46 @@ def print_comparison_table(all_results: list[dict]) -> None:
     _row("Domain", "domain")
     _row("Geometry type", "geometry")
     _row("Features", "feature_count", lambda v: f"{v:,}")
-    _row("mvt3 tiles", "mvt3_tile_count", lambda v: f"{v:,}")
-    _row("mvt3 raw size", "mvt3_size_raw", _fmt_bytes)
-    _row("mvt3 gzip size", "mvt3_size_gzip", _fmt_bytes)
+    _row("mjb tiles", "mjb_tile_count", lambda v: f"{v:,}")
+    _row("mjb raw size", "mjb_size_raw", _fmt_bytes)
+    _row("mjb gzip size", "mjb_size_gzip", _fmt_bytes)
     _row("3DT tiles", "3dt_tile_count", lambda v: f"{v:,}")
     _row("3DT raw size", "3dt_size_raw", _fmt_bytes)
 
     print()
-    _row("mvt3 decode median", "mvt3_decode_median_us", lambda v: f"{v:.0f}us")
-    _row("mvt3 decode P95", "mvt3_decode_p95_us", lambda v: f"{v:.0f}us")
+    _row("mjb decode median", "mjb_decode_median_us", lambda v: f"{v:.0f}us")
+    _row("mjb decode P95", "mjb_decode_p95_us", lambda v: f"{v:.0f}us")
     _row("3DT decode median", "3dt_decode_median_us", lambda v: f"{v:.0f}us")
     _row("3DT decode P95", "3dt_decode_p95_us", lambda v: f"{v:.0f}us")
 
     # Speedup
-    line = f"  {'Decode speedup (mvt3/3DT)':<{metric_w}}"
+    line = f"  {'Decode speedup (mjb/3DT)':<{metric_w}}"
     for r in all_results:
-        mvt3 = r.get("mvt3_decode_median_us")
+        mjb = r.get("mjb_decode_median_us")
         tdt = r.get("3dt_decode_median_us")
-        if mvt3 and tdt and tdt > 0:
-            line += f" {tdt / mvt3:>{col_w}.1f}x"
+        if mjb and tdt and tdt > 0:
+            line += f" {tdt / mjb:>{col_w}.1f}x"
         else:
             line += f" {'—':>{col_w}}"
     print(line)
 
     print()
-    _row("mvt3 peak memory", "mvt3_peak_mb", lambda v: f"{v:.1f} MB")
+    _row("mjb peak memory", "mjb_peak_mb", lambda v: f"{v:.1f} MB")
     _row("3DT peak memory", "3dt_peak_mb", lambda v: f"{v:.1f} MB")
 
     # Memory ratio
-    line = f"  {'Memory ratio (3DT/mvt3)':<{metric_w}}"
+    line = f"  {'Memory ratio (3DT/mjb)':<{metric_w}}"
     for r in all_results:
-        mvt3 = r.get("mvt3_peak_mb")
+        mjb = r.get("mjb_peak_mb")
         tdt = r.get("3dt_peak_mb")
-        if mvt3 and tdt and mvt3 > 0:
-            line += f" {tdt / mvt3:>{col_w}.1f}x"
+        if mjb and tdt and mjb > 0:
+            line += f" {tdt / mjb:>{col_w}.1f}x"
         else:
             line += f" {'—':>{col_w}}"
     print(line)
 
-    _row("mvt3 metadata extract", "mvt3_metadata_median_us", lambda v: f"{v:.0f}us")
-    _row("mvt3 DataLoader t/s", "mvt3_dataloader_tps", lambda v: f"{v:.1f}")
+    _row("mjb metadata extract", "mjb_metadata_median_us", lambda v: f"{v:.0f}us")
+    _row("mjb DataLoader t/s", "mjb_dataloader_tps", lambda v: f"{v:.1f}")
 
     print()
 
@@ -469,46 +469,46 @@ def export_latex_table(path: Path, all_results: list[dict]) -> None:
     _latex_row("Domain", "domain")
     _latex_row("Geometry", "geometry")
     _latex_row("Features", "feature_count", lambda v: f"{v:,}")
-    _latex_row("mvt3 tiles", "mvt3_tile_count", lambda v: f"{v:,}")
-    _latex_row("mvt3 size (raw)", "mvt3_size_raw", _fmt_bytes)
-    _latex_row("mvt3 size (gzip)", "mvt3_size_gzip", _fmt_bytes)
+    _latex_row("mjb tiles", "mjb_tile_count", lambda v: f"{v:,}")
+    _latex_row("mjb size (raw)", "mjb_size_raw", _fmt_bytes)
+    _latex_row("mjb size (gzip)", "mjb_size_gzip", _fmt_bytes)
     _latex_row("3DT tiles", "3dt_tile_count", lambda v: f"{v:,}")
     _latex_row("3DT size (raw)", "3dt_size_raw", _fmt_bytes)
     lines.append(r"\hline")
 
-    _latex_row(r"mvt3 decode ($\mu$s)", "mvt3_decode_median_us", lambda v: f"{v:.0f}")
+    _latex_row(r"mjb decode ($\mu$s)", "mjb_decode_median_us", lambda v: f"{v:.0f}")
     _latex_row(r"3DT decode ($\mu$s)", "3dt_decode_median_us", lambda v: f"{v:.0f}")
 
     # Speedup row
     row = "Decode speedup"
     for r in all_results:
-        mvt3 = r.get("mvt3_decode_median_us")
+        mjb = r.get("mjb_decode_median_us")
         tdt = r.get("3dt_decode_median_us")
-        if mvt3 and tdt and tdt > 0:
-            row += f" & {tdt / mvt3:.0f}$\\times$"
+        if mjb and tdt and tdt > 0:
+            row += f" & {tdt / mjb:.0f}$\\times$"
         else:
             row += " & ---"
     row += r" \\"
     lines.append(row)
     lines.append(r"\hline")
 
-    _latex_row("mvt3 memory (MB)", "mvt3_peak_mb", lambda v: f"{v:.1f}")
+    _latex_row("mjb memory (MB)", "mjb_peak_mb", lambda v: f"{v:.1f}")
     _latex_row("3DT memory (MB)", "3dt_peak_mb", lambda v: f"{v:.1f}")
 
     # Memory ratio
     row = "Memory ratio"
     for r in all_results:
-        mvt3 = r.get("mvt3_peak_mb")
+        mjb = r.get("mjb_peak_mb")
         tdt = r.get("3dt_peak_mb")
-        if mvt3 and tdt and mvt3 > 0:
-            row += f" & {tdt / mvt3:.1f}$\\times$"
+        if mjb and tdt and mjb > 0:
+            row += f" & {tdt / mjb:.1f}$\\times$"
         else:
             row += " & ---"
     row += r" \\"
     lines.append(row)
 
-    _latex_row(r"Metadata ($\mu$s)", "mvt3_metadata_median_us", lambda v: f"{v:.0f}")
-    _latex_row("DataLoader (t/s)", "mvt3_dataloader_tps", lambda v: f"{v:.1f}")
+    _latex_row(r"Metadata ($\mu$s)", "mjb_metadata_median_us", lambda v: f"{v:.0f}")
+    _latex_row("DataLoader (t/s)", "mjb_dataloader_tps", lambda v: f"{v:.1f}")
 
     lines.extend([
         r"\hline",
@@ -541,7 +541,7 @@ def main() -> None:
 
     dataset_names = args.datasets or list(DATASETS.keys())
 
-    print(f"Backend: {'Cython' if CYTHON_AVAILABLE else 'Python'}")
+    print(f"Backend: {'Rust' if RUST_AVAILABLE else 'Python'}")
     print(f"Datasets: {', '.join(dataset_names)}\n")
 
     all_results: list[dict] = []
@@ -560,7 +560,7 @@ def main() -> None:
 
         if result:
             all_results.append(result)
-            print(f"  mvt3 decode: {result.get('mvt3_decode_median_us', 0):.0f}us median")
+            print(f"  mjb decode: {result.get('mjb_decode_median_us', 0):.0f}us median")
             if result.get("3dt_decode_median_us"):
                 print(f"  3DT decode:  {result['3dt_decode_median_us']:.0f}us median")
         print()

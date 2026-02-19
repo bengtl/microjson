@@ -506,12 +506,19 @@ export class TileManager {
             const group = gltf.scene;
 
             // Index meshes by feature name + apply colors
+            let meshCount = 0, namedCount = 0;
             group.traverse(child => {
                 if (!child.isMesh) return;
+                child.visible = false; // hide all meshes by default
+                meshCount++;
                 const props = this._findProps(child);
                 if (!props) return;
-                const name = props.name || props.acronym || '';
+                const rawName = props.name;
+                const name = (rawName && !/^feature_\d+$/.test(rawName) ? rawName : null)
+                    || props.acronym || props.instance
+                    || (props.body_id != null ? String(props.body_id) : '');
                 if (!name) return;
+                namedCount++;
 
                 if (!node.meshByFeature[name]) node.meshByFeature[name] = [];
                 node.meshByFeature[name].push(child);
@@ -523,7 +530,6 @@ export class TileManager {
                     child.material = child.material.clone();
                     child.material.color.set(color);
                 }
-                child.visible = false;
 
                 // GPU accounting
                 if (child.geometry) {
@@ -536,6 +542,7 @@ export class TileManager {
                 }
             });
 
+            console.log(`[debug] ${node.uri}: ${meshCount} meshes, ${namedCount} named, features: [${Object.keys(node.meshByFeature).slice(0,3).join(', ')}${Object.keys(node.meshByFeature).length > 3 ? '...' : ''}]`);
             group.visible = false;
             this.scene.add(group);
             node.object3D = group;
@@ -554,7 +561,7 @@ export class TileManager {
     _findProps(obj) {
         let cur = obj;
         while (cur) {
-            if (cur.userData && (cur.userData.name || cur.userData.acronym)) {
+            if (cur.userData && (cur.userData.name || cur.userData.acronym || cur.userData.instance || cur.userData.body_id)) {
                 return cur.userData;
             }
             cur = cur.parent;

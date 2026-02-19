@@ -312,6 +312,278 @@ def convert_to_microjson(
 
 
 # ---------------------------------------------------------------------------
+# Step 3b: True streaming tiling (no MicroFeatureCollection in memory)
+# ---------------------------------------------------------------------------
+
+def _build_tags(obj_path: Path, meta_lookup: dict[str, dict]) -> dict:
+    """Build property tags for an OBJ file from metadata."""
+    body_id = obj_path.stem
+    tags: dict = {
+        "body_id": int(body_id) if body_id.isdigit() else body_id,
+        "source": obj_path.name,
+    }
+    meta = meta_lookup.get(body_id, {})
+    if meta:
+        if meta.get("cellType"):
+            tags["cell_type"] = meta["cellType"]
+        if meta.get("instance"):
+            tags["instance"] = meta["instance"]
+        if meta.get("status"):
+            tags["status"] = meta["status"]
+    # Feature name for viewer: prefer instance, fall back to body_id
+    tags["name"] = tags.get("instance") or str(body_id)
+    # Deterministic color from body_id hash
+    h = hash(str(body_id)) & 0x7FFFFFFF
+    hue = (h % 360) / 360.0
+    import colorsys
+    r, g, b = colorsys.hls_to_rgb(hue, 0.5, 0.75)
+    tags["color"] = f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+    return tags
+
+
+def tile_streaming(
+    mesh_dir: Path,
+    metadata_path: Path,
+    output_dir: Path,
+    *,
+    max_zoom: int = 3,
+    max_files: int | None = None,
+    skip_3dtiles: bool = False,
+    skip_mjb: bool = False,
+    pyramid_name: str = "hemibrain",
+) -> dict:
+    """True streaming tiling — O(1 mesh) memory during ingest.
+
+    All heavy work (OBJ parse, projection, clipping, fragment I/O) happens
+    in Rust via ``add_obj_file()`` / ``add_obj_files()``.
+
+    Giant meshes (>500 MB) are ingested one at a time to cap peak RAM.
+    Smaller meshes are batched for parallel rayon ingest.
+
+    Output uses pyramid directory structure:
+        {output_dir}/{pyramid_name}/3dtiles/  (tileset.json, features.json, *.glb)
+        {output_dir}/{pyramid_name}/mjb/      (tilejson3d.json, *.mjb)
+    """
+    import shutil
+    import subprocess
+
+    from microjson._rs import StreamingTileGenerator, scan_obj_bounds
+
+    # Size threshold for serial vs parallel ingest (500 MB)
+    _GIANT_THRESHOLD = 500 * 1024 * 1024
+
+    obj_paths = sorted(mesh_dir.glob("*.obj"))
+    if not obj_paths:
+        print(f"ERROR: No .obj files in {mesh_dir}", file=sys.stderr)
+        sys.exit(1)
+    if max_files and max_files < len(obj_paths):
+        obj_paths = obj_paths[:max_files]
+
+    meta_lookup: dict[str, dict] = {}
+    if metadata_path.exists():
+        raw = json.loads(metadata_path.read_text())
+        for neuron in raw.get("neurons", []):
+            meta_lookup[str(neuron["bodyId"])] = neuron
+
+    results: dict = {}
+    path_strs = [str(p) for p in obj_paths]
+
+    # --- Pass 1: scan bounds (Rust per-file, vertex-only, cached) ---
+    bounds_cache = mesh_dir / "bounds.json"
+    if bounds_cache.exists():
+        bounds = tuple(json.loads(bounds_cache.read_text()))
+        print(f"Using cached bounds from {bounds_cache}", flush=True)
+    else:
+        print(f"Pass 1: Scanning {len(obj_paths)} OBJ vertex bounds...", flush=True)
+        t0 = time.perf_counter()
+        gmin = [float("inf")] * 3
+        gmax = [float("-inf")] * 3
+        for i, p in enumerate(path_strs, 1):
+            b = scan_obj_bounds([p])
+            for ax in range(3):
+                if b[ax] < gmin[ax]:
+                    gmin[ax] = b[ax]
+                if b[ax + 3] > gmax[ax]:
+                    gmax[ax] = b[ax + 3]
+            print(f"  [{i}/{len(obj_paths)}] {obj_paths[i-1].name}", flush=True)
+        bounds = (gmin[0], gmin[1], gmin[2], gmax[0], gmax[1], gmax[2])
+        bounds_cache.write_text(json.dumps(list(bounds)))
+        print(f"  Bounds: x=[{bounds[0]:.0f}, {bounds[3]:.0f}] "
+              f"y=[{bounds[1]:.0f}, {bounds[4]:.0f}] "
+              f"z=[{bounds[2]:.0f}, {bounds[5]:.0f}]  "
+              f"({_fmt_time(time.perf_counter() - t0)})", flush=True)
+
+    # Partition files into giants (serial) and small (parallel batches)
+    giants = []
+    smalls = []
+    for p in obj_paths:
+        if p.stat().st_size > _GIANT_THRESHOLD:
+            giants.append(p)
+        else:
+            smalls.append(p)
+    print(f"Files: {len(giants)} giant (>{_GIANT_THRESHOLD // (1024*1024)} MB), "
+          f"{len(smalls)} small → chunked ingest", flush=True)
+
+    def _ingest_chunked(gen: StreamingTileGenerator) -> float:
+        """Chunked ingest: giants one-by-one, smalls in parallel batches."""
+        t0 = time.perf_counter()
+
+        # Giant files: serial, one at a time
+        for i, obj_path in enumerate(giants, 1):
+            t1 = time.perf_counter()
+            tags = _build_tags(obj_path, meta_lookup)
+            gen.add_obj_file(str(obj_path), bounds, tags)
+            dt = time.perf_counter() - t1
+            sz_mb = obj_path.stat().st_size / (1024 * 1024)
+            print(f"  [giant {i}/{len(giants)}] {obj_path.name} "
+                  f"({sz_mb:.0f} MB, {_fmt_time(dt)})", flush=True)
+
+        # Small files: parallel batch via add_obj_files
+        if smalls:
+            small_strs = [str(p) for p in smalls]
+            small_tags = [_build_tags(p, meta_lookup) for p in smalls]
+            print(f"  Ingesting {len(smalls)} small files (parallel rayon)...",
+                  flush=True)
+            t1 = time.perf_counter()
+            gen.add_obj_files(small_strs, bounds, small_tags)
+            dt = time.perf_counter() - t1
+            print(f"  Small batch: {_fmt_time(dt)} "
+                  f"({len(smalls) / dt:.0f} files/s)", flush=True)
+
+        return time.perf_counter() - t0
+
+    # Pyramid directory structure
+    pyramid_dir = output_dir / pyramid_name
+
+    # --- mjb ---
+    if not skip_mjb:
+        mjb_dir = pyramid_dir / "mjb"
+        if mjb_dir.exists():
+            shutil.rmtree(mjb_dir)
+        mjb_dir.mkdir(parents=True, exist_ok=True)
+
+        gen = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
+        print(f"\nStreaming mjb ingest (zoom 0-{max_zoom})...")
+        t_index = _ingest_chunked(gen)
+        print(f"  Ingest: {_fmt_time(t_index)}")
+
+        t0 = time.perf_counter()
+        n_tiles = gen.generate_mjb(str(mjb_dir), "default")
+        t_gen = time.perf_counter() - t0
+
+        tilejson_path = mjb_dir / "tilejson3d.json"
+        gen.write_tilejson3d(str(tilejson_path), bounds, "default")
+        del gen
+
+        mjb_size = sum(f.stat().st_size for f in mjb_dir.rglob("*") if f.is_file())
+        results["mjb_tiles"] = n_tiles
+        results["mjb_index_time"] = t_index
+        results["mjb_gen_time"] = t_gen
+        results["mjb_size_raw"] = mjb_size
+        results["mjb_size_gzip"] = 0  # skip gzip for speed
+        results["mjb_dir"] = mjb_dir
+
+        print(f"  {n_tiles} tiles in {_fmt_time(t_gen)}")
+        print(f"  Size: {_fmt_bytes(mjb_size)} raw")
+        if t_gen > 0:
+            print(f"  Throughput: {n_tiles / t_gen:.0f} tiles/s")
+
+    # --- 3dtiles (optional) ---
+    if not skip_3dtiles:
+        tiles3d_dir = pyramid_dir / "3dtiles"
+        if tiles3d_dir.exists():
+            shutil.rmtree(tiles3d_dir)
+        tiles3d_dir.mkdir(parents=True, exist_ok=True)
+
+        gen3d = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom, base_cells=100)
+        print(f"\nStreaming 3D Tiles ingest (zoom 0-{max_zoom}, base_cells=100)...")
+        t_index_3d = _ingest_chunked(gen3d)
+
+        t0 = time.perf_counter()
+        n_tiles_3d = gen3d.generate_3dtiles(str(tiles3d_dir), bounds)
+        t_gen_3d = time.perf_counter() - t0
+        del gen3d
+
+        tiles3d_size = sum(f.stat().st_size for f in tiles3d_dir.rglob("*") if f.is_file())
+        results["3dtiles_tiles"] = n_tiles_3d
+        results["3dtiles_index_time"] = t_index_3d
+        results["3dtiles_gen_time"] = t_gen_3d
+        results["3dtiles_size_raw"] = tiles3d_size
+        results["3dtiles_size_gzip"] = 0
+        results["3dtiles_dir"] = tiles3d_dir
+
+        print(f"  {n_tiles_3d} tiles in {_fmt_time(t_gen_3d)}")
+        print(f"  Size: {_fmt_bytes(tiles3d_size)} raw")
+        if t_gen_3d > 0:
+            print(f"  Throughput: {n_tiles_3d / t_gen_3d:.0f} tiles/s")
+
+        # Build features.json for the viewer
+        feat_index = tiles3d_dir / "features.json"
+        print(f"\nBuilding features.json...")
+        subprocess.run(
+            [
+                str(_ROOT / ".venv" / "bin" / "python"),
+                str(_ROOT / "scripts" / "build_feature_index.py"),
+                "--tiles-dir", str(tiles3d_dir),
+                "--output", str(feat_index),
+            ],
+            check=True,
+        )
+
+    # --- feature-centric MJB ---
+    feat_mjb_dir = pyramid_dir / "feature_mjb"
+    if feat_mjb_dir.exists():
+        shutil.rmtree(feat_mjb_dir)
+    feat_mjb_dir.mkdir(parents=True, exist_ok=True)
+
+    gen_fmjb = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom, base_cells=100)
+    print(f"\nStreaming feature-centric MJB ingest (zoom 0-{max_zoom}, base_cells=100)...")
+    t_index_fmjb = _ingest_chunked(gen_fmjb)
+
+    t0 = time.perf_counter()
+    n_feat_mjb = gen_fmjb.generate_feature_mjb(str(feat_mjb_dir), bounds)
+    t_gen_fmjb = time.perf_counter() - t0
+    del gen_fmjb
+
+    feat_mjb_size = sum(f.stat().st_size for f in feat_mjb_dir.rglob("*") if f.is_file())
+    results["feature_mjb_features"] = n_feat_mjb
+    results["feature_mjb_index_time"] = t_index_fmjb
+    results["feature_mjb_gen_time"] = t_gen_fmjb
+    results["feature_mjb_size_raw"] = feat_mjb_size
+    results["feature_mjb_dir"] = feat_mjb_dir
+
+    print(f"  {n_feat_mjb} features in {_fmt_time(t_gen_fmjb)}")
+    print(f"  Size: {_fmt_bytes(feat_mjb_size)} raw")
+
+    # --- neuroglancer ---
+    ng_dir = pyramid_dir / "neuroglancer"
+    if ng_dir.exists():
+        shutil.rmtree(ng_dir)
+    ng_dir.mkdir(parents=True, exist_ok=True)
+
+    gen_ng = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom, base_cells=100)
+    print(f"\nStreaming Neuroglancer ingest (zoom 0-{max_zoom}, base_cells=100)...")
+    t_index_ng = _ingest_chunked(gen_ng)
+
+    t0 = time.perf_counter()
+    n_feat_ng = gen_ng.generate_neuroglancer_multilod(str(ng_dir), bounds)
+    t_gen_ng = time.perf_counter() - t0
+    del gen_ng
+
+    ng_size = sum(f.stat().st_size for f in ng_dir.rglob("*") if f.is_file())
+    results["neuroglancer_features"] = n_feat_ng
+    results["neuroglancer_index_time"] = t_index_ng
+    results["neuroglancer_gen_time"] = t_gen_ng
+    results["neuroglancer_size_raw"] = ng_size
+    results["neuroglancer_dir"] = ng_dir
+
+    print(f"  {n_feat_ng} features in {_fmt_time(t_gen_ng)}")
+    print(f"  Size: {_fmt_bytes(ng_size)} raw")
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Step 4 & 5: Tile + Benchmark (reuse from benchmark_mouselight)
 # ---------------------------------------------------------------------------
 
@@ -349,15 +621,15 @@ def tile_and_benchmark(
         results["tile"] = tile_results
 
     if do_benchmark:
-        mvt3_dir = output_dir / "mvt3"
+        mjb_dir = output_dir / "mjb"
         tiles3d_dir = output_dir / "3dtiles" if not skip_3dtiles else None
 
-        if mvt3_dir.exists():
-            print(f"\nBenchmarking mvt3 decode...")
-            decode_mvt3 = bench_decode(mvt3_dir)
-            results["decode_mvt3"] = decode_mvt3
+        if mjb_dir.exists():
+            print(f"\nBenchmarking mjb decode...")
+            decode_mjb = bench_decode(mjb_dir)
+            results["decode_mjb"] = decode_mjb
         else:
-            decode_mvt3 = {}
+            decode_mjb = {}
 
         decode_3dt: dict = {}
         if tiles3d_dir and tiles3d_dir.exists():
@@ -367,7 +639,7 @@ def tile_and_benchmark(
 
         print("Measuring peak memory...")
         memory = bench_memory(
-            mvt3_dir if mvt3_dir.exists() else Path("/dev/null"),
+            mjb_dir if mjb_dir.exists() else Path("/dev/null"),
             tiles3d_dir if tiles3d_dir and tiles3d_dir.exists() else None,
         )
         results["memory"] = memory
@@ -376,7 +648,7 @@ def tile_and_benchmark(
             print_report(
                 results.get("convert_time", 0),
                 tile_results,
-                decode_mvt3,
+                decode_mjb,
                 decode_3dt,
                 memory,
                 None,
@@ -387,7 +659,7 @@ def tile_and_benchmark(
                 csv_path,
                 results.get("convert_time", 0),
                 tile_results if do_tile else {},
-                decode_mvt3,
+                decode_mjb,
                 decode_3dt,
                 memory,
                 None,
@@ -406,12 +678,14 @@ def main() -> None:
     )
     parser.add_argument("--download", action="store_true", help="Download meshes from CloudVolume + metadata from neuPrint")
     parser.add_argument("--convert", action="store_true", help="Convert OBJ to MicroJSON")
-    parser.add_argument("--tile", action="store_true", help="Generate tiles (mvt3 + 3dtiles)")
+    parser.add_argument("--tile", action="store_true", help="Generate tiles (mjb + 3dtiles)")
     parser.add_argument("--benchmark", action="store_true", help="Run decode/memory benchmarks")
     parser.add_argument("--max-neurons", type=int, default=1000, help="Max neurons to download (default: 1000)")
     parser.add_argument("--max-zoom", type=int, default=3, help="Max zoom level (default: 3)")
     parser.add_argument("--workers", type=int, default=None, help="Worker processes")
     parser.add_argument("--skip-3dtiles", action="store_true", help="Skip 3D Tiles generation")
+    parser.add_argument("--skip-mjb", action="store_true", help="Skip mjb generation (3D Tiles only)")
+    parser.add_argument("--streaming", action="store_true", help="True streaming mode: O(1 mesh) memory, skips MicroFeatureCollection")
     parser.add_argument("--data-dir", type=Path, default=_DATA_DIR, help="Data directory")
     parser.add_argument("--csv", type=Path, default=None, help="Export results to CSV")
     args = parser.parse_args()
@@ -461,6 +735,21 @@ def main() -> None:
         downloaded = download_meshes(body_ids, mesh_dir)
         dl_time = time.perf_counter() - t0
         print(f"  Download time: {_fmt_time(dl_time)}")
+
+    # --- Streaming mode (bypass MicroFeatureCollection entirely) ---
+    if args.streaming and args.tile:
+        print("Mode: True Streaming (O(1 mesh) memory)")
+        tile_streaming(
+            mesh_dir,
+            meta_path,
+            tiles_dir,
+            max_zoom=args.max_zoom,
+            max_files=args.max_neurons,
+            skip_3dtiles=args.skip_3dtiles,
+            skip_mjb=getattr(args, "skip_mjb", False),
+        )
+        print("Done.")
+        return
 
     # --- Convert ---
     collection = None
