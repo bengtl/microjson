@@ -197,7 +197,7 @@ impl FragmentReader {
     }
 
     /// Reset reader to beginning of file.
-    fn reset(&mut self) -> io::Result<()> {
+    pub fn reset(&mut self) -> io::Result<()> {
         self.reader.seek(SeekFrom::Start(0))?;
         Ok(())
     }

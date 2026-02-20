@@ -580,6 +580,29 @@ def tile_streaming(
     print(f"  {n_feat_ng} features in {_fmt_time(t_gen_ng)}")
     print(f"  Size: {_fmt_bytes(ng_size)} raw")
 
+    # --- parquet ---
+    from microjson.tiling3d.parquet_writer import generate_parquet as _gen_pq
+
+    pq_path = pyramid_dir / "tiles.parquet"
+    gen_pq = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom, base_cells=100)
+    print(f"\nStreaming Parquet ingest (zoom 0-{max_zoom}, base_cells=100)...")
+    t_index_pq = _ingest_chunked(gen_pq)
+
+    t0 = time.perf_counter()
+    n_rows_pq = _gen_pq(gen_pq, pq_path, bounds)
+    t_gen_pq = time.perf_counter() - t0
+    del gen_pq
+
+    pq_size = pq_path.stat().st_size if pq_path.exists() else 0
+    results["parquet_rows"] = n_rows_pq
+    results["parquet_index_time"] = t_index_pq
+    results["parquet_gen_time"] = t_gen_pq
+    results["parquet_size_raw"] = pq_size
+    results["parquet_path"] = pq_path
+
+    print(f"  {n_rows_pq} rows in {_fmt_time(t_gen_pq)}")
+    print(f"  Size: {_fmt_bytes(pq_size)}")
+
     return results
 
 

@@ -1665,6 +1665,287 @@ fn encode_glb_tile_from_fragments(
 }
 
 // ---------------------------------------------------------------------------
+// Parquet data collection (pure Rust, no GIL)
+// ---------------------------------------------------------------------------
+
+/// One row in the Parquet output — one fragment (feature × tile).
+struct ParquetRow {
+    zoom: u8,
+    tile_x: u16,
+    tile_y: u16,
+    tile_d: u16,
+    feature_id: u32,
+    geom_type: u8,
+    positions: Vec<u8>,  // raw LE float32 bytes [x,y,z,...]
+    indices: Vec<u8>,    // raw LE uint32 bytes
+}
+
+/// Process all tile groups into ParquetRow structs.
+///
+/// For TIN/PolyhedralSurface at non-max zoom, applies vertex clustering
+/// (same algorithm as `encode_glb_tile_from_fragments`). At max_zoom,
+/// writes per-face vertices directly. Lines and points are transformed
+/// to world coords without clustering.
+fn collect_parquet_rows(
+    tiles: &[((u32, u32, u32, u32), Vec<Fragment>)],
+    world_bounds: &(f64, f64, f64, f64, f64, f64),
+    max_zoom: u32,
+    base_cells: u32,
+) -> Vec<ParquetRow> {
+    let (xmin, ymin, zmin, xmax, ymax, zmax) = *world_bounds;
+    let dx = if xmax != xmin { xmax - xmin } else { 1.0 };
+    let dy = if ymax != ymin { ymax - ymin } else { 1.0 };
+    let dz = if zmax != zmin { zmax - zmin } else { 1.0 };
+
+    tiles.par_iter()
+        .flat_map(|((tz, tx, ty, td), frags)| {
+            let tz = *tz;
+            let do_simplify = tz < max_zoom;
+            let cell_size = if do_simplify {
+                let cells = base_cells * (1u32 << tz);
+                [dx / cells as f64, dy / cells as f64, dz / cells as f64]
+            } else {
+                [0.0; 3]
+            };
+
+            let mut rows: Vec<ParquetRow> = Vec::new();
+
+            for frag in frags {
+                let n_verts = frag.z.len();
+                if n_verts == 0 {
+                    continue;
+                }
+
+                let (pos_f32, idx_u32) = match frag.geom_type {
+                    5 | 4 => {
+                        // TIN / PolyhedralSurface
+                        let rls: Vec<usize> = if frag.ring_lengths.is_empty() {
+                            vec![n_verts]
+                        } else {
+                            frag.ring_lengths.iter().map(|&r| r as usize).collect()
+                        };
+                        let n_faces = rls.len();
+                        let do_simplify_this = do_simplify && n_faces > 4;
+
+                        if do_simplify_this {
+                            parquet_tin_simplified(
+                                frag, &rls, n_verts,
+                                xmin, ymin, zmin, dx, dy, dz, &cell_size,
+                            )
+                        } else {
+                            parquet_tin_direct(
+                                frag, &rls, n_verts,
+                                xmin, ymin, zmin, dx, dy, dz,
+                            )
+                        }
+                    }
+                    2 => {
+                        // LineString
+                        let mut positions: Vec<f32> = Vec::with_capacity(n_verts * 3);
+                        let mut indices: Vec<u32> = Vec::with_capacity(n_verts.saturating_sub(1) * 2);
+                        for i in 0..n_verts {
+                            positions.push((xmin + frag.xy[i * 2] * dx) as f32);
+                            positions.push((ymin + frag.xy[i * 2 + 1] * dy) as f32);
+                            positions.push((zmin + frag.z[i] * dz) as f32);
+                        }
+                        for i in 0..n_verts.saturating_sub(1) {
+                            indices.push(i as u32);
+                            indices.push((i + 1) as u32);
+                        }
+                        (positions, indices)
+                    }
+                    1 => {
+                        // Point
+                        let mut positions: Vec<f32> = Vec::with_capacity(n_verts * 3);
+                        for i in 0..n_verts {
+                            positions.push((xmin + frag.xy[i * 2] * dx) as f32);
+                            positions.push((ymin + frag.xy[i * 2 + 1] * dy) as f32);
+                            positions.push((zmin + frag.z[i] * dz) as f32);
+                        }
+                        (positions, Vec::new())
+                    }
+                    _ => continue,
+                };
+
+                if pos_f32.is_empty() {
+                    continue;
+                }
+
+                // Convert to LE bytes
+                let pos_bytes: Vec<u8> = pos_f32.iter()
+                    .flat_map(|f| f.to_le_bytes())
+                    .collect();
+                let idx_bytes: Vec<u8> = idx_u32.iter()
+                    .flat_map(|i| i.to_le_bytes())
+                    .collect();
+
+                rows.push(ParquetRow {
+                    zoom: tz as u8,
+                    tile_x: *tx as u16,
+                    tile_y: *ty as u16,
+                    tile_d: *td as u16,
+                    feature_id: frag.feature_id,
+                    geom_type: frag.geom_type,
+                    positions: pos_bytes,
+                    indices: idx_bytes,
+                });
+            }
+
+            rows
+        })
+        .collect()
+}
+
+/// TIN mesh processing with vertex clustering (coarse zoom levels).
+fn parquet_tin_simplified(
+    frag: &Fragment,
+    rls: &[usize],
+    n_verts: usize,
+    xmin: f64, ymin: f64, zmin: f64,
+    dx: f64, dy: f64, dz: f64,
+    cell_size: &[f64; 3],
+) -> (Vec<f32>, Vec<u32>) {
+    let n_faces = rls.len();
+
+    // Phase 1: quantize vertices and accumulate centroids
+    let mut cell_map: AHashMap<(i64, i64, i64), u32> = AHashMap::new();
+    let mut accum: Vec<[f64; 4]> = Vec::new();
+    let mut vert_remap: Vec<u32> = Vec::with_capacity(n_verts);
+    let mut offset = 0usize;
+
+    for &rl in rls {
+        let nv_clust = if rl >= 4 { 3 } else { rl };
+        for vi_off in 0..nv_clust {
+            let vi = offset + vi_off;
+            if vi >= n_verts { break; }
+            let wx = xmin + frag.xy[vi * 2] * dx;
+            let wy = ymin + frag.xy[vi * 2 + 1] * dy;
+            let wz = zmin + frag.z[vi] * dz;
+
+            let qx = ((wx - xmin) / cell_size[0]).floor() as i64;
+            let qy = ((wy - ymin) / cell_size[1]).floor() as i64;
+            let qz = ((wz - zmin) / cell_size[2]).floor() as i64;
+            let key = (qx, qy, qz);
+
+            let idx = match cell_map.get(&key) {
+                Some(&idx) => {
+                    accum[idx as usize][0] += wx;
+                    accum[idx as usize][1] += wy;
+                    accum[idx as usize][2] += wz;
+                    accum[idx as usize][3] += 1.0;
+                    idx
+                }
+                None => {
+                    let idx = cell_map.len() as u32;
+                    cell_map.insert(key, idx);
+                    accum.push([wx, wy, wz, 1.0]);
+                    idx
+                }
+            };
+            vert_remap.push(idx);
+        }
+        offset += rl;
+    }
+
+    // Phase 2: compute centroids
+    let centroids: Vec<[f32; 3]> = accum.iter()
+        .map(|a| [
+            (a[0] / a[3]) as f32,
+            (a[1] / a[3]) as f32,
+            (a[2] / a[3]) as f32,
+        ])
+        .collect();
+
+    // Phase 3: build per-face vertices (skip degenerate faces)
+    let mut positions: Vec<f32> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    let mut remap_offset = 0usize;
+    let mut face_idx = 0u32;
+
+    for &rl in rls {
+        let nv = if rl >= 4 { 3 } else { rl };
+        if nv == 3 && remap_offset + 2 < vert_remap.len() {
+            let i0 = vert_remap[remap_offset];
+            let i1 = vert_remap[remap_offset + 1];
+            let i2 = vert_remap[remap_offset + 2];
+
+            if i0 != i1 && i1 != i2 && i0 != i2 {
+                positions.extend_from_slice(&centroids[i0 as usize]);
+                positions.extend_from_slice(&centroids[i1 as usize]);
+                positions.extend_from_slice(&centroids[i2 as usize]);
+                let base = face_idx * 3;
+                indices.extend_from_slice(&[base, base + 1, base + 2]);
+                face_idx += 1;
+            }
+        }
+        remap_offset += nv;
+    }
+
+    if positions.is_empty() {
+        // All faces degenerate — keep first 4 original faces
+        let max_faces = n_faces.min(4);
+        let mut off = 0usize;
+        let mut fi = 0u32;
+        for (face_i, &rl) in rls.iter().enumerate() {
+            if face_i >= max_faces { break; }
+            let nv = if rl >= 4 { 3 } else { rl };
+            if nv == 3 && off + 2 < n_verts {
+                for vi_off in 0..3 {
+                    let vi = off + vi_off;
+                    let wx = xmin + frag.xy[vi * 2] * dx;
+                    let wy = ymin + frag.xy[vi * 2 + 1] * dy;
+                    let wz = zmin + frag.z[vi] * dz;
+                    positions.push(wx as f32);
+                    positions.push(wy as f32);
+                    positions.push(wz as f32);
+                }
+                let base = fi * 3;
+                indices.extend_from_slice(&[base, base + 1, base + 2]);
+                fi += 1;
+            }
+            off += rl;
+        }
+    }
+
+    (positions, indices)
+}
+
+/// TIN mesh processing without simplification (max_zoom level).
+fn parquet_tin_direct(
+    frag: &Fragment,
+    rls: &[usize],
+    n_verts: usize,
+    xmin: f64, ymin: f64, zmin: f64,
+    dx: f64, dy: f64, dz: f64,
+) -> (Vec<f32>, Vec<u32>) {
+    let mut positions: Vec<f32> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    let mut offset = 0usize;
+    let mut face_idx = 0u32;
+
+    for &rl in rls {
+        let nv = if rl >= 4 { 3 } else { rl };
+        if nv == 3 && offset + 2 < n_verts {
+            for vi_off in 0..3 {
+                let vi = offset + vi_off;
+                let wx = xmin + frag.xy[vi * 2] * dx;
+                let wy = ymin + frag.xy[vi * 2 + 1] * dy;
+                let wz = zmin + frag.z[vi] * dz;
+                positions.push(wx as f32);
+                positions.push(wy as f32);
+                positions.push(wz as f32);
+            }
+            let base = face_idx * 3;
+            indices.extend_from_slice(&[base, base + 1, base + 2]);
+            face_idx += 1;
+        }
+        offset += rl;
+    }
+
+    (positions, indices)
+}
+
+// ---------------------------------------------------------------------------
 // PyO3 helpers: extract features and tags from Python dicts
 // ---------------------------------------------------------------------------
 
@@ -1753,6 +2034,8 @@ pub struct StreamingTileGenerator {
     fragment_writer: Option<FragmentWriter>,
     fragment_path: PathBuf,
     tiles_written: u32,
+    fragment_reader: Option<FragmentReader>,
+    parquet_stream_active: bool,
 }
 
 #[pymethods]
@@ -1797,6 +2080,8 @@ impl StreamingTileGenerator {
             fragment_writer: Some(writer),
             fragment_path: frag_path,
             tiles_written: 0,
+            fragment_reader: None,
+            parquet_stream_active: false,
         })
     }
 
@@ -1988,6 +2273,243 @@ impl StreamingTileGenerator {
 
         self.tiles_written = count;
         Ok(count)
+    }
+
+    /// Collect tile-centric Parquet data from all fragments.
+    ///
+    /// Flushes the fragment writer, reads all fragments grouped by tile key,
+    /// processes meshes in parallel (vertex clustering at coarse zooms, world-coord
+    /// transform), and returns columnar data as a Python dict of lists suitable
+    /// for constructing a PyArrow table.
+    ///
+    /// Returns dict with keys: zoom, tile_x, tile_y, tile_d, feature_id,
+    /// geom_type, positions (bytes), indices (bytes), tags (list of (str,str) tuples).
+    #[pyo3(signature = (world_bounds,))]
+    fn _collect_parquet_data(
+        &mut self,
+        py: Python<'_>,
+        world_bounds: (f64, f64, f64, f64, f64, f64),
+    ) -> PyResult<PyObject> {
+        // Flush and close the fragment writer
+        if let Some(mut writer) = self.fragment_writer.take() {
+            writer.flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
+
+        // Read all fragments grouped by tile key
+        let mut reader = FragmentReader::new(&self.fragment_path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        let groups = reader.read_all_grouped()
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+
+        // Collect for rayon
+        let tiles: Vec<((u32, u32, u32, u32), Vec<Fragment>)> = groups.into_iter().collect();
+        let wb = world_bounds;
+        let max_zoom = self.max_zoom;
+        let base_cells = self.base_cells;
+
+        // GIL-released parallel mesh processing
+        let rows = py.allow_threads(|| {
+            collect_parquet_rows(&tiles, &wb, max_zoom, base_cells)
+        });
+
+        // Build Python dict of lists
+        let tags_ref = &self.tags_registry;
+        let n = rows.len();
+
+        let zoom_list = pyo3::types::PyList::empty(py);
+        let tx_list = pyo3::types::PyList::empty(py);
+        let ty_list = pyo3::types::PyList::empty(py);
+        let td_list = pyo3::types::PyList::empty(py);
+        let fid_list = pyo3::types::PyList::empty(py);
+        let gt_list = pyo3::types::PyList::empty(py);
+        let pos_list = pyo3::types::PyList::empty(py);
+        let idx_list = pyo3::types::PyList::empty(py);
+        let tags_list = pyo3::types::PyList::empty(py);
+
+        for row in &rows {
+            zoom_list.append(row.zoom)?;
+            tx_list.append(row.tile_x)?;
+            ty_list.append(row.tile_y)?;
+            td_list.append(row.tile_d)?;
+            fid_list.append(row.feature_id)?;
+            gt_list.append(row.geom_type)?;
+            pos_list.append(pyo3::types::PyBytes::new(py, &row.positions))?;
+            idx_list.append(pyo3::types::PyBytes::new(py, &row.indices))?;
+
+            // Tags: list of (key, value_as_string) tuples for pa.map_ input
+            let tag_pairs = pyo3::types::PyList::empty(py);
+            if let Some(tags) = tags_ref.get(&row.feature_id) {
+                for (k, v) in tags {
+                    let vs = match v {
+                        TagValue::Str(s) => s.clone(),
+                        TagValue::Int(i) => i.to_string(),
+                        TagValue::Float(f) => f.to_string(),
+                        TagValue::Bool(b) => b.to_string(),
+                    };
+                    tag_pairs.append((k.as_str(), vs.as_str()))?;
+                }
+            }
+            tags_list.append(tag_pairs)?;
+        }
+
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("zoom", zoom_list)?;
+        dict.set_item("tile_x", tx_list)?;
+        dict.set_item("tile_y", ty_list)?;
+        dict.set_item("tile_d", td_list)?;
+        dict.set_item("feature_id", fid_list)?;
+        dict.set_item("geom_type", gt_list)?;
+        dict.set_item("positions", pos_list)?;
+        dict.set_item("indices", idx_list)?;
+        dict.set_item("tags", tags_list)?;
+        dict.set_item("row_count", n)?;
+
+        Ok(dict.into())
+    }
+
+    // ------------------------------------------------------------------
+    // Streaming Parquet batch API — O(batch_size) memory
+    // ------------------------------------------------------------------
+
+    /// Initialize the streaming Parquet iterator.
+    ///
+    /// Flushes the fragment writer and opens a FragmentReader for sequential
+    /// batch reading. Must be called before `_next_parquet_batch()`.
+    fn _init_parquet_stream(&mut self) -> PyResult<()> {
+        if self.parquet_stream_active {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Parquet stream already active — call _close_parquet_stream() first",
+            ));
+        }
+
+        // Flush and close the fragment writer
+        if let Some(mut writer) = self.fragment_writer.take() {
+            writer.flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
+
+        // Open reader
+        let reader = FragmentReader::new(&self.fragment_path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        self.fragment_reader = Some(reader);
+        self.parquet_stream_active = true;
+
+        Ok(())
+    }
+
+    /// Read the next batch of fragments and return processed Parquet rows.
+    ///
+    /// Returns a Python dict with the same format as `_collect_parquet_data()`,
+    /// or `None` when all fragments have been consumed (EOF).
+    ///
+    /// Memory: O(batch_size) — only `batch_size` fragments are loaded at a time.
+    #[pyo3(signature = (batch_size, world_bounds))]
+    fn _next_parquet_batch(
+        &mut self,
+        py: Python<'_>,
+        batch_size: usize,
+        world_bounds: (f64, f64, f64, f64, f64, f64),
+    ) -> PyResult<Option<PyObject>> {
+        if !self.parquet_stream_active {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Parquet stream not active — call _init_parquet_stream() first",
+            ));
+        }
+
+        let reader = self.fragment_reader.as_mut().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("Fragment reader is None")
+        })?;
+
+        // Read up to batch_size fragments
+        let mut groups: AHashMap<(u32, u32, u32, u32), Vec<Fragment>> = AHashMap::new();
+        let mut count = 0usize;
+        while count < batch_size {
+            match reader.read_next() {
+                Ok(Some(frag)) => {
+                    let key = (frag.tile_z, frag.tile_x, frag.tile_y, frag.tile_d);
+                    groups.entry(key).or_default().push(frag);
+                    count += 1;
+                }
+                Ok(None) => break,  // EOF
+                Err(e) => return Err(pyo3::exceptions::PyIOError::new_err(e.to_string())),
+            }
+        }
+
+        // EOF — no fragments read
+        if count == 0 {
+            return Ok(None);
+        }
+
+        // Process fragments into ParquetRows (GIL-released, parallel)
+        let tiles: Vec<((u32, u32, u32, u32), Vec<Fragment>)> = groups.into_iter().collect();
+        let wb = world_bounds;
+        let max_zoom = self.max_zoom;
+        let base_cells = self.base_cells;
+
+        let rows = py.allow_threads(|| {
+            collect_parquet_rows(&tiles, &wb, max_zoom, base_cells)
+        });
+
+        // Build Python dict (same format as _collect_parquet_data)
+        let tags_ref = &self.tags_registry;
+        let n = rows.len();
+
+        let zoom_list = pyo3::types::PyList::empty(py);
+        let tx_list = pyo3::types::PyList::empty(py);
+        let ty_list = pyo3::types::PyList::empty(py);
+        let td_list = pyo3::types::PyList::empty(py);
+        let fid_list = pyo3::types::PyList::empty(py);
+        let gt_list = pyo3::types::PyList::empty(py);
+        let pos_list = pyo3::types::PyList::empty(py);
+        let idx_list = pyo3::types::PyList::empty(py);
+        let tags_list = pyo3::types::PyList::empty(py);
+
+        for row in &rows {
+            zoom_list.append(row.zoom)?;
+            tx_list.append(row.tile_x)?;
+            ty_list.append(row.tile_y)?;
+            td_list.append(row.tile_d)?;
+            fid_list.append(row.feature_id)?;
+            gt_list.append(row.geom_type)?;
+            pos_list.append(pyo3::types::PyBytes::new(py, &row.positions))?;
+            idx_list.append(pyo3::types::PyBytes::new(py, &row.indices))?;
+
+            let tag_pairs = pyo3::types::PyList::empty(py);
+            if let Some(tags) = tags_ref.get(&row.feature_id) {
+                for (k, v) in tags {
+                    let vs = match v {
+                        TagValue::Str(s) => s.clone(),
+                        TagValue::Int(i) => i.to_string(),
+                        TagValue::Float(f) => f.to_string(),
+                        TagValue::Bool(b) => b.to_string(),
+                    };
+                    tag_pairs.append((k.as_str(), vs.as_str()))?;
+                }
+            }
+            tags_list.append(tag_pairs)?;
+        }
+
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("zoom", zoom_list)?;
+        dict.set_item("tile_x", tx_list)?;
+        dict.set_item("tile_y", ty_list)?;
+        dict.set_item("tile_d", td_list)?;
+        dict.set_item("feature_id", fid_list)?;
+        dict.set_item("geom_type", gt_list)?;
+        dict.set_item("positions", pos_list)?;
+        dict.set_item("indices", idx_list)?;
+        dict.set_item("tags", tags_list)?;
+        dict.set_item("row_count", n)?;
+
+        Ok(Some(dict.into()))
+    }
+
+    /// Close the streaming Parquet iterator and release resources.
+    fn _close_parquet_stream(&mut self) -> PyResult<()> {
+        self.fragment_reader.take();
+        self.parquet_stream_active = false;
+        Ok(())
     }
 
     /// Add an OBJ file directly — parse, project, clip, and write fragments in Rust.
@@ -3047,8 +3569,9 @@ impl StreamingTileGenerator {
 /// Clean up temp fragment file on drop.
 impl Drop for StreamingTileGenerator {
     fn drop(&mut self) {
-        // Drop the writer first to release the file handle
+        // Drop the writer and reader to release file handles
         self.fragment_writer.take();
+        self.fragment_reader.take();
         std::fs::remove_file(&self.fragment_path).ok();
     }
 }

@@ -439,6 +439,31 @@ def generate_tiles_streaming(
     print(f"  {n_features_ng} features in {_fmt_time(t_gen_ng)}")
     print(f"  Size: {_fmt_bytes(ng_size)} raw")
 
+    # --- parquet ---
+    from microjson.tiling3d.parquet_writer import generate_parquet as _gen_pq
+
+    pq_path = output_dir / "tiles.parquet"
+    gen_pq = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
+    print(f"\nIngesting for Parquet (parallel Rust)...")
+    t0 = time.perf_counter()
+    gen_pq.add_obj_files(path_strs, bounds, tags_list)
+    t_ingest_pq = time.perf_counter() - t0
+    print(f"  Ingest: {_fmt_time(t_ingest_pq)}")
+
+    print("Writing Parquet (ZSTD)...")
+    t0 = time.perf_counter()
+    n_rows_pq = _gen_pq(gen_pq, pq_path, bounds)
+    t_gen_pq = time.perf_counter() - t0
+
+    pq_size = pq_path.stat().st_size if pq_path.exists() else 0
+    results["parquet_rows"] = n_rows_pq
+    results["parquet_gen_time"] = t_gen_pq
+    results["parquet_size_raw"] = pq_size
+    results["parquet_path"] = pq_path
+
+    print(f"  {n_rows_pq} rows in {_fmt_time(t_gen_pq)}")
+    print(f"  Size: {_fmt_bytes(pq_size)}")
+
     return results, t_ingest
 
 
@@ -920,6 +945,19 @@ def generate_all_brains(
         del gen_ng
         print(f"  Neuroglancer: {n_feat_ng} features in {_fmt_time(t_feat_ng)} ({_fmt_bytes(ng_size)})")
 
+        # Parquet
+        from microjson.tiling3d.parquet_writer import generate_parquet as _gen_pq
+
+        pq_path = output_dir / brain_id / "tiles.parquet"
+        gen_pq = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
+        gen_pq.add_obj_files(path_strs, bounds, tags_list)
+        t0 = time.perf_counter()
+        n_rows_pq = _gen_pq(gen_pq, pq_path, bounds)
+        t_pq = time.perf_counter() - t0
+        pq_size = pq_path.stat().st_size if pq_path.exists() else 0
+        del gen_pq
+        print(f"  Parquet: {n_rows_pq} rows in {_fmt_time(t_pq)} ({_fmt_bytes(pq_size)})")
+
         pyramids.append({
             "id": brain_id,
             "label": f"MouseLight {brain_id} ({n_features} regions)",
@@ -929,6 +967,7 @@ def generate_all_brains(
             "size_bytes": tiles_size,
             "feature_mjb_size": feat_mjb_size,
             "neuroglancer_size": ng_size,
+            "parquet_size": pq_size,
         })
 
     # Write pyramids.json
