@@ -1071,3 +1071,156 @@ class TestStreamingGlb:
         assert prim["mode"] == 0
         assert "indices" not in prim
         assert gltf["nodes"][0]["extras"]["label"] == "origin"
+
+
+def _parse_glb_json(data: bytes):
+    """Parse the JSON chunk from GLB bytes."""
+    import json
+    json_len = int.from_bytes(data[12:16], "little")
+    return json.loads(data[20:20 + json_len].decode("utf-8").strip())
+
+
+def _make_large_tin_feature(n_triangles: int = 20):
+    """Build a TIN feature with many triangles in normalized [0,1] space.
+
+    Each triangle is a separate ring (4 verts, last = first) to match
+    the ring_lengths encoding that the streaming pipeline expects.
+    Returns a dict suitable for StreamingTileGenerator.add_feature().
+    """
+    import math
+    cols = max(1, int(math.ceil(math.sqrt(n_triangles))))
+    step = 0.9 / cols if cols > 0 else 0.9
+    tri_size = step * 0.45
+
+    geometry = []
+    geometry_z = []
+    ring_lengths = []
+    for i in range(n_triangles):
+        col = i % cols
+        row = i // cols
+        x = col * step + 0.05
+        y = row * step + 0.05
+        z = 0.5
+        geometry.extend([x, y, x + tri_size, y, x + tri_size * 0.5, y + tri_size, x, y])
+        geometry_z.extend([z, z + 0.01, z + 0.02, z])
+        ring_lengths.append(4)
+    return {
+        "geometry": geometry,
+        "geometry_z": geometry_z,
+        "ring_lengths": ring_lengths,
+        "type": 5,  # TIN
+        "tags": {"name": "large_mesh"},
+        "minX": 0.05, "minY": 0.05, "minZ": 0.5,
+        "maxX": 0.95, "maxY": 0.95, "maxZ": 0.52,
+    }
+
+
+class TestStreamingDracoGlb:
+    """Tests for Draco-compressed GLB output via generate_3dtiles(use_draco=True)."""
+
+    @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
+    def test_draco_glb_has_extension(self, tmp_path):
+        """Draco GLB files contain KHR_draco_mesh_compression in extensionsUsed."""
+        from microjson._rs import StreamingTileGenerator
+
+        gen = StreamingTileGenerator(min_zoom=0, max_zoom=0)
+        feat = _make_large_tin_feature(20)  # 60 verts, above min_vertices=50
+        gen.add_feature(feat)
+
+        out = str(tmp_path / "tiles")
+        bounds = (0.0, 0.0, 0.0, 100.0, 100.0, 100.0)
+        count = gen.generate_3dtiles(out, bounds, use_draco=True)
+        assert count > 0
+
+        glb_path = tmp_path / "tiles" / "0" / "0" / "0" / "0.glb"
+        data = glb_path.read_bytes()
+        assert data[:4] == b"glTF"
+
+        gltf = _parse_glb_json(data)
+        assert "KHR_draco_mesh_compression" in gltf.get("extensionsUsed", [])
+        assert "KHR_draco_mesh_compression" in gltf.get("extensionsRequired", [])
+
+        # Primitive should have the extension
+        prim = gltf["meshes"][0]["primitives"][0]
+        assert "KHR_draco_mesh_compression" in prim.get("extensions", {})
+
+    @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
+    def test_draco_glb_smaller_than_raw(self, tmp_path):
+        """Draco-compressed GLB is smaller than raw GLB for large meshes."""
+        from microjson._rs import StreamingTileGenerator
+
+        bounds = (0.0, 0.0, 0.0, 100.0, 100.0, 100.0)
+        feat = _make_large_tin_feature(200)  # 600 verts — well past Draco break-even
+
+        # Raw GLB
+        gen_raw = StreamingTileGenerator(min_zoom=0, max_zoom=0)
+        gen_raw.add_feature(feat)
+        raw_dir = str(tmp_path / "raw")
+        gen_raw.generate_3dtiles(raw_dir, bounds)
+        raw_glb = (tmp_path / "raw" / "0" / "0" / "0" / "0.glb").read_bytes()
+
+        # Draco GLB
+        gen_draco = StreamingTileGenerator(min_zoom=0, max_zoom=0)
+        gen_draco.add_feature(feat)
+        draco_dir = str(tmp_path / "draco")
+        gen_draco.generate_3dtiles(draco_dir, bounds, use_draco=True)
+        draco_glb = (tmp_path / "draco" / "0" / "0" / "0" / "0.glb").read_bytes()
+
+        assert len(draco_glb) < len(raw_glb), (
+            f"Draco GLB ({len(draco_glb)}) should be smaller than raw ({len(raw_glb)})"
+        )
+
+    @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
+    def test_use_draco_false_regression(self, tmp_path):
+        """use_draco=False produces output identical to the default (no draco args)."""
+        from microjson._rs import StreamingTileGenerator
+
+        bounds = (0.0, 0.0, 0.0, 100.0, 100.0, 100.0)
+        feat = _make_large_tin_feature(10)
+
+        # Default (no draco args)
+        gen1 = StreamingTileGenerator(min_zoom=0, max_zoom=0)
+        gen1.add_feature(feat)
+        dir1 = str(tmp_path / "default")
+        gen1.generate_3dtiles(dir1, bounds)
+        data1 = (tmp_path / "default" / "0" / "0" / "0" / "0.glb").read_bytes()
+
+        # Explicit use_draco=False
+        gen2 = StreamingTileGenerator(min_zoom=0, max_zoom=0)
+        gen2.add_feature(feat)
+        dir2 = str(tmp_path / "no_draco")
+        gen2.generate_3dtiles(dir2, bounds, use_draco=False)
+        data2 = (tmp_path / "no_draco" / "0" / "0" / "0" / "0.glb").read_bytes()
+
+        assert data1 == data2
+
+    @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
+    def test_small_mesh_stays_raw_with_draco(self, tmp_path):
+        """Small meshes (< 50 verts) remain uncompressed even with use_draco=True."""
+        from microjson._rs import StreamingTileGenerator
+
+        gen = StreamingTileGenerator(min_zoom=0, max_zoom=0)
+        # Single triangle = 3 verts, well below min_vertices=50
+        feat = {
+            "geometry": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.1, 0.2],
+            "geometry_z": [0.1, 0.2, 0.3, 0.1],
+            "ring_lengths": [4],
+            "type": 5,
+            "tags": {"name": "tiny"},
+            "minX": 0.1, "minY": 0.2, "minZ": 0.1,
+            "maxX": 0.5, "maxY": 0.6, "maxZ": 0.3,
+        }
+        gen.add_feature(feat)
+
+        out = str(tmp_path / "tiles")
+        gen.generate_3dtiles(out, (0.0, 0.0, 0.0, 10.0, 10.0, 10.0), use_draco=True)
+
+        glb_path = tmp_path / "tiles" / "0" / "0" / "0" / "0.glb"
+        data = glb_path.read_bytes()
+        gltf = _parse_glb_json(data)
+
+        # No Draco extension should be present
+        assert "extensionsUsed" not in gltf or \
+            "KHR_draco_mesh_compression" not in gltf.get("extensionsUsed", [])
+        # Position accessor should have a bufferView (raw encoding)
+        assert "bufferView" in gltf["accessors"][0]

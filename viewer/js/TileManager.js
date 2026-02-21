@@ -11,6 +11,7 @@
  */
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { ogcBoxToBox3, computeSSE } from './BoundingVolume.js';
 
 const MAX_CONCURRENT_LOADS = 6;
@@ -47,6 +48,12 @@ export class TileManager {
         this.scene = scene;
         this.baseUrl = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
         this.loader = new GLTFLoader();
+
+        // Configure Draco decoder for KHR_draco_mesh_compression GLBs
+        const dracoLoader = new DRACOLoader();
+        dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
+        dracoLoader.setDecoderConfig({ type: 'wasm' });
+        this.loader.setDRACOLoader(dracoLoader);
 
         /** Feature index: name → {color, acronym, ccf_id, tiles: {zoom: [uri]}} */
         this.featureIndex = {};

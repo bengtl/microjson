@@ -1388,6 +1388,7 @@ fn encode_glb_tile_from_fragments(
     tz: u32,
     max_zoom: u32,
     base_cells: u32,
+    use_draco: bool,
 ) -> Vec<u8> {
     let (xmin, ymin, zmin, xmax, ymax, zmax) = *world_bounds;
     let dx = if xmax != xmin { xmax - xmin } else { 1.0 };
@@ -1661,7 +1662,11 @@ fn encode_glb_tile_from_fragments(
         }
     }
 
-    encoder_glb::encode_glb(&features)
+    if use_draco {
+        encoder_glb::encode_glb_draco(&features, 50)
+    } else {
+        encoder_glb::encode_glb(&features)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1856,11 +1861,14 @@ fn parquet_tin_simplified(
         ])
         .collect();
 
-    // Phase 3: build per-face vertices (skip degenerate faces)
-    let mut positions: Vec<f32> = Vec::new();
+    // Phase 3: build indexed mesh from centroids (shared vertices)
+    let mut positions: Vec<f32> = Vec::with_capacity(centroids.len() * 3);
+    for c in &centroids {
+        positions.extend_from_slice(c);
+    }
+
     let mut indices: Vec<u32> = Vec::new();
     let mut remap_offset = 0usize;
-    let mut face_idx = 0u32;
 
     for &rl in rls {
         let nv = if rl >= 4 { 3 } else { rl };
@@ -1870,19 +1878,17 @@ fn parquet_tin_simplified(
             let i2 = vert_remap[remap_offset + 2];
 
             if i0 != i1 && i1 != i2 && i0 != i2 {
-                positions.extend_from_slice(&centroids[i0 as usize]);
-                positions.extend_from_slice(&centroids[i1 as usize]);
-                positions.extend_from_slice(&centroids[i2 as usize]);
-                let base = face_idx * 3;
-                indices.extend_from_slice(&[base, base + 1, base + 2]);
-                face_idx += 1;
+                indices.push(i0);
+                indices.push(i1);
+                indices.push(i2);
             }
         }
         remap_offset += nv;
     }
 
-    if positions.is_empty() {
-        // All faces degenerate — keep first 4 original faces
+    if indices.is_empty() {
+        // All faces degenerate — fallback to raw positions for first 4 faces
+        positions.clear();
         let max_faces = n_faces.min(4);
         let mut off = 0usize;
         let mut fi = 0u32;
@@ -1911,6 +1917,7 @@ fn parquet_tin_simplified(
 }
 
 /// TIN mesh processing without simplification (max_zoom level).
+/// Deduplicates shared vertices via position hash map for indexed mesh output.
 fn parquet_tin_direct(
     frag: &Fragment,
     rls: &[usize],
@@ -1918,26 +1925,33 @@ fn parquet_tin_direct(
     xmin: f64, ymin: f64, zmin: f64,
     dx: f64, dy: f64, dz: f64,
 ) -> (Vec<f32>, Vec<u32>) {
+    let mut vertex_map: AHashMap<(u32, u32, u32), u32> = AHashMap::new();
     let mut positions: Vec<f32> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut offset = 0usize;
-    let mut face_idx = 0u32;
 
     for &rl in rls {
         let nv = if rl >= 4 { 3 } else { rl };
         if nv == 3 && offset + 2 < n_verts {
             for vi_off in 0..3 {
                 let vi = offset + vi_off;
-                let wx = xmin + frag.xy[vi * 2] * dx;
-                let wy = ymin + frag.xy[vi * 2 + 1] * dy;
-                let wz = zmin + frag.z[vi] * dz;
-                positions.push(wx as f32);
-                positions.push(wy as f32);
-                positions.push(wz as f32);
+                let wx = (xmin + frag.xy[vi * 2] * dx) as f32;
+                let wy = (ymin + frag.xy[vi * 2 + 1] * dy) as f32;
+                let wz = (zmin + frag.z[vi] * dz) as f32;
+                let key = (wx.to_bits(), wy.to_bits(), wz.to_bits());
+                let idx = match vertex_map.get(&key) {
+                    Some(&idx) => idx,
+                    None => {
+                        let idx = (positions.len() / 3) as u32;
+                        vertex_map.insert(key, idx);
+                        positions.push(wx);
+                        positions.push(wy);
+                        positions.push(wz);
+                        idx
+                    }
+                };
+                indices.push(idx);
             }
-            let base = face_idx * 3;
-            indices.extend_from_slice(&[base, base + 1, base + 2]);
-            face_idx += 1;
         }
         offset += rl;
     }
@@ -2209,7 +2223,7 @@ impl StreamingTileGenerator {
     /// Uses rayon for parallel tile encoding (GIL released).
     ///
     /// Returns the number of tiles written.
-    #[pyo3(signature = (output_dir, world_bounds, layer_name="default"))]
+    #[pyo3(signature = (output_dir, world_bounds, layer_name="default", use_draco=false))]
     fn generate_3dtiles(
         &mut self,
         py: Python<'_>,
@@ -2217,6 +2231,7 @@ impl StreamingTileGenerator {
         world_bounds: (f64, f64, f64, f64, f64, f64),
         #[allow(unused)]
         layer_name: &str,
+        use_draco: bool,
     ) -> PyResult<u32> {
         // Flush and close the fragment writer
         if let Some(mut writer) = self.fragment_writer.take() {
@@ -2244,6 +2259,7 @@ impl StreamingTileGenerator {
                 .map(|((tz, tx, ty, td), frags)| {
                     let data = encode_glb_tile_from_fragments(
                         frags, tags_ref, &wb, *tz, max_zoom, base_cells,
+                        use_draco,
                     );
                     let tile_path = out_dir
                         .join(tz.to_string())

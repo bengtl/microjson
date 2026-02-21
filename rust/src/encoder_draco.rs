@@ -8,6 +8,9 @@
 
 use draco_oxide::prelude::*;
 use draco_oxide::encode;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static DRACO_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Encode a triangle mesh with pre-quantized u32 positions to Draco binary.
 ///
@@ -37,13 +40,11 @@ pub fn encode_draco_mesh(
     // Write a temp OBJ file — draco-oxide requires this since AttributeDomain is pub(crate).
     // Positions are cast to float (exact for values < 2^24, which covers 16-bit quantization).
     let tmp_dir = std::env::temp_dir();
+    let seq = DRACO_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tid = std::thread::current().id();
     let tmp_path = tmp_dir.join(format!(
-        "draco_tmp_{:p}_{}.obj",
-        &positions as *const _,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+        "draco_tmp_{:?}_{}.obj",
+        tid, seq,
     ));
 
     {
@@ -89,6 +90,87 @@ pub fn encode_draco_mesh(
     });
 
     // Clean up temp file
+    std::fs::remove_file(&tmp_path).ok();
+
+    match result {
+        Ok(Ok(buffer)) => Ok(buffer),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("Draco encoding panicked (likely degenerate mesh)".to_string()),
+    }
+}
+
+/// Encode a triangle mesh with f32 world-space positions to Draco binary.
+///
+/// Unlike `encode_draco_mesh` (which takes pre-quantized u32), this function
+/// takes raw f32 positions in world coordinates. Draco's internal quantization
+/// will handle compression while preserving the coordinate space.
+///
+/// Used by the GLB encoder for 3D Tiles — the viewer expects world-space
+/// positions back from Draco decode.
+pub fn encode_draco_mesh_f32(
+    positions: &[f32],
+    indices: &[u32],
+) -> Result<Vec<u8>, String> {
+    let n_verts = positions.len() / 3;
+    if n_verts == 0 || indices.is_empty() {
+        return Err("Empty mesh".to_string());
+    }
+    if positions.len() % 3 != 0 {
+        return Err("positions length must be multiple of 3".to_string());
+    }
+    if indices.len() % 3 != 0 {
+        return Err("indices length must be multiple of 3".to_string());
+    }
+
+    let n_faces = indices.len() / 3;
+
+    let tmp_dir = std::env::temp_dir();
+    let seq = DRACO_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tid = std::thread::current().id();
+    let tmp_path = tmp_dir.join(format!(
+        "draco_f32_{:?}_{}.obj",
+        tid, seq,
+    ));
+
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp_path)
+            .map_err(|e| format!("Cannot create temp OBJ: {}", e))?;
+
+        for i in 0..n_verts {
+            writeln!(
+                f,
+                "v {} {} {}",
+                positions[i * 3],
+                positions[i * 3 + 1],
+                positions[i * 3 + 2],
+            )
+            .map_err(|e| format!("Write error: {}", e))?;
+        }
+
+        for i in 0..n_faces {
+            writeln!(
+                f,
+                "f {} {} {}",
+                indices[i * 3] + 1,
+                indices[i * 3 + 1] + 1,
+                indices[i * 3 + 2] + 1,
+            )
+            .map_err(|e| format!("Write error: {}", e))?;
+        }
+    }
+
+    let result = std::panic::catch_unwind(|| {
+        let mesh = draco_oxide::io::obj::load_obj(&tmp_path)
+            .map_err(|e| format!("OBJ load error: {:?}", e))?;
+
+        let mut buffer: Vec<u8> = Vec::new();
+        encode::encode(mesh, &mut buffer, encode::Config::default())
+            .map_err(|e| format!("Draco encode error: {:?}", e))?;
+
+        Ok::<Vec<u8>, String>(buffer)
+    });
+
     std::fs::remove_file(&tmp_path).ok();
 
     match result {

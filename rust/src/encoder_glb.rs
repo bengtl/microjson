@@ -7,6 +7,7 @@
 /// No external dependencies beyond serde_json + byteorder.
 
 use serde_json::{json, Value};
+use crate::encoder_draco;
 
 // glTF component types
 const FLOAT: u32 = 5126;
@@ -28,6 +29,7 @@ const JSON_CHUNK_TYPE: u32 = 0x4E4F534A; // "JSON"
 const BIN_CHUNK_TYPE: u32 = 0x004E4942; // "BIN\0"
 
 /// A feature to be encoded into GLB.
+#[derive(Clone)]
 pub(crate) struct GlbFeature {
     /// Flat f32 positions [x,y,z, x,y,z, ...] in world coordinates.
     pub positions: Vec<f32>,
@@ -192,6 +194,234 @@ pub(crate) fn encode_glb(features: &[GlbFeature]) -> Vec<u8> {
     assemble_glb(&gltf_json, &bin_data)
 }
 
+/// Encode features as GLB with KHR_draco_mesh_compression for eligible triangle meshes.
+///
+/// Triangle meshes with `positions.len()/3 >= min_vertices` are Draco-encoded
+/// using raw f32 world-space positions (Draco handles internal quantization).
+/// Non-triangle features, small meshes, and Draco failures fall back to raw encoding.
+pub(crate) fn encode_glb_draco(
+    features: &[GlbFeature],
+    min_vertices: usize,
+) -> Vec<u8> {
+    let mut bin_data: Vec<u8> = Vec::new();
+    let mut buffer_views: Vec<Value> = Vec::new();
+    let mut accessors: Vec<Value> = Vec::new();
+    let mut meshes: Vec<Value> = Vec::new();
+    let mut nodes: Vec<Value> = Vec::new();
+    let mut scene_nodes: Vec<Value> = Vec::new();
+    let mut any_draco = false;
+
+    for feat in features {
+        if feat.positions.is_empty() {
+            continue;
+        }
+
+        let n_verts = feat.positions.len() / 3;
+
+        // Compute min/max for position accessor (needed for both paths)
+        let mut pos_min = [f32::INFINITY; 3];
+        let mut pos_max = [f32::NEG_INFINITY; 3];
+        for v in 0..n_verts {
+            for d in 0..3 {
+                let val = feat.positions[v * 3 + d];
+                if val < pos_min[d] { pos_min[d] = val; }
+                if val > pos_max[d] { pos_max[d] = val; }
+            }
+        }
+
+        // Try Draco for eligible triangle meshes
+        let use_draco_for_this = feat.mode == MODE_TRIANGLES
+            && !feat.indices.is_empty()
+            && n_verts >= min_vertices;
+
+        let draco_result = if use_draco_for_this {
+            // Encode raw f32 world-space positions — Draco handles internal quantization.
+            // The viewer will decode world-space positions directly.
+            encoder_draco::encode_draco_mesh_f32(&feat.positions, &feat.indices).ok()
+        } else {
+            None
+        };
+
+        if let Some(draco_bytes) = draco_result {
+            // --- Draco-compressed primitive ---
+            any_draco = true;
+
+            // Draco buffer view (no target — it's an opaque blob)
+            let draco_offset = bin_data.len();
+            let draco_byte_len = draco_bytes.len();
+            bin_data.extend_from_slice(&draco_bytes);
+            let pad = (4 - (bin_data.len() % 4)) % 4;
+            bin_data.extend(std::iter::repeat(0u8).take(pad));
+
+            let draco_bv_idx = buffer_views.len();
+            buffer_views.push(json!({
+                "buffer": 0,
+                "byteOffset": draco_offset,
+                "byteLength": draco_byte_len,
+            }));
+
+            // Stub position accessor — no bufferView, but has count/min/max
+            let pos_acc_idx = accessors.len();
+            accessors.push(json!({
+                "componentType": FLOAT,
+                "count": n_verts,
+                "type": "VEC3",
+                "min": [pos_min[0], pos_min[1], pos_min[2]],
+                "max": [pos_max[0], pos_max[1], pos_max[2]],
+            }));
+
+            // Stub index accessor — no bufferView
+            let idx_acc_idx = accessors.len();
+            accessors.push(json!({
+                "componentType": UNSIGNED_INT,
+                "count": feat.indices.len(),
+                "type": "SCALAR",
+            }));
+
+            let primitive = json!({
+                "attributes": {"POSITION": pos_acc_idx},
+                "indices": idx_acc_idx,
+                "material": 0,
+                "mode": MODE_TRIANGLES,
+                "extensions": {
+                    "KHR_draco_mesh_compression": {
+                        "bufferView": draco_bv_idx,
+                        "attributes": {
+                            "POSITION": 0
+                        }
+                    }
+                }
+            });
+
+            let mesh_idx = meshes.len();
+            meshes.push(json!({"primitives": [primitive]}));
+
+            let mut node = json!({"mesh": mesh_idx, "name": format!("feature_{}", nodes.len())});
+            if let Some(extras) = &feat.extras {
+                node.as_object_mut().unwrap().insert("extras".to_string(), extras.clone());
+            }
+            let node_idx = nodes.len();
+            nodes.push(node);
+            scene_nodes.push(json!(node_idx));
+        } else {
+            // --- Raw encoding (same as encode_glb) ---
+            let pos_offset = bin_data.len();
+            let pos_bytes: Vec<u8> = feat.positions.iter().flat_map(|f| f.to_le_bytes()).collect();
+            let pos_byte_len = pos_bytes.len();
+            bin_data.extend_from_slice(&pos_bytes);
+            let pad = (4 - (bin_data.len() % 4)) % 4;
+            bin_data.extend(std::iter::repeat(0u8).take(pad));
+
+            let pos_bv_idx = buffer_views.len();
+            buffer_views.push(json!({
+                "buffer": 0,
+                "byteOffset": pos_offset,
+                "byteLength": pos_byte_len,
+                "target": ARRAY_BUFFER,
+            }));
+
+            let pos_acc_idx = accessors.len();
+            accessors.push(json!({
+                "bufferView": pos_bv_idx,
+                "byteOffset": 0,
+                "componentType": FLOAT,
+                "count": n_verts,
+                "type": "VEC3",
+                "min": [pos_min[0], pos_min[1], pos_min[2]],
+                "max": [pos_max[0], pos_max[1], pos_max[2]],
+            }));
+
+            let primitive = if !feat.indices.is_empty() {
+                let idx_offset = bin_data.len();
+                let idx_bytes: Vec<u8> = feat.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
+                let idx_byte_len = idx_bytes.len();
+                bin_data.extend_from_slice(&idx_bytes);
+                let pad = (4 - (bin_data.len() % 4)) % 4;
+                bin_data.extend(std::iter::repeat(0u8).take(pad));
+
+                let idx_bv_idx = buffer_views.len();
+                buffer_views.push(json!({
+                    "buffer": 0,
+                    "byteOffset": idx_offset,
+                    "byteLength": idx_byte_len,
+                    "target": ELEMENT_ARRAY_BUFFER,
+                }));
+
+                let idx_acc_idx = accessors.len();
+                accessors.push(json!({
+                    "bufferView": idx_bv_idx,
+                    "byteOffset": 0,
+                    "componentType": UNSIGNED_INT,
+                    "count": feat.indices.len(),
+                    "type": "SCALAR",
+                }));
+
+                json!({
+                    "attributes": {"POSITION": pos_acc_idx},
+                    "indices": idx_acc_idx,
+                    "material": 0,
+                    "mode": feat.mode,
+                })
+            } else {
+                json!({
+                    "attributes": {"POSITION": pos_acc_idx},
+                    "material": 0,
+                    "mode": feat.mode,
+                })
+            };
+
+            let mesh_idx = meshes.len();
+            meshes.push(json!({"primitives": [primitive]}));
+
+            let mut node = json!({"mesh": mesh_idx, "name": format!("feature_{}", nodes.len())});
+            if let Some(extras) = &feat.extras {
+                node.as_object_mut().unwrap().insert("extras".to_string(), extras.clone());
+            }
+            let node_idx = nodes.len();
+            nodes.push(node);
+            scene_nodes.push(json!(node_idx));
+        }
+    }
+
+    if meshes.is_empty() {
+        return encode_empty_glb();
+    }
+
+    let material = json!({
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [0.8, 0.8, 0.8, 1.0],
+            "metallicFactor": 0.1,
+            "roughnessFactor": 0.8,
+        },
+        "doubleSided": true,
+    });
+
+    let mut gltf_json = json!({
+        "asset": {"version": "2.0", "generator": "microjson-rs"},
+        "scene": 0,
+        "scenes": [{"nodes": scene_nodes}],
+        "nodes": nodes,
+        "meshes": meshes,
+        "accessors": accessors,
+        "bufferViews": buffer_views,
+        "buffers": [{"byteLength": bin_data.len()}],
+        "materials": [material],
+    });
+
+    if any_draco {
+        gltf_json.as_object_mut().unwrap().insert(
+            "extensionsUsed".to_string(),
+            json!(["KHR_draco_mesh_compression"]),
+        );
+        gltf_json.as_object_mut().unwrap().insert(
+            "extensionsRequired".to_string(),
+            json!(["KHR_draco_mesh_compression"]),
+        );
+    }
+
+    assemble_glb(&gltf_json, &bin_data)
+}
+
 fn encode_empty_glb() -> Vec<u8> {
     let gltf_json = json!({
         "asset": {"version": "2.0", "generator": "microjson-rs"},
@@ -334,5 +564,109 @@ mod tests {
         assert_eq!(json["nodes"].as_array().unwrap().len(), 3);
         assert_eq!(json["meshes"].as_array().unwrap().len(), 3);
         assert_eq!(json["scenes"][0]["nodes"].as_array().unwrap().len(), 3);
+    }
+
+    /// Helper to parse GLB JSON chunk.
+    fn parse_glb_json(glb: &[u8]) -> Value {
+        let json_len = u32::from_le_bytes([glb[12], glb[13], glb[14], glb[15]]) as usize;
+        let json_str = std::str::from_utf8(&glb[20..20 + json_len]).unwrap().trim();
+        serde_json::from_str(json_str).unwrap()
+    }
+
+    /// Build a large enough triangle mesh for Draco encoding (>= 50 verts).
+    fn make_large_triangle_mesh(n_tris: usize) -> GlbFeature {
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        for i in 0..n_tris {
+            let x = i as f32;
+            positions.extend_from_slice(&[x, 0.0, 0.0, x + 1.0, 0.0, 0.0, x + 0.5, 1.0, 0.0]);
+            let base = (i * 3) as u32;
+            indices.extend_from_slice(&[base, base + 1, base + 2]);
+        }
+        GlbFeature {
+            positions,
+            indices,
+            mode: MODE_TRIANGLES,
+            extras: Some(json!({"name": "large_mesh"})),
+        }
+    }
+
+    #[test]
+    fn test_draco_glb_has_extension() {
+        let feat = make_large_triangle_mesh(20); // 60 verts, well above min_vertices=50
+        let glb = encode_glb_draco(&[feat], 50);
+
+        assert_eq!(&glb[0..4], &GLB_MAGIC.to_le_bytes());
+        let json = parse_glb_json(&glb);
+
+        // Must have KHR_draco_mesh_compression in extensionsUsed
+        let ext_used = json["extensionsUsed"].as_array().unwrap();
+        assert!(ext_used.iter().any(|v| v == "KHR_draco_mesh_compression"));
+        let ext_req = json["extensionsRequired"].as_array().unwrap();
+        assert!(ext_req.iter().any(|v| v == "KHR_draco_mesh_compression"));
+
+        // Primitive must have the extension
+        let prim = &json["meshes"][0]["primitives"][0];
+        assert!(prim["extensions"]["KHR_draco_mesh_compression"].is_object());
+    }
+
+    #[test]
+    fn test_draco_glb_smaller_than_raw() {
+        let feat = make_large_triangle_mesh(100); // 300 verts
+
+        let raw_glb = encode_glb(&[feat.clone()]);
+        let draco_glb = encode_glb_draco(&[feat], 50);
+
+        assert!(
+            draco_glb.len() < raw_glb.len(),
+            "Draco GLB ({}) should be smaller than raw GLB ({})",
+            draco_glb.len(), raw_glb.len()
+        );
+    }
+
+    #[test]
+    fn test_draco_small_mesh_stays_raw() {
+        // 3 verts < min_vertices=50, should NOT have Draco extension
+        let feat = GlbFeature {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            mode: MODE_TRIANGLES,
+            extras: None,
+        };
+        let glb = encode_glb_draco(&[feat], 50);
+
+        let json = parse_glb_json(&glb);
+        // No Draco extension at all
+        assert!(json["extensionsUsed"].is_null());
+        // Position accessor should have a bufferView (raw)
+        assert!(json["accessors"][0]["bufferView"].is_number());
+    }
+
+    #[test]
+    fn test_draco_mixed_modes() {
+        // Large triangles (Draco) + lines (raw) + points (raw)
+        let tri = make_large_triangle_mesh(20);
+        let line = GlbFeature {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            indices: vec![0, 1],
+            mode: MODE_LINES,
+            extras: Some(json!({"id": "line"})),
+        };
+        let pt = GlbFeature {
+            positions: vec![5.0, 5.0, 5.0],
+            indices: vec![],
+            mode: MODE_POINTS,
+            extras: None,
+        };
+        let glb = encode_glb_draco(&[tri, line, pt], 50);
+
+        let json = parse_glb_json(&glb);
+        assert_eq!(json["nodes"].as_array().unwrap().len(), 3);
+        // First primitive (triangles) has Draco extension
+        assert!(json["meshes"][0]["primitives"][0]["extensions"]["KHR_draco_mesh_compression"].is_object());
+        // Second primitive (lines) has no Draco extension
+        assert!(json["meshes"][1]["primitives"][0]["extensions"].is_null());
+        // Third primitive (points) has no Draco extension
+        assert!(json["meshes"][2]["primitives"][0]["extensions"].is_null());
     }
 }
