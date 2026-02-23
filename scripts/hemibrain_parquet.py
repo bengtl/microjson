@@ -28,7 +28,7 @@ _TILES_DIR = _DATA_DIR / "tiles" / "hemibrain"
 
 MAX_ZOOM = 3
 BASE_CELLS = 100
-BATCH_SIZE = 5_000
+BATCH_SIZE = 500
 
 
 def _fmt_time(seconds: float) -> str:
@@ -69,6 +69,27 @@ def _build_tags(obj_path: Path, meta_lookup: dict[str, dict]) -> dict:
             tags["instance"] = meta["instance"]
         if meta.get("status"):
             tags["status"] = meta["status"]
+        if meta.get("statusLabel"):
+            tags["status_label"] = meta["statusLabel"]
+        if meta.get("pre") is not None:
+            tags["pre"] = str(meta["pre"])
+        if meta.get("post") is not None:
+            tags["post"] = str(meta["post"])
+        if meta.get("somaRadius") is not None:
+            tags["soma_radius"] = str(meta["somaRadius"])
+        if meta.get("cropped") is not None:
+            tags["cropped"] = str(meta["cropped"]).lower()
+        # Derive dominant neuropil region from roiInfo
+        roi_info = meta.get("roiInfo")
+        if roi_info and isinstance(roi_info, dict):
+            best_roi, best_count = None, 0
+            for roi, counts in roi_info.items():
+                if isinstance(counts, dict):
+                    total = (counts.get("pre", 0) or 0) + (counts.get("post", 0) or 0)
+                    if total > best_count:
+                        best_roi, best_count = roi, total
+            if best_roi:
+                tags["primary_roi"] = best_roi
     tags["name"] = tags.get("instance") or str(body_id)
     h = hash(str(body_id)) & 0x7FFFFFFF
     hue = (h % 360) / 360.0
@@ -167,10 +188,10 @@ def main():
     print(f"\n  Partition layout:")
     for z_dir in sorted(part_dir.iterdir()):
         if z_dir.is_dir() and z_dir.name.startswith("zoom="):
-            pq_file = z_dir / "data.parquet"
-            if pq_file.exists():
-                print(f"    {z_dir.name}/data.parquet  "
-                      f"{_fmt_bytes(pq_file.stat().st_size)}")
+            pq_files = sorted(z_dir.glob("*.parquet"))
+            z_total = sum(f.stat().st_size for f in pq_files)
+            print(f"    {z_dir.name}: {len(pq_files)} file(s), "
+                  f"{_fmt_bytes(z_total)}")
 
     # --- Quick read-back verification ---
     print(f"\nPhase 3: Verify read-back...")

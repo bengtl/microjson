@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Development HTTP server for the Three.js 3D Tiles viewer.
 
+Serves GLB files with Brotli (or gzip) Content-Encoding for transparent
+decompression in the browser.  Meshopt-encoded GLBs compress ~2-3x further
+with Brotli, approaching Draco file sizes while keeping fast decode.
+
 Routes:
     /                                  → viewer/index.html
     /js/*                              → viewer/js/*
@@ -13,12 +17,33 @@ Routes:
 """
 
 import argparse
+import io
 import os
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
+try:
+    import brotli
+    _HAS_BROTLI = True
+except ImportError:
+    _HAS_BROTLI = False
+
+import gzip as _gzip
+
 VIEWER_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = VIEWER_DIR.parent
+
+# Pre-compressed file cache: absolute_path → (compressed_bytes, encoding)
+_COMP_CACHE: dict[str, tuple[bytes, str]] = {}
+_CACHE_MAX_BYTES = 512 * 1024 * 1024  # 512 MB cache limit
+_cache_total = 0
+
+
+def _compress(data: bytes) -> tuple[bytes, str]:
+    """Compress with Brotli (preferred) or gzip fallback."""
+    if _HAS_BROTLI:
+        return brotli.compress(data, quality=5), "br"
+    return _gzip.compress(data, compresslevel=6), "gzip"
 
 
 class ViewerHandler(SimpleHTTPRequestHandler):
@@ -56,6 +81,46 @@ class ViewerHandler(SimpleHTTPRequestHandler):
         rel = path.lstrip("/")
         return str(VIEWER_DIR / rel)
 
+    def do_GET(self):
+        file_path = self.translate_path(self.path)
+
+        # Compress .glb files on the fly if browser accepts it
+        if self.path.endswith(".glb") and os.path.isfile(file_path):
+            accept = self.headers.get("Accept-Encoding", "")
+            can_br = _HAS_BROTLI and "br" in accept
+            can_gz = "gzip" in accept
+
+            if can_br or can_gz:
+                self._serve_compressed(file_path, accept)
+                return
+
+        # Fall through to default handler
+        super().do_GET()
+
+    def _serve_compressed(self, file_path: str, accept: str):
+        global _cache_total
+
+        if file_path in _COMP_CACHE:
+            comp_data, encoding = _COMP_CACHE[file_path]
+        else:
+            raw = open(file_path, "rb").read()
+            comp_data, encoding = _compress(raw)
+
+            # Cache if under limit
+            if _cache_total + len(comp_data) < _CACHE_MAX_BYTES:
+                _COMP_CACHE[file_path] = (comp_data, encoding)
+                _cache_total += len(comp_data)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "model/gltf-binary")
+        self.send_header("Content-Length", str(len(comp_data)))
+        self.send_header("Content-Encoding", encoding)
+        self.send_header("Vary", "Accept-Encoding")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(comp_data)
+
     def end_headers(self):
         # CORS for local development
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -83,6 +148,11 @@ def main():
         print(f"WARNING: No pyramids.json found in {tiles_base}")
 
     ViewerHandler.tiles_base = tiles_base
+
+    if _HAS_BROTLI:
+        print("Compression: Brotli (GLB files served with Content-Encoding: br)")
+    else:
+        print("Compression: gzip (install 'brotli' for better compression: uv add brotli)")
 
     server = HTTPServer(("", args.port), ViewerHandler)
     print(f"Viewer:  http://localhost:{args.port}")

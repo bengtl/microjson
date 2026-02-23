@@ -8,6 +8,7 @@
 
 use serde_json::{json, Value};
 use crate::encoder_draco;
+use crate::encoder_meshopt;
 
 // glTF component types
 const FLOAT: u32 = 5126;
@@ -422,6 +423,278 @@ pub(crate) fn encode_glb_draco(
     assemble_glb(&gltf_json, &bin_data)
 }
 
+/// Encode features as GLB with EXT_meshopt_compression for eligible triangle meshes.
+///
+/// Triangle meshes with `positions.len()/3 >= min_vertices` are meshopt-encoded.
+/// Compression works at the bufferView level: each compressed bufferView has an
+/// `EXT_meshopt_compression` extension object while accessors remain normal.
+/// Non-triangle features, small meshes, and encoding failures fall back to raw.
+pub(crate) fn encode_glb_meshopt(
+    features: &[GlbFeature],
+    min_vertices: usize,
+) -> Vec<u8> {
+    let mut bin_data: Vec<u8> = Vec::new();
+    let mut buffer_views: Vec<Value> = Vec::new();
+    let mut accessors: Vec<Value> = Vec::new();
+    let mut meshes: Vec<Value> = Vec::new();
+    let mut nodes: Vec<Value> = Vec::new();
+    let mut scene_nodes: Vec<Value> = Vec::new();
+    let mut any_meshopt = false;
+
+    for feat in features {
+        if feat.positions.is_empty() {
+            continue;
+        }
+
+        let n_verts = feat.positions.len() / 3;
+
+        // Compute min/max for position accessor
+        let mut pos_min = [f32::INFINITY; 3];
+        let mut pos_max = [f32::NEG_INFINITY; 3];
+        for v in 0..n_verts {
+            for d in 0..3 {
+                let val = feat.positions[v * 3 + d];
+                if val < pos_min[d] { pos_min[d] = val; }
+                if val > pos_max[d] { pos_max[d] = val; }
+            }
+        }
+
+        // Try meshopt for eligible triangle meshes
+        let use_meshopt_for_this = feat.mode == MODE_TRIANGLES
+            && !feat.indices.is_empty()
+            && n_verts >= min_vertices;
+
+        let meshopt_result = if use_meshopt_for_this {
+            encoder_meshopt::encode_meshopt_mesh(&feat.positions, &feat.indices).ok()
+        } else {
+            None
+        };
+
+        if let Some(encoded) = meshopt_result {
+            // --- Meshopt-compressed primitive ---
+            any_meshopt = true;
+
+            // Recompute min/max from optimized positions (vertex reordering changes order)
+            let mut opt_min = [f32::INFINITY; 3];
+            let mut opt_max = [f32::NEG_INFINITY; 3];
+            for v in 0..encoded.vertex_count {
+                for d in 0..3 {
+                    let val = encoded.positions[v * 3 + d];
+                    if val < opt_min[d] { opt_min[d] = val; }
+                    if val > opt_max[d] { opt_max[d] = val; }
+                }
+            }
+
+            // --- Compressed position bufferView ---
+            let pos_comp_offset = bin_data.len();
+            let pos_comp_size = encoded.vertex_data.len();
+            bin_data.extend_from_slice(&encoded.vertex_data);
+            let pad = (4 - (bin_data.len() % 4)) % 4;
+            bin_data.extend(std::iter::repeat(0u8).take(pad));
+
+            let pos_bv_idx = buffer_views.len();
+            buffer_views.push(json!({
+                "buffer": 0,
+                "byteOffset": pos_comp_offset,
+                "byteLength": pos_comp_size,
+                "byteStride": 12,
+                "target": ARRAY_BUFFER,
+                "extensions": {
+                    "EXT_meshopt_compression": {
+                        "buffer": 0,
+                        "byteOffset": pos_comp_offset,
+                        "byteLength": pos_comp_size,
+                        "byteStride": 12,
+                        "count": encoded.vertex_count,
+                        "mode": "ATTRIBUTES",
+                        "filter": "NONE"
+                    }
+                }
+            }));
+
+            let pos_acc_idx = accessors.len();
+            accessors.push(json!({
+                "bufferView": pos_bv_idx,
+                "byteOffset": 0,
+                "componentType": FLOAT,
+                "count": encoded.vertex_count,
+                "type": "VEC3",
+                "min": [opt_min[0], opt_min[1], opt_min[2]],
+                "max": [opt_max[0], opt_max[1], opt_max[2]],
+            }));
+
+            // --- Compressed index bufferView ---
+            let idx_comp_offset = bin_data.len();
+            let idx_comp_size = encoded.index_data.len();
+            bin_data.extend_from_slice(&encoded.index_data);
+            let pad = (4 - (bin_data.len() % 4)) % 4;
+            bin_data.extend(std::iter::repeat(0u8).take(pad));
+
+            let idx_bv_idx = buffer_views.len();
+            // glTF forbids byteStride on ELEMENT_ARRAY_BUFFER — only inner extension has it
+            buffer_views.push(json!({
+                "buffer": 0,
+                "byteOffset": idx_comp_offset,
+                "byteLength": idx_comp_size,
+                "target": ELEMENT_ARRAY_BUFFER,
+                "extensions": {
+                    "EXT_meshopt_compression": {
+                        "buffer": 0,
+                        "byteOffset": idx_comp_offset,
+                        "byteLength": idx_comp_size,
+                        "byteStride": 4,
+                        "count": encoded.indices.len(),
+                        "mode": "TRIANGLES",
+                        "filter": "NONE"
+                    }
+                }
+            }));
+
+            let idx_acc_idx = accessors.len();
+            accessors.push(json!({
+                "bufferView": idx_bv_idx,
+                "byteOffset": 0,
+                "componentType": UNSIGNED_INT,
+                "count": encoded.indices.len(),
+                "type": "SCALAR",
+            }));
+
+            let primitive = json!({
+                "attributes": {"POSITION": pos_acc_idx},
+                "indices": idx_acc_idx,
+                "material": 0,
+                "mode": MODE_TRIANGLES,
+            });
+
+            let mesh_idx = meshes.len();
+            meshes.push(json!({"primitives": [primitive]}));
+
+            let mut node = json!({"mesh": mesh_idx, "name": format!("feature_{}", nodes.len())});
+            if let Some(extras) = &feat.extras {
+                node.as_object_mut().unwrap().insert("extras".to_string(), extras.clone());
+            }
+            let node_idx = nodes.len();
+            nodes.push(node);
+            scene_nodes.push(json!(node_idx));
+        } else {
+            // --- Raw encoding (same as encode_glb) ---
+            let pos_offset = bin_data.len();
+            let pos_bytes: Vec<u8> = feat.positions.iter().flat_map(|f| f.to_le_bytes()).collect();
+            let pos_byte_len = pos_bytes.len();
+            bin_data.extend_from_slice(&pos_bytes);
+            let pad = (4 - (bin_data.len() % 4)) % 4;
+            bin_data.extend(std::iter::repeat(0u8).take(pad));
+
+            let pos_bv_idx = buffer_views.len();
+            buffer_views.push(json!({
+                "buffer": 0,
+                "byteOffset": pos_offset,
+                "byteLength": pos_byte_len,
+                "target": ARRAY_BUFFER,
+            }));
+
+            let pos_acc_idx = accessors.len();
+            accessors.push(json!({
+                "bufferView": pos_bv_idx,
+                "byteOffset": 0,
+                "componentType": FLOAT,
+                "count": n_verts,
+                "type": "VEC3",
+                "min": [pos_min[0], pos_min[1], pos_min[2]],
+                "max": [pos_max[0], pos_max[1], pos_max[2]],
+            }));
+
+            let primitive = if !feat.indices.is_empty() {
+                let idx_offset = bin_data.len();
+                let idx_bytes: Vec<u8> = feat.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
+                let idx_byte_len = idx_bytes.len();
+                bin_data.extend_from_slice(&idx_bytes);
+                let pad = (4 - (bin_data.len() % 4)) % 4;
+                bin_data.extend(std::iter::repeat(0u8).take(pad));
+
+                let idx_bv_idx = buffer_views.len();
+                buffer_views.push(json!({
+                    "buffer": 0,
+                    "byteOffset": idx_offset,
+                    "byteLength": idx_byte_len,
+                    "target": ELEMENT_ARRAY_BUFFER,
+                }));
+
+                let idx_acc_idx = accessors.len();
+                accessors.push(json!({
+                    "bufferView": idx_bv_idx,
+                    "byteOffset": 0,
+                    "componentType": UNSIGNED_INT,
+                    "count": feat.indices.len(),
+                    "type": "SCALAR",
+                }));
+
+                json!({
+                    "attributes": {"POSITION": pos_acc_idx},
+                    "indices": idx_acc_idx,
+                    "material": 0,
+                    "mode": feat.mode,
+                })
+            } else {
+                json!({
+                    "attributes": {"POSITION": pos_acc_idx},
+                    "material": 0,
+                    "mode": feat.mode,
+                })
+            };
+
+            let mesh_idx = meshes.len();
+            meshes.push(json!({"primitives": [primitive]}));
+
+            let mut node = json!({"mesh": mesh_idx, "name": format!("feature_{}", nodes.len())});
+            if let Some(extras) = &feat.extras {
+                node.as_object_mut().unwrap().insert("extras".to_string(), extras.clone());
+            }
+            let node_idx = nodes.len();
+            nodes.push(node);
+            scene_nodes.push(json!(node_idx));
+        }
+    }
+
+    if meshes.is_empty() {
+        return encode_empty_glb();
+    }
+
+    let material = json!({
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [0.8, 0.8, 0.8, 1.0],
+            "metallicFactor": 0.1,
+            "roughnessFactor": 0.8,
+        },
+        "doubleSided": true,
+    });
+
+    let mut gltf_json = json!({
+        "asset": {"version": "2.0", "generator": "microjson-rs"},
+        "scene": 0,
+        "scenes": [{"nodes": scene_nodes}],
+        "nodes": nodes,
+        "meshes": meshes,
+        "accessors": accessors,
+        "bufferViews": buffer_views,
+        "buffers": [{"byteLength": bin_data.len()}],
+        "materials": [material],
+    });
+
+    if any_meshopt {
+        gltf_json.as_object_mut().unwrap().insert(
+            "extensionsUsed".to_string(),
+            json!(["EXT_meshopt_compression"]),
+        );
+        gltf_json.as_object_mut().unwrap().insert(
+            "extensionsRequired".to_string(),
+            json!(["EXT_meshopt_compression"]),
+        );
+    }
+
+    assemble_glb(&gltf_json, &bin_data)
+}
+
 fn encode_empty_glb() -> Vec<u8> {
     let gltf_json = json!({
         "asset": {"version": "2.0", "generator": "microjson-rs"},
@@ -668,5 +941,90 @@ mod tests {
         assert!(json["meshes"][1]["primitives"][0]["extensions"].is_null());
         // Third primitive (points) has no Draco extension
         assert!(json["meshes"][2]["primitives"][0]["extensions"].is_null());
+    }
+
+    // ----- Meshopt tests -----
+
+    #[test]
+    fn test_meshopt_glb_has_extension() {
+        let feat = make_large_triangle_mesh(20); // 60 verts
+        let glb = encode_glb_meshopt(&[feat], 50);
+
+        assert_eq!(&glb[0..4], &GLB_MAGIC.to_le_bytes());
+        let json = parse_glb_json(&glb);
+
+        let ext_used = json["extensionsUsed"].as_array().unwrap();
+        assert!(ext_used.iter().any(|v| v == "EXT_meshopt_compression"));
+        let ext_req = json["extensionsRequired"].as_array().unwrap();
+        assert!(ext_req.iter().any(|v| v == "EXT_meshopt_compression"));
+
+        // BufferViews should have the extension
+        let bvs = json["bufferViews"].as_array().unwrap();
+        let has_ext = bvs.iter().any(|bv| {
+            bv["extensions"]["EXT_meshopt_compression"].is_object()
+        });
+        assert!(has_ext, "At least one bufferView should have EXT_meshopt_compression");
+
+        // Accessors should have bufferView (unlike Draco where they don't)
+        assert!(json["accessors"][0]["bufferView"].is_number());
+    }
+
+    #[test]
+    fn test_meshopt_glb_smaller_than_raw() {
+        let feat = make_large_triangle_mesh(100); // 300 verts
+
+        let raw_glb = encode_glb(&[feat.clone()]);
+        let meshopt_glb = encode_glb_meshopt(&[feat], 50);
+
+        assert!(
+            meshopt_glb.len() < raw_glb.len(),
+            "Meshopt GLB ({}) should be smaller than raw GLB ({})",
+            meshopt_glb.len(), raw_glb.len()
+        );
+    }
+
+    #[test]
+    fn test_meshopt_small_mesh_stays_raw() {
+        let feat = GlbFeature {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            mode: MODE_TRIANGLES,
+            extras: None,
+        };
+        let glb = encode_glb_meshopt(&[feat], 50);
+
+        let json = parse_glb_json(&glb);
+        // No meshopt extension
+        assert!(json["extensionsUsed"].is_null());
+        // Position accessor has a bufferView (raw)
+        assert!(json["accessors"][0]["bufferView"].is_number());
+        // No EXT_meshopt_compression on any bufferView
+        let bvs = json["bufferViews"].as_array().unwrap();
+        for bv in bvs {
+            assert!(bv["extensions"].is_null());
+        }
+    }
+
+    #[test]
+    fn test_meshopt_mixed_modes() {
+        let tri = make_large_triangle_mesh(20);
+        let line = GlbFeature {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            indices: vec![0, 1],
+            mode: MODE_LINES,
+            extras: Some(json!({"id": "line"})),
+        };
+        let pt = GlbFeature {
+            positions: vec![5.0, 5.0, 5.0],
+            indices: vec![],
+            mode: MODE_POINTS,
+            extras: None,
+        };
+        let glb = encode_glb_meshopt(&[tri, line, pt], 50);
+
+        let json = parse_glb_json(&glb);
+        assert_eq!(json["nodes"].as_array().unwrap().len(), 3);
+        // Extension should be present at root level
+        assert!(json["extensionsUsed"].as_array().unwrap().iter().any(|v| v == "EXT_meshopt_compression"));
     }
 }

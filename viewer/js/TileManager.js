@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { ogcBoxToBox3, computeSSE } from './BoundingVolume.js';
 
 const MAX_CONCURRENT_LOADS = 6;
@@ -54,6 +55,9 @@ export class TileManager {
         dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
         dracoLoader.setDecoderConfig({ type: 'wasm' });
         this.loader.setDRACOLoader(dracoLoader);
+
+        // Configure meshoptimizer decoder for EXT_meshopt_compression GLBs
+        this.loader.setMeshoptDecoder(MeshoptDecoder);
 
         /** Feature index: name → {color, acronym, ccf_id, tiles: {zoom: [uri]}} */
         this.featureIndex = {};

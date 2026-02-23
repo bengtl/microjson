@@ -75,8 +75,16 @@ def _fmt_bytes(n: int) -> str:
 # Step 1: Query neuPrint for metadata
 # ---------------------------------------------------------------------------
 
-def query_neuprint(token: str, max_neurons: int | None = None) -> list[dict]:
+def query_neuprint(
+    token: str,
+    max_neurons: int | None = None,
+    min_type_count: int = 0,
+) -> list[dict]:
     """Query neuPrint for neuron metadata via REST API.
+
+    When *min_type_count* > 0, a two-stage Cypher query first identifies cell
+    types with at least that many traced instances, then returns neurons whose
+    type is in that set (ordered by size DESC, up to *max_neurons*).
 
     Returns list of dicts with bodyId, type, instance, status, etc.
     """
@@ -87,23 +95,57 @@ def query_neuprint(token: str, max_neurons: int | None = None) -> list[dict]:
         "Content-Type": "application/json",
     }
 
-    # Query for all traced neurons with cell type annotations
-    cypher = """
-    MATCH (n :Neuron)
-    WHERE n.status = "Traced"
-    RETURN n.bodyId AS bodyId,
-           n.type AS cellType,
-           n.instance AS instance,
-           n.status AS status,
-           n.size AS size,
-           n.somaLocation AS somaLocation
-    ORDER BY n.size DESC
-    """
-    if max_neurons:
-        cypher += f"\nLIMIT {max_neurons}"
+    if min_type_count > 0:
+        # Two-stage query: only neurons from well-represented cell types
+        cypher = f"""
+        MATCH (n :Neuron)
+        WHERE n.status = "Traced" AND n.type IS NOT NULL
+        WITH n.type AS ct, count(n) AS cnt
+        WHERE cnt >= {min_type_count}
+        WITH collect(ct) AS validTypes
+        MATCH (n :Neuron)
+        WHERE n.type IN validTypes
+        RETURN n.bodyId AS bodyId,
+               n.type AS cellType,
+               n.instance AS instance,
+               n.status AS status,
+               n.statusLabel AS statusLabel,
+               n.size AS size,
+               n.pre AS pre,
+               n.post AS post,
+               n.somaLocation AS somaLocation,
+               n.somaRadius AS somaRadius,
+               n.cropped AS cropped,
+               n.roiInfo AS roiInfo
+        ORDER BY n.size DESC
+        """
+        if max_neurons:
+            cypher += f"\nLIMIT {max_neurons}"
+        print(f"Querying neuPrint for neurons in types with >={min_type_count} instances...")
+    else:
+        # Original query: all traced neurons
+        cypher = """
+        MATCH (n :Neuron)
+        WHERE n.status = "Traced"
+        RETURN n.bodyId AS bodyId,
+               n.type AS cellType,
+               n.instance AS instance,
+               n.status AS status,
+               n.statusLabel AS statusLabel,
+               n.size AS size,
+               n.pre AS pre,
+               n.post AS post,
+               n.somaLocation AS somaLocation,
+               n.somaRadius AS somaRadius,
+               n.cropped AS cropped,
+               n.roiInfo AS roiInfo
+        ORDER BY n.size DESC
+        """
+        if max_neurons:
+            cypher += f"\nLIMIT {max_neurons}"
+        print(f"Querying neuPrint for neuron metadata...")
 
     payload = {"cypher": cypher, "dataset": _NEUPRINT_DATASET}
-    print(f"Querying neuPrint for neuron metadata...")
     resp = requests.post(
         f"{_NEUPRINT_URL}/api/custom/custom",
         headers=headers,
@@ -118,6 +160,100 @@ def query_neuprint(token: str, max_neurons: int | None = None) -> list[dict]:
     neurons = [dict(zip(columns, row)) for row in rows]
     print(f"  Got {len(neurons)} neurons from neuPrint")
     return neurons
+
+
+def query_neuprint_by_ids(token: str, body_ids: list[int]) -> list[dict]:
+    """Query neuPrint for specific body IDs (for updating existing metadata).
+
+    Queries in batches of 500 to avoid Cypher query size limits.
+    """
+    import requests
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    all_neurons: list[dict] = []
+    batch_size = 500
+
+    for start in range(0, len(body_ids), batch_size):
+        chunk = body_ids[start : start + batch_size]
+        id_list = ", ".join(str(bid) for bid in chunk)
+        cypher = f"""
+        MATCH (n :Neuron)
+        WHERE n.bodyId IN [{id_list}]
+        RETURN n.bodyId AS bodyId,
+               n.type AS cellType,
+               n.instance AS instance,
+               n.status AS status,
+               n.statusLabel AS statusLabel,
+               n.size AS size,
+               n.pre AS pre,
+               n.post AS post,
+               n.somaLocation AS somaLocation,
+               n.somaRadius AS somaRadius,
+               n.cropped AS cropped,
+               n.roiInfo AS roiInfo
+        """
+        payload = {"cypher": cypher, "dataset": _NEUPRINT_DATASET}
+        batch_num = start // batch_size + 1
+        total_batches = (len(body_ids) + batch_size - 1) // batch_size
+        print(f"  Querying batch {batch_num}/{total_batches} "
+              f"({len(chunk)} body IDs)...", flush=True)
+        resp = requests.post(
+            f"{_NEUPRINT_URL}/api/custom/custom",
+            headers=headers,
+            json=payload,
+            timeout=120,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        columns = result["columns"]
+        rows = result["data"]
+        all_neurons.extend(dict(zip(columns, row)) for row in rows)
+
+    print(f"  Got metadata for {len(all_neurons)} neurons")
+    return all_neurons
+
+
+def update_metadata(mesh_dir: Path, meta_path: Path, token: str) -> None:
+    """Re-query neuPrint for all body IDs found on disk, update metadata.json."""
+    obj_paths = sorted(mesh_dir.glob("*.obj"))
+    if not obj_paths:
+        print(f"ERROR: No .obj files in {mesh_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    body_ids = []
+    for p in obj_paths:
+        stem = p.stem
+        if stem.isdigit():
+            body_ids.append(int(stem))
+    print(f"Found {len(body_ids)} OBJ files on disk, querying neuPrint...")
+
+    neurons = query_neuprint_by_ids(token, body_ids)
+
+    # Parse roiInfo JSON strings into dicts
+    for n in neurons:
+        if isinstance(n.get("roiInfo"), str):
+            try:
+                n["roiInfo"] = json.loads(n["roiInfo"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    meta_path.write_text(json.dumps(
+        {"neurons": neurons, "dataset": _NEUPRINT_DATASET},
+        indent=2,
+    ))
+
+    # Print summary
+    with_type = sum(1 for n in neurons if n.get("cellType"))
+    with_pre = sum(1 for n in neurons if n.get("pre") is not None)
+    with_roi = sum(1 for n in neurons if n.get("roiInfo"))
+    print(f"  Updated {meta_path}")
+    print(f"  {len(neurons)} neurons total")
+    print(f"  {with_type} with cellType, {with_pre} with synapse counts, "
+          f"{with_roi} with roiInfo")
 
 
 # ---------------------------------------------------------------------------
@@ -252,8 +388,18 @@ def convert_to_microjson(
                 props["instance"] = meta["instance"]
             if meta.get("status"):
                 props["status"] = meta["status"]
+            if meta.get("statusLabel"):
+                props["status_label"] = meta["statusLabel"]
             if meta.get("somaLocation"):
                 props["soma_location"] = meta["somaLocation"]
+            if meta.get("pre") is not None:
+                props["pre"] = meta["pre"]
+            if meta.get("post") is not None:
+                props["post"] = meta["post"]
+            if meta.get("somaRadius") is not None:
+                props["soma_radius"] = meta["somaRadius"]
+            if meta.get("cropped") is not None:
+                props["cropped"] = meta["cropped"]
 
         features.append(MicroFeature(
             type="Feature",
@@ -330,6 +476,28 @@ def _build_tags(obj_path: Path, meta_lookup: dict[str, dict]) -> dict:
             tags["instance"] = meta["instance"]
         if meta.get("status"):
             tags["status"] = meta["status"]
+        if meta.get("statusLabel"):
+            tags["status_label"] = meta["statusLabel"]
+        if meta.get("pre") is not None:
+            tags["pre"] = str(meta["pre"])
+        if meta.get("post") is not None:
+            tags["post"] = str(meta["post"])
+        if meta.get("somaRadius") is not None:
+            tags["soma_radius"] = str(meta["somaRadius"])
+        if meta.get("cropped") is not None:
+            tags["cropped"] = str(meta["cropped"]).lower()
+        # Derive dominant neuropil region from roiInfo
+        roi_info = meta.get("roiInfo")
+        if roi_info and isinstance(roi_info, dict):
+            # Find the region with most total synapses (pre + post)
+            best_roi, best_count = None, 0
+            for roi, counts in roi_info.items():
+                if isinstance(counts, dict):
+                    total = (counts.get("pre", 0) or 0) + (counts.get("post", 0) or 0)
+                    if total > best_count:
+                        best_roi, best_count = roi, total
+            if best_roi:
+                tags["primary_roi"] = best_roi
     # Feature name for viewer: prefer instance, fall back to body_id
     tags["name"] = tags.get("instance") or str(body_id)
     # Deterministic color from body_id hash
@@ -700,10 +868,12 @@ def main() -> None:
         description="Hemibrain v1.2.1 download, conversion, tiling, and benchmark",
     )
     parser.add_argument("--download", action="store_true", help="Download meshes from CloudVolume + metadata from neuPrint")
+    parser.add_argument("--update-metadata", action="store_true", help="Re-query neuPrint for richer metadata on already-downloaded neurons")
     parser.add_argument("--convert", action="store_true", help="Convert OBJ to MicroJSON")
     parser.add_argument("--tile", action="store_true", help="Generate tiles (mjb + 3dtiles)")
     parser.add_argument("--benchmark", action="store_true", help="Run decode/memory benchmarks")
     parser.add_argument("--max-neurons", type=int, default=1000, help="Max neurons to download (default: 1000)")
+    parser.add_argument("--min-type-count", type=int, default=0, help="Only download neurons whose cell type has >= N instances (default: 0 = no filter)")
     parser.add_argument("--max-zoom", type=int, default=3, help="Max zoom level (default: 3)")
     parser.add_argument("--workers", type=int, default=None, help="Worker processes")
     parser.add_argument("--skip-3dtiles", action="store_true", help="Skip 3D Tiles generation")
@@ -713,7 +883,7 @@ def main() -> None:
     parser.add_argument("--csv", type=Path, default=None, help="Export results to CSV")
     args = parser.parse_args()
 
-    if not any([args.download, args.convert, args.tile, args.benchmark]):
+    if not any([args.download, args.update_metadata, args.convert, args.tile, args.benchmark]):
         parser.print_help()
         sys.exit(1)
 
@@ -721,6 +891,19 @@ def main() -> None:
     mesh_dir = data_dir / "meshes"
     meta_path = data_dir / "metadata.json"
     tiles_dir = data_dir / "tiles"
+
+    # --- Update metadata only ---
+    if args.update_metadata:
+        token = os.environ.get("NEUPRINT_TOKEN", "")
+        if not token:
+            print("ERROR: NEUPRINT_TOKEN not set.", file=sys.stderr)
+            print("  Set it via: export NEUPRINT_TOKEN='your-token-here'")
+            print("  Get token from https://neuprint.janelia.org → Account")
+            sys.exit(1)
+        update_metadata(mesh_dir, meta_path, token)
+        if not any([args.download, args.convert, args.tile, args.benchmark]):
+            print("Done.")
+            return
 
     # --- Download ---
     if args.download:
@@ -730,7 +913,7 @@ def main() -> None:
         neurons: list[dict] = []
 
         if token:
-            neurons = query_neuprint(token, max_neurons=args.max_neurons)
+            neurons = query_neuprint(token, max_neurons=args.max_neurons, min_type_count=args.min_type_count)
 
             # Save metadata
             meta_path.write_text(json.dumps(
@@ -758,6 +941,12 @@ def main() -> None:
         downloaded = download_meshes(body_ids, mesh_dir)
         dl_time = time.perf_counter() - t0
         print(f"  Download time: {_fmt_time(dl_time)}")
+
+        # Invalidate bounds cache so it gets recomputed with new meshes
+        bounds_cache = mesh_dir / "bounds.json"
+        if bounds_cache.exists():
+            bounds_cache.unlink()
+            print(f"  Invalidated bounds cache ({bounds_cache})")
 
     # --- Streaming mode (bypass MicroFeatureCollection entirely) ---
     if args.streaming and args.tile:

@@ -77,3 +77,8 @@ push            = false
 skip = '.git*,invalid'
 check-hidden = true
 ignore-regex = '^\s*"image/\S+": ".*'
+
+[dependency-groups]
+dev = [
+    "brotli>=1.2.0",
+]

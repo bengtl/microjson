@@ -13,6 +13,7 @@ mod tileset_json;
 mod streaming;
 mod morton;
 mod encoder_draco;
+mod encoder_meshopt;
 
 /// The main Python module implemented in Rust.
 #[pymodule]

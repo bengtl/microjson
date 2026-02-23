@@ -12,7 +12,6 @@ use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
 use rayon::prelude::*;
 use ahash::AHashMap;
 
@@ -23,6 +22,7 @@ use crate::encoder_glb::{self, GlbFeature};
 use crate::tileset_json;
 use crate::tile_transform;
 use crate::obj_parser;
+use crate::simplify;
 
 // Geometry type constants matching protobuf GeomType.
 const POINT3D: u8 = 1;
@@ -980,14 +980,6 @@ fn encode_feature_mjb_multilod(
         let is_finest = zoom == max_zoom;
         let do_simplify = zoom < max_zoom;
 
-        // Simplification grid parameters
-        let cell_size = if do_simplify {
-            let cells = base_cells * (1u32 << zoom);
-            [dx / cells as f64, dy / cells as f64, dz / cells as f64]
-        } else {
-            [0.0; 3]
-        };
-
         // Separate mesh vs non-mesh fragments
         let mut mesh_frags: Vec<&Fragment> = Vec::new();
         let mut other_frags: Vec<&Fragment> = Vec::new();
@@ -1041,111 +1033,10 @@ fn encode_feature_mjb_multilod(
                 encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_TAGS, &tag_indices_vec);
             }
 
-            // Merge geometry with vertex dedup or clustering
+            // Build indexed mesh with exact f32 vertex dedup (all zoom levels)
             let mut positions: Vec<f32> = Vec::new();
             let mut indices: Vec<u32> = Vec::new();
-
-            if do_simplify {
-                // --- Vertex clustering for coarser LODs ---
-                let mut cell_map: AHashMap<(i64, i64, i64), u32> = AHashMap::new();
-                let mut accum: Vec<[f64; 4]> = Vec::new(); // [sum_x, sum_y, sum_z, count]
-                let mut vert_remap: Vec<u32> = Vec::new();
-
-                for frag in &mesh_frags {
-                    let n_verts = frag.z.len();
-                    let ring_lengths: Vec<usize> = if frag.ring_lengths.is_empty() {
-                        vec![n_verts]
-                    } else {
-                        frag.ring_lengths.iter().map(|&r| r as usize).collect()
-                    };
-
-                    let mut offset = 0usize;
-                    for &rl in &ring_lengths {
-                        let nv = if rl >= 4 { 3 } else { rl };
-                        for vi_off in 0..nv {
-                            let vi = offset + vi_off;
-                            if vi >= n_verts { break; }
-                            let wx = xmin + frag.xy[vi * 2] * dx;
-                            let wy = ymin + frag.xy[vi * 2 + 1] * dy;
-                            let wz = zmin + frag.z[vi] * dz;
-
-                            let qx = ((wx - xmin) / cell_size[0]).floor() as i64;
-                            let qy = ((wy - ymin) / cell_size[1]).floor() as i64;
-                            let qz = ((wz - zmin) / cell_size[2]).floor() as i64;
-                            let key = (qx, qy, qz);
-
-                            let idx = match cell_map.get(&key) {
-                                Some(&idx) => {
-                                    accum[idx as usize][0] += wx;
-                                    accum[idx as usize][1] += wy;
-                                    accum[idx as usize][2] += wz;
-                                    accum[idx as usize][3] += 1.0;
-                                    idx
-                                }
-                                None => {
-                                    let idx = cell_map.len() as u32;
-                                    cell_map.insert(key, idx);
-                                    accum.push([wx, wy, wz, 1.0]);
-                                    idx
-                                }
-                            };
-                            vert_remap.push(idx);
-                        }
-                        offset += rl;
-                    }
-                }
-
-                // Compute centroids
-                let centroids: Vec<[f32; 3]> = accum.iter().map(|a| [
-                    (a[0] / a[3]) as f32,
-                    (a[1] / a[3]) as f32,
-                    (a[2] / a[3]) as f32,
-                ]).collect();
-
-                // Build deduplicated indexed mesh from centroids
-                let mut vertex_map: AHashMap<u32, u32> = AHashMap::new();
-                let mut remap_offset = 0usize;
-
-                for frag in &mesh_frags {
-                    let ring_lengths: Vec<usize> = if frag.ring_lengths.is_empty() {
-                        vec![frag.z.len()]
-                    } else {
-                        frag.ring_lengths.iter().map(|&r| r as usize).collect()
-                    };
-                    for &rl in &ring_lengths {
-                        let nv = if rl >= 4 { 3 } else { rl };
-                        if nv == 3 && remap_offset + 2 < vert_remap.len() {
-                            let c0 = vert_remap[remap_offset];
-                            let c1 = vert_remap[remap_offset + 1];
-                            let c2 = vert_remap[remap_offset + 2];
-
-                            if c0 != c1 && c1 != c2 && c0 != c2 {
-                                let mut tri = [0u32; 3];
-                                for (ti, &ci) in [c0, c1, c2].iter().enumerate() {
-                                    let idx = match vertex_map.get(&ci) {
-                                        Some(&idx) => idx,
-                                        None => {
-                                            let idx = (positions.len() / 3) as u32;
-                                            vertex_map.insert(ci, idx);
-                                            let c = &centroids[ci as usize];
-                                            positions.extend_from_slice(c);
-                                            // Update bbox from centroids
-                                            if c[0] as f64 > bb_max[0] || is_finest { /* updated below */ }
-                                            idx
-                                        }
-                                    };
-                                    tri[ti] = idx;
-                                }
-                                if tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2] {
-                                    indices.extend_from_slice(&tri);
-                                }
-                            }
-                        }
-                        remap_offset += nv;
-                    }
-                }
-            } else {
-                // --- Exact float32 vertex dedup (finest LOD) ---
+            {
                 let mut vertex_map: AHashMap<(i64, i64, i64), u32> = AHashMap::new();
 
                 for frag in &mesh_frags {
@@ -1167,13 +1058,9 @@ fn encode_feature_mjb_multilod(
                         let mut tri = [0u32; 3];
                         for vi_off in 0..3 {
                             let vi = offset + vi_off;
-                            let wx = xmin + frag.xy[vi * 2] * dx;
-                            let wy = ymin + frag.xy[vi * 2 + 1] * dy;
-                            let wz = zmin + frag.z[vi] * dz;
-
-                            let wx_f32 = wx as f32;
-                            let wy_f32 = wy as f32;
-                            let wz_f32 = wz as f32;
+                            let wx_f32 = (xmin + frag.xy[vi * 2] * dx) as f32;
+                            let wy_f32 = (ymin + frag.xy[vi * 2 + 1] * dy) as f32;
+                            let wz_f32 = (zmin + frag.z[vi] * dz) as f32;
 
                             let key = (
                                 wx_f32.to_bits() as i64,
@@ -1201,6 +1088,17 @@ fn encode_feature_mjb_multilod(
                         offset += rl;
                     }
                 }
+            }
+
+            // QEM simplification for coarser LODs
+            if do_simplify && indices.len() > 12 {
+                let target_idx = simplify::compute_target_index_count(
+                    base_cells, zoom, max_zoom, indices.len(),
+                );
+                let target_tris = target_idx / 3;
+                let (sp, si) = simplify::simplify_mesh(&positions, &indices, target_tris);
+                positions = sp;
+                indices = si;
             }
 
             // Update finest-LOD bbox from positions
@@ -1388,25 +1286,14 @@ fn encode_glb_tile_from_fragments(
     tz: u32,
     max_zoom: u32,
     base_cells: u32,
-    use_draco: bool,
+    compression: &str,
 ) -> Vec<u8> {
     let (xmin, ymin, zmin, xmax, ymax, zmax) = *world_bounds;
     let dx = if xmax != xmin { xmax - xmin } else { 1.0 };
     let dy = if ymax != ymin { ymax - ymin } else { 1.0 };
     let dz = if zmax != zmin { zmax - zmin } else { 1.0 };
 
-    // Simplification grid parameters
     let do_simplify = tz < max_zoom;
-    let cell_size = if do_simplify {
-        let cells = base_cells * (1u32 << tz);
-        [
-            dx / cells as f64,
-            dy / cells as f64,
-            dz / cells as f64,
-        ]
-    } else {
-        [0.0; 3]
-    };
 
     let mut features: Vec<GlbFeature> = Vec::new();
 
@@ -1435,178 +1322,70 @@ fn encode_glb_tile_from_fragments(
 
         match frag.geom_type {
             5 | 4 => {
-                // TIN or PolyhedralSurface — per-face vertices (matching Python pipeline)
-                //
-                // Python pipeline: decimate_tin() → _convert_tin() writes 3 separate
-                // vertices per face with sequential indices [0,1,2, 3,4,5, ...].
-                // No vertex deduplication at any zoom level.
+                // TIN or PolyhedralSurface — build indexed mesh with f32 dedup
                 let rls: Vec<usize> = if frag.ring_lengths.is_empty() {
                     vec![n_verts]
                 } else {
                     frag.ring_lengths.iter().map(|&r| r as usize).collect()
                 };
                 let n_faces = rls.len();
-
-                // Python: `if target_ratio >= 1.0 or len(coordinates) <= 4: return`
-                // Skip simplification at max_zoom or for tiny features
                 let do_simplify_this = do_simplify && n_faces > 4;
 
-                if do_simplify_this {
-                    // --- Vertex clustering (matches Python decimate_tin) ---
-
-                    // Phase 1: quantize all vertices and accumulate centroids
-                    let mut cell_map: AHashMap<(i64, i64, i64), u32> = AHashMap::new();
-                    let mut accum: Vec<[f64; 4]> = Vec::new(); // [sum_x, sum_y, sum_z, count]
-                    let mut vert_remap: Vec<u32> = Vec::with_capacity(n_verts);
+                // Build indexed mesh with exact f32 vertex dedup
+                let mut positions: Vec<f32> = Vec::new();
+                let mut indices: Vec<u32> = Vec::new();
+                {
+                    let mut vertex_map: AHashMap<(u32, u32, u32), u32> = AHashMap::new();
                     let mut offset = 0usize;
-
-                    for &rl in &rls {
-                        // Only process first 3 vertices per ring — skip closing
-                        // duplicate vertex. Matches Python: `ring[:3]`
-                        let nv_clust = if rl >= 4 { 3 } else { rl };
-                        for vi_off in 0..nv_clust {
-                            let vi = offset + vi_off;
-                            if vi >= n_verts {
-                                break;
-                            }
-                            let wx = xmin + frag.xy[vi * 2] * dx;
-                            let wy = ymin + frag.xy[vi * 2 + 1] * dy;
-                            let wz = zmin + frag.z[vi] * dz;
-
-                            let qx = ((wx - xmin) / cell_size[0]).floor() as i64;
-                            let qy = ((wy - ymin) / cell_size[1]).floor() as i64;
-                            let qz = ((wz - zmin) / cell_size[2]).floor() as i64;
-                            let key = (qx, qy, qz);
-
-                            let idx = match cell_map.get(&key) {
-                                Some(&idx) => {
-                                    accum[idx as usize][0] += wx;
-                                    accum[idx as usize][1] += wy;
-                                    accum[idx as usize][2] += wz;
-                                    accum[idx as usize][3] += 1.0;
-                                    idx
-                                }
-                                None => {
-                                    let idx = cell_map.len() as u32;
-                                    cell_map.insert(key, idx);
-                                    accum.push([wx, wy, wz, 1.0]);
-                                    idx
-                                }
-                            };
-                            vert_remap.push(idx);
-                        }
-                        offset += rl; // advance by full ring length in fragment data
-                    }
-
-                    // Phase 2: compute centroids
-                    let centroids: Vec<[f32; 3]> = accum
-                        .iter()
-                        .map(|a| {
-                            [
-                                (a[0] / a[3]) as f32,
-                                (a[1] / a[3]) as f32,
-                                (a[2] / a[3]) as f32,
-                            ]
-                        })
-                        .collect();
-
-                    // Phase 3: build per-face vertices (matching Python _convert_tin)
-                    // Each non-degenerate face writes 3 separate vertex positions.
-                    let mut positions: Vec<f32> = Vec::new();
-                    let mut indices: Vec<u32> = Vec::new();
-                    let mut remap_offset = 0usize;
-                    let mut face_idx = 0u32;
-
-                    for &rl in &rls {
-                        let nv = if rl >= 4 { 3 } else { rl };
-                        if nv == 3 && remap_offset + 2 < vert_remap.len() {
-                            let i0 = vert_remap[remap_offset];
-                            let i1 = vert_remap[remap_offset + 1];
-                            let i2 = vert_remap[remap_offset + 2];
-
-                            if i0 != i1 && i1 != i2 && i0 != i2 {
-                                // Write 3 separate centroid positions per face
-                                positions.extend_from_slice(&centroids[i0 as usize]);
-                                positions.extend_from_slice(&centroids[i1 as usize]);
-                                positions.extend_from_slice(&centroids[i2 as usize]);
-                                let base = face_idx * 3;
-                                indices.extend_from_slice(&[base, base + 1, base + 2]);
-                                face_idx += 1;
-                            }
-                        }
-                        remap_offset += nv; // advance by entries pushed (3), not ring length (4)
-                    }
-
-                    if positions.is_empty() {
-                        // All faces degenerate — keep first 4 original faces
-                        // (matches Python: `return coordinates[:4]`)
-                        let max_faces = n_faces.min(4);
-                        let mut off = 0usize;
-                        let mut fi = 0u32;
-                        for (face_i, &rl) in rls.iter().enumerate() {
-                            if face_i >= max_faces { break; }
-                            let nv = if rl >= 4 { 3 } else { rl };
-                            if nv == 3 && off + 2 < n_verts {
-                                for vi_off in 0..3 {
-                                    let vi = off + vi_off;
-                                    let wx = xmin + frag.xy[vi * 2] * dx;
-                                    let wy = ymin + frag.xy[vi * 2 + 1] * dy;
-                                    let wz = zmin + frag.z[vi] * dz;
-                                    positions.push(wx as f32);
-                                    positions.push(wy as f32);
-                                    positions.push(wz as f32);
-                                }
-                                let base = fi * 3;
-                                indices.extend_from_slice(&[base, base + 1, base + 2]);
-                                fi += 1;
-                            }
-                            off += rl;
-                        }
-                    }
-
-                    if !positions.is_empty() && !indices.is_empty() {
-                        features.push(GlbFeature {
-                            positions,
-                            indices,
-                            mode: encoder_glb::MODE_TRIANGLES,
-                            extras,
-                        });
-                    }
-                } else {
-                    // No simplification — write per-face vertices directly
-                    // (matches Python _convert_tin: 3 verts per face, sequential indices)
-                    let mut positions: Vec<f32> = Vec::new();
-                    let mut indices: Vec<u32> = Vec::new();
-                    let mut offset = 0usize;
-                    let mut face_idx = 0u32;
-
                     for &rl in &rls {
                         let nv = if rl >= 4 { 3 } else { rl };
                         if nv == 3 && offset + 2 < n_verts {
+                            let mut tri = [0u32; 3];
                             for vi_off in 0..3 {
                                 let vi = offset + vi_off;
-                                let wx = xmin + frag.xy[vi * 2] * dx;
-                                let wy = ymin + frag.xy[vi * 2 + 1] * dy;
-                                let wz = zmin + frag.z[vi] * dz;
-                                positions.push(wx as f32);
-                                positions.push(wy as f32);
-                                positions.push(wz as f32);
+                                let wx = (xmin + frag.xy[vi * 2] * dx) as f32;
+                                let wy = (ymin + frag.xy[vi * 2 + 1] * dy) as f32;
+                                let wz = (zmin + frag.z[vi] * dz) as f32;
+                                let key = (wx.to_bits(), wy.to_bits(), wz.to_bits());
+                                let idx = match vertex_map.get(&key) {
+                                    Some(&idx) => idx,
+                                    None => {
+                                        let idx = (positions.len() / 3) as u32;
+                                        vertex_map.insert(key, idx);
+                                        positions.push(wx);
+                                        positions.push(wy);
+                                        positions.push(wz);
+                                        idx
+                                    }
+                                };
+                                tri[vi_off] = idx;
                             }
-                            let base = face_idx * 3;
-                            indices.extend_from_slice(&[base, base + 1, base + 2]);
-                            face_idx += 1;
+                            if tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2] {
+                                indices.extend_from_slice(&tri);
+                            }
                         }
                         offset += rl;
                     }
+                }
 
-                    if !positions.is_empty() && !indices.is_empty() {
-                        features.push(GlbFeature {
-                            positions,
-                            indices,
-                            mode: encoder_glb::MODE_TRIANGLES,
-                            extras,
-                        });
-                    }
+                // QEM simplification for coarser LODs
+                if do_simplify_this && indices.len() > 12 {
+                    let target_idx = simplify::compute_target_index_count(
+                        base_cells, tz, max_zoom, indices.len(),
+                    );
+                    let target_tris = target_idx / 3;
+                    let (sp, si) = simplify::simplify_mesh(&positions, &indices, target_tris);
+                    positions = sp;
+                    indices = si;
+                }
+
+                if !positions.is_empty() && !indices.is_empty() {
+                    features.push(GlbFeature {
+                        positions,
+                        indices,
+                        mode: encoder_glb::MODE_TRIANGLES,
+                        extras,
+                    });
                 }
             }
             2 => {
@@ -1662,10 +1441,10 @@ fn encode_glb_tile_from_fragments(
         }
     }
 
-    if use_draco {
-        encoder_glb::encode_glb_draco(&features, 50)
-    } else {
-        encoder_glb::encode_glb(&features)
+    match compression {
+        "draco" => encoder_glb::encode_glb_draco(&features, 50),
+        "meshopt" => encoder_glb::encode_glb_meshopt(&features, 50),
+        _ => encoder_glb::encode_glb(&features),
     }
 }
 
@@ -1706,12 +1485,6 @@ fn collect_parquet_rows(
         .flat_map(|((tz, tx, ty, td), frags)| {
             let tz = *tz;
             let do_simplify = tz < max_zoom;
-            let cell_size = if do_simplify {
-                let cells = base_cells * (1u32 << tz);
-                [dx / cells as f64, dy / cells as f64, dz / cells as f64]
-            } else {
-                [0.0; 3]
-            };
 
             let mut rows: Vec<ParquetRow> = Vec::new();
 
@@ -1735,7 +1508,8 @@ fn collect_parquet_rows(
                         if do_simplify_this {
                             parquet_tin_simplified(
                                 frag, &rls, n_verts,
-                                xmin, ymin, zmin, dx, dy, dz, &cell_size,
+                                xmin, ymin, zmin, dx, dy, dz,
+                                base_cells, tz, max_zoom,
                             )
                         } else {
                             parquet_tin_direct(
@@ -1801,119 +1575,30 @@ fn collect_parquet_rows(
         .collect()
 }
 
-/// TIN mesh processing with vertex clustering (coarse zoom levels).
+/// TIN mesh processing with QEM simplification (coarse zoom levels).
+/// Builds an indexed mesh via `parquet_tin_direct`, then applies QEM.
 fn parquet_tin_simplified(
     frag: &Fragment,
     rls: &[usize],
     n_verts: usize,
     xmin: f64, ymin: f64, zmin: f64,
     dx: f64, dy: f64, dz: f64,
-    cell_size: &[f64; 3],
+    base_cells: u32, zoom: u32, max_zoom: u32,
 ) -> (Vec<f32>, Vec<u32>) {
-    let n_faces = rls.len();
+    let (positions, indices) = parquet_tin_direct(
+        frag, rls, n_verts,
+        xmin, ymin, zmin, dx, dy, dz,
+    );
 
-    // Phase 1: quantize vertices and accumulate centroids
-    let mut cell_map: AHashMap<(i64, i64, i64), u32> = AHashMap::new();
-    let mut accum: Vec<[f64; 4]> = Vec::new();
-    let mut vert_remap: Vec<u32> = Vec::with_capacity(n_verts);
-    let mut offset = 0usize;
-
-    for &rl in rls {
-        let nv_clust = if rl >= 4 { 3 } else { rl };
-        for vi_off in 0..nv_clust {
-            let vi = offset + vi_off;
-            if vi >= n_verts { break; }
-            let wx = xmin + frag.xy[vi * 2] * dx;
-            let wy = ymin + frag.xy[vi * 2 + 1] * dy;
-            let wz = zmin + frag.z[vi] * dz;
-
-            let qx = ((wx - xmin) / cell_size[0]).floor() as i64;
-            let qy = ((wy - ymin) / cell_size[1]).floor() as i64;
-            let qz = ((wz - zmin) / cell_size[2]).floor() as i64;
-            let key = (qx, qy, qz);
-
-            let idx = match cell_map.get(&key) {
-                Some(&idx) => {
-                    accum[idx as usize][0] += wx;
-                    accum[idx as usize][1] += wy;
-                    accum[idx as usize][2] += wz;
-                    accum[idx as usize][3] += 1.0;
-                    idx
-                }
-                None => {
-                    let idx = cell_map.len() as u32;
-                    cell_map.insert(key, idx);
-                    accum.push([wx, wy, wz, 1.0]);
-                    idx
-                }
-            };
-            vert_remap.push(idx);
-        }
-        offset += rl;
+    if indices.len() <= 12 {
+        return (positions, indices);
     }
 
-    // Phase 2: compute centroids
-    let centroids: Vec<[f32; 3]> = accum.iter()
-        .map(|a| [
-            (a[0] / a[3]) as f32,
-            (a[1] / a[3]) as f32,
-            (a[2] / a[3]) as f32,
-        ])
-        .collect();
-
-    // Phase 3: build indexed mesh from centroids (shared vertices)
-    let mut positions: Vec<f32> = Vec::with_capacity(centroids.len() * 3);
-    for c in &centroids {
-        positions.extend_from_slice(c);
-    }
-
-    let mut indices: Vec<u32> = Vec::new();
-    let mut remap_offset = 0usize;
-
-    for &rl in rls {
-        let nv = if rl >= 4 { 3 } else { rl };
-        if nv == 3 && remap_offset + 2 < vert_remap.len() {
-            let i0 = vert_remap[remap_offset];
-            let i1 = vert_remap[remap_offset + 1];
-            let i2 = vert_remap[remap_offset + 2];
-
-            if i0 != i1 && i1 != i2 && i0 != i2 {
-                indices.push(i0);
-                indices.push(i1);
-                indices.push(i2);
-            }
-        }
-        remap_offset += nv;
-    }
-
-    if indices.is_empty() {
-        // All faces degenerate — fallback to raw positions for first 4 faces
-        positions.clear();
-        let max_faces = n_faces.min(4);
-        let mut off = 0usize;
-        let mut fi = 0u32;
-        for (face_i, &rl) in rls.iter().enumerate() {
-            if face_i >= max_faces { break; }
-            let nv = if rl >= 4 { 3 } else { rl };
-            if nv == 3 && off + 2 < n_verts {
-                for vi_off in 0..3 {
-                    let vi = off + vi_off;
-                    let wx = xmin + frag.xy[vi * 2] * dx;
-                    let wy = ymin + frag.xy[vi * 2 + 1] * dy;
-                    let wz = zmin + frag.z[vi] * dz;
-                    positions.push(wx as f32);
-                    positions.push(wy as f32);
-                    positions.push(wz as f32);
-                }
-                let base = fi * 3;
-                indices.extend_from_slice(&[base, base + 1, base + 2]);
-                fi += 1;
-            }
-            off += rl;
-        }
-    }
-
-    (positions, indices)
+    let target_idx = simplify::compute_target_index_count(
+        base_cells, zoom, max_zoom, indices.len(),
+    );
+    let target_tris = target_idx / 3;
+    simplify::simplify_mesh(&positions, &indices, target_tris)
 }
 
 /// TIN mesh processing without simplification (max_zoom level).
@@ -2046,7 +1731,8 @@ pub struct StreamingTileGenerator {
     feature_count: u32,
     tags_registry: HashMap<u32, Vec<(String, TagValue)>>,
     fragment_writer: Option<FragmentWriter>,
-    fragment_path: PathBuf,
+    frag_dir: PathBuf,
+    shard_counter: std::sync::atomic::AtomicUsize,
     tiles_written: u32,
     fragment_reader: Option<FragmentReader>,
     parquet_stream_active: bool,
@@ -2076,10 +1762,14 @@ impl StreamingTileGenerator {
         base_cells: u32,
     ) -> PyResult<Self> {
         let gen_id = GENERATOR_ID.fetch_add(1, Ordering::Relaxed);
-        let frag_path = std::env::temp_dir()
-            .join(format!("microjson_frags_{}_{}.mjf", std::process::id(), gen_id));
+        let frag_dir = std::env::temp_dir()
+            .join(format!("microjson_frags_{}_{}", std::process::id(), gen_id));
+        std::fs::create_dir_all(&frag_dir)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
 
-        let writer = FragmentWriter::new(&frag_path)
+        // Create shard 0 for the single-feature add_feature() path
+        let shard_path = frag_dir.join("shard_000.mjf");
+        let writer = FragmentWriter::new(&shard_path)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
 
         Ok(Self {
@@ -2092,7 +1782,8 @@ impl StreamingTileGenerator {
             feature_count: 0,
             tags_registry: HashMap::new(),
             fragment_writer: Some(writer),
-            fragment_path: frag_path,
+            frag_dir,
+            shard_counter: std::sync::atomic::AtomicUsize::new(1), // shard 0 already created
             tiles_written: 0,
             fragment_reader: None,
             parquet_stream_active: false,
@@ -2161,7 +1852,7 @@ impl StreamingTileGenerator {
         }
 
         // Read all fragments grouped by tile key
-        let mut reader = FragmentReader::new(&self.fragment_path)
+        let mut reader = FragmentReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let groups = reader.read_all_grouped()
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
@@ -2223,7 +1914,7 @@ impl StreamingTileGenerator {
     /// Uses rayon for parallel tile encoding (GIL released).
     ///
     /// Returns the number of tiles written.
-    #[pyo3(signature = (output_dir, world_bounds, layer_name="default", use_draco=false))]
+    #[pyo3(signature = (output_dir, world_bounds, layer_name="default", compression="none", use_draco=false))]
     fn generate_3dtiles(
         &mut self,
         py: Python<'_>,
@@ -2231,8 +1922,16 @@ impl StreamingTileGenerator {
         world_bounds: (f64, f64, f64, f64, f64, f64),
         #[allow(unused)]
         layer_name: &str,
+        compression: &str,
         use_draco: bool,
     ) -> PyResult<u32> {
+        // Backward compat: use_draco=True with compression="none" → "draco"
+        let effective_compression = if use_draco && compression == "none" {
+            "draco"
+        } else {
+            compression
+        };
+
         // Flush and close the fragment writer
         if let Some(mut writer) = self.fragment_writer.take() {
             writer.flush()
@@ -2240,7 +1939,7 @@ impl StreamingTileGenerator {
         }
 
         // Read all fragments grouped by tile key
-        let mut reader = FragmentReader::new(&self.fragment_path)
+        let mut reader = FragmentReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let groups = reader.read_all_grouped()
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
@@ -2259,7 +1958,7 @@ impl StreamingTileGenerator {
                 .map(|((tz, tx, ty, td), frags)| {
                     let data = encode_glb_tile_from_fragments(
                         frags, tags_ref, &wb, *tz, max_zoom, base_cells,
-                        use_draco,
+                        effective_compression,
                     );
                     let tile_path = out_dir
                         .join(tz.to_string())
@@ -2313,7 +2012,7 @@ impl StreamingTileGenerator {
         }
 
         // Read all fragments grouped by tile key
-        let mut reader = FragmentReader::new(&self.fragment_path)
+        let mut reader = FragmentReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let groups = reader.read_all_grouped()
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
@@ -2406,7 +2105,7 @@ impl StreamingTileGenerator {
         }
 
         // Open reader
-        let reader = FragmentReader::new(&self.fragment_path)
+        let reader = FragmentReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         self.fragment_reader = Some(reader);
         self.parquet_stream_active = true;
@@ -2420,12 +2119,13 @@ impl StreamingTileGenerator {
     /// or `None` when all fragments have been consumed (EOF).
     ///
     /// Memory: O(batch_size) — only `batch_size` fragments are loaded at a time.
-    #[pyo3(signature = (batch_size, world_bounds))]
+    #[pyo3(signature = (batch_size, world_bounds, max_batch_bytes=2_000_000_000))]
     fn _next_parquet_batch(
         &mut self,
         py: Python<'_>,
         batch_size: usize,
         world_bounds: (f64, f64, f64, f64, f64, f64),
+        max_batch_bytes: usize,
     ) -> PyResult<Option<PyObject>> {
         if !self.parquet_stream_active {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
@@ -2437,12 +2137,15 @@ impl StreamingTileGenerator {
             pyo3::exceptions::PyRuntimeError::new_err("Fragment reader is None")
         })?;
 
-        // Read up to batch_size fragments
+        // Read up to batch_size fragments, stopping early if byte budget exceeded.
+        // Always read at least 1 fragment so we make progress.
         let mut groups: AHashMap<(u32, u32, u32, u32), Vec<Fragment>> = AHashMap::new();
         let mut count = 0usize;
-        while count < batch_size {
+        let mut batch_bytes = 0usize;
+        while count < batch_size && (count == 0 || batch_bytes < max_batch_bytes) {
             match reader.read_next() {
                 Ok(Some(frag)) => {
+                    batch_bytes += frag.estimate_bytes();
                     let key = (frag.tile_z, frag.tile_x, frag.tile_y, frag.tile_d);
                     groups.entry(key).or_default().push(frag);
                     count += 1;
@@ -2696,15 +2399,32 @@ impl StreamingTileGenerator {
             self.tags_registry.insert(fids[i], tag_vec);
         }
 
-        // Take the writer, wrap in Mutex for thread-safe writing
-        let writer = self.fragment_writer.take()
-            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-                "Cannot add features after generate"))?;
-        let writer_mutex = Mutex::new(writer);
+        // Close the single-feature writer (shard 0) — add_obj_files uses
+        // per-thread sharded writers for full parallelism.
+        if let Some(mut writer) = self.fragment_writer.take() {
+            writer.flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
 
         let min_zoom = self.min_zoom;
         let max_zoom = self.max_zoom;
         let buffer = self.buffer;
+
+        // Pre-create one FragmentWriter per rayon thread (+1 for calling thread).
+        // Each thread always maps to its own writer via current_thread_index() —
+        // the Mutex is uncontested since each index is unique per thread.
+        let n_writers = rayon::current_num_threads() + 1;
+        let writers: Vec<std::sync::Mutex<FragmentWriter>> = (0..n_writers)
+            .map(|_| {
+                let shard_id = self.shard_counter.fetch_add(1, Ordering::Relaxed);
+                let shard_path = self.frag_dir.join(format!("shard_{:03}.mjf", shard_id));
+                std::sync::Mutex::new(
+                    FragmentWriter::new(&shard_path)
+                        .expect("Failed to create fragment shard file")
+                )
+            })
+            .collect();
+        let writers_ref = &writers;
 
         // Release GIL — parallel parse + project + clip + write
         py.allow_threads(|| {
@@ -2750,24 +2470,28 @@ impl StreamingTileGenerator {
                 let clip_results = octree_clip(&clip_feat, min_zoom, max_zoom, buffer);
                 drop(clip_feat);
 
-                // Write fragments to disk under mutex (serial per file)
-                let mut w = writer_mutex.lock().unwrap();
-                for ((tz, tx, ty, td), cf) in clip_results {
+                // Write to this thread's dedicated shard — uncontested lock
+                let writer_idx = rayon::current_thread_index()
+                    .unwrap_or(n_writers - 1); // last slot for calling thread
+                let mut w = writers_ref[writer_idx].lock().unwrap();
+                for ((tz, tx_coord, ty, td), cf) in clip_results {
                     let frag = Fragment {
                         feature_id: fid,
-                        tile_z: tz, tile_x: tx, tile_y: ty, tile_d: td,
+                        tile_z: tz, tile_x: tx_coord, tile_y: ty, tile_d: td,
                         geom_type: cf.geom_type,
                         xy: cf.xy, z: cf.z,
                         ring_lengths: cf.ring_lengths,
                     };
                     w.write(&frag).ok();
                 }
-                // mutex released here
             });
         });
 
-        // Put writer back
-        self.fragment_writer = Some(writer_mutex.into_inner().unwrap());
+        // Flush all shard writers
+        for w in &writers {
+            w.lock().unwrap().flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
 
         Ok(fids)
     }
@@ -2804,7 +2528,7 @@ impl StreamingTileGenerator {
         }
 
         // Read all fragments grouped by feature_id
-        let mut reader = FragmentReader::new(&self.fragment_path)
+        let mut reader = FragmentReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let feature_groups = reader.read_all_grouped_by_feature()
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
@@ -3060,7 +2784,7 @@ impl StreamingTileGenerator {
         }
 
         // Read all fragments grouped by feature_id
-        let mut reader = FragmentReader::new(&self.fragment_path)
+        let mut reader = FragmentReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let feature_groups = reader.read_all_grouped_by_feature()
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
@@ -3215,7 +2939,7 @@ impl StreamingTileGenerator {
         }
 
         // Read all fragments grouped by feature_id
-        let mut reader = FragmentReader::new(&self.fragment_path)
+        let mut reader = FragmentReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let feature_groups = reader.read_all_grouped_by_feature()
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
@@ -3582,13 +3306,13 @@ impl StreamingTileGenerator {
     }
 }
 
-/// Clean up temp fragment file on drop.
+/// Clean up temp fragment directory on drop.
 impl Drop for StreamingTileGenerator {
     fn drop(&mut self) {
         // Drop the writer and reader to release file handles
         self.fragment_writer.take();
         self.fragment_reader.take();
-        std::fs::remove_file(&self.fragment_path).ok();
+        std::fs::remove_dir_all(&self.frag_dir).ok();
     }
 }
 
