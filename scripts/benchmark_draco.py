@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark MJB (gzipped) vs Draco-compressed meshes vs MJB-with-Draco hybrid.
+"""Benchmark PBF3 (gzipped) vs Draco-compressed meshes vs PBF3-with-Draco hybrid.
 
 Usage::
 
@@ -8,7 +8,7 @@ Usage::
     uv run python scripts/benchmark_draco.py --csv draco_results.csv
 
 Metrics per quantization level (8, 10, 14, 16, 20 bits):
-    - Compressed size (raw Draco bytes, gzipped MJB, hybrid MJB-with-Draco)
+    - Compressed size (raw Draco bytes, gzipped PBF3, hybrid PBF3-with-Draco)
     - Encode time
     - Decode latency (median, P95)
     - L2 vertex error (mean, max, P95, P99, relative to bbox diagonal)
@@ -150,14 +150,14 @@ def generate_synthetic_mesh(n_faces: int = 1000, seed: int = 42) -> tuple[np.nda
 
 
 # ---------------------------------------------------------------------------
-# MJB baseline size
+# PBF3 baseline size
 # ---------------------------------------------------------------------------
 
 
-def mjb_gzipped_size(vertices: np.ndarray, faces: np.ndarray) -> int:
-    """Compute gzipped size of MJB-style raw vertex/index data.
+def pbf3_gzipped_size(vertices: np.ndarray, faces: np.ndarray) -> int:
+    """Compute gzipped size of PBF3-style raw vertex/index data.
 
-    MJB stores positions as float32 LE + indices as uint32 LE.
+    PBF3 stores positions as float32 LE + indices as uint32 LE.
     """
     pos_bytes = np.ascontiguousarray(vertices, dtype=np.float32).tobytes()
     idx_bytes = np.ascontiguousarray(faces, dtype=np.uint32).tobytes()
@@ -165,8 +165,8 @@ def mjb_gzipped_size(vertices: np.ndarray, faces: np.ndarray) -> int:
     return len(gzip.compress(raw, compresslevel=6))
 
 
-def mjb_raw_size(vertices: np.ndarray, faces: np.ndarray) -> int:
-    """Raw MJB mesh data size (float32 positions + uint32 indices)."""
+def pbf3_raw_size(vertices: np.ndarray, faces: np.ndarray) -> int:
+    """Raw PBF3 mesh data size (float32 positions + uint32 indices)."""
     return vertices.shape[0] * 3 * 4 + faces.shape[0] * 3 * 4
 
 
@@ -202,25 +202,25 @@ def draco_decode(data: bytes) -> tuple[np.ndarray, np.ndarray]:
 
 
 # ---------------------------------------------------------------------------
-# Hybrid MJB-with-Draco
+# Hybrid PBF3-with-Draco
 # ---------------------------------------------------------------------------
 
 
-def hybrid_mjb_draco_size(
+def hybrid_pbf3_draco_size(
     vertices: np.ndarray,
     faces: np.ndarray,
     quantization_bits: int = 14,
 ) -> tuple[int, int]:
-    """Compute gzipped size of MJB tile with Draco-encoded mesh bytes.
+    """Compute gzipped size of PBF3 tile with Draco-encoded mesh bytes.
 
     Replaces the raw float32 positions with Draco-encoded bytes,
-    keeping the MJB protobuf framing and gzip.
+    keeping the PBF3 protobuf framing and gzip.
 
     Returns:
         (gzipped_size, draco_raw_size)
     """
     draco_bytes = draco_encode(vertices, faces, quantization_bits)
-    # Simulate MJB framing: length-prefixed Draco blob + indices overhead
+    # Simulate PBF3 framing: length-prefixed Draco blob + indices overhead
     # In practice, the Draco blob replaces mesh_positions in the protobuf
     raw = draco_bytes
     gz_size = len(gzip.compress(raw, compresslevel=6))
@@ -239,8 +239,8 @@ def benchmark_single(
 ) -> dict[str, Any]:
     """Run full benchmark for one quantization level across all meshes."""
     total_draco_size = 0
-    total_mjb_gz_size = 0
-    total_mjb_raw_size = 0
+    total_pbf3_gz_size = 0
+    total_pbf3_raw_size = 0
     total_hybrid_gz_size = 0
     total_hybrid_draco_size = 0
     total_verts = 0
@@ -253,9 +253,9 @@ def benchmark_single(
         total_verts += len(verts)
         total_faces += len(faces)
 
-        # MJB baseline
-        total_mjb_raw_size += mjb_raw_size(verts, faces)
-        total_mjb_gz_size += mjb_gzipped_size(verts, faces)
+        # PBF3 baseline
+        total_pbf3_raw_size += pbf3_raw_size(verts, faces)
+        total_pbf3_gz_size += pbf3_gzipped_size(verts, faces)
 
         # Draco encode
         t0 = time.perf_counter()
@@ -264,7 +264,7 @@ def benchmark_single(
         total_draco_size += len(draco_bytes)
 
         # Hybrid
-        hz, hd = hybrid_mjb_draco_size(verts, faces, quant_bits)
+        hz, hd = hybrid_pbf3_draco_size(verts, faces, quant_bits)
         total_hybrid_gz_size += hz
         total_hybrid_draco_size += hd
 
@@ -295,8 +295,8 @@ def benchmark_single(
         "n_meshes": len(meshes),
         "total_verts": total_verts,
         "total_faces": total_faces,
-        "mjb_raw": total_mjb_raw_size,
-        "mjb_gzip": total_mjb_gz_size,
+        "pbf3_raw": total_pbf3_raw_size,
+        "pbf3_gzip": total_pbf3_gz_size,
         "draco_size": total_draco_size,
         "hybrid_draco_size": total_hybrid_draco_size,
         "hybrid_gz": total_hybrid_gz_size,
@@ -324,7 +324,7 @@ def print_report(label: str, results: list[dict[str, Any]]) -> None:
 
     r0 = results[0]
     print(f"  Meshes: {r0['n_meshes']}, Vertices: {r0['total_verts']:,}, Faces: {r0['total_faces']:,}")
-    print(f"  MJB raw: {_fmt_bytes(r0['mjb_raw'])}, MJB gzip: {_fmt_bytes(r0['mjb_gzip'])}")
+    print(f"  PBF3 raw: {_fmt_bytes(r0['pbf3_raw'])}, PBF3 gzip: {_fmt_bytes(r0['pbf3_gzip'])}")
 
     print(f"\n  {'Quant':>6s}  {'Draco':>10s}  {'Hybrid gz':>10s}  {'Enc ms':>8s}  {'Dec ms':>8s}  {'Dec P95':>8s}  {'L2 mean':>10s}  {'L2 max':>10s}  {'L2 rel%':>8s}")
     print(f"  {'─' * 86}")
@@ -346,10 +346,10 @@ def print_report(label: str, results: list[dict[str, Any]]) -> None:
         )
 
     # Compression ratio summary
-    print(f"\n  Compression ratio vs MJB gzip:")
+    print(f"\n  Compression ratio vs PBF3 gzip:")
     for r in results:
-        ratio = r['mjb_gzip'] / r['draco_size'] if r['draco_size'] > 0 else 0
-        hybrid_ratio = r['mjb_gzip'] / r['hybrid_gz'] if r['hybrid_gz'] > 0 else 0
+        ratio = r['pbf3_gzip'] / r['draco_size'] if r['draco_size'] > 0 else 0
+        hybrid_ratio = r['pbf3_gzip'] / r['hybrid_gz'] if r['hybrid_gz'] > 0 else 0
         print(f"    {r['quant_bits']:>2d}-bit: Draco {ratio:.2f}x smaller, Hybrid {hybrid_ratio:.2f}x smaller")
 
     print()
@@ -372,7 +372,7 @@ def results_to_csv_rows(label: str, results: list[dict[str, Any]]) -> list[dict[
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Benchmark MJB vs Draco compression",
+        description="Benchmark PBF3 vs Draco compression",
     )
     parser.add_argument(
         "--data-dir",

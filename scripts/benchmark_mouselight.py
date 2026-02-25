@@ -2,7 +2,7 @@
 """End-to-end MouseLight HortaObj benchmark pipeline.
 
 Downloads OBJ brain region meshes, converts to MicroJSON TIN features with
-Allen CCF metadata, generates mjb and 3D Tiles, and reports benchmarks.
+Allen CCF metadata, generates pbf3 and 3D Tiles, and reports benchmarks.
 
 Usage::
 
@@ -174,41 +174,41 @@ def generate_tiles(
     workers: int | None = None,
     skip_3dtiles: bool = False,
 ) -> dict[str, Any]:
-    """Generate mjb (and optionally 3dtiles) from collection."""
+    """Generate pbf3 (and optionally 3dtiles) from collection."""
     results: dict[str, Any] = {}
 
-    # mjb
-    mjb_dir = output_dir / "mjb"
-    if mjb_dir.exists():
-        shutil.rmtree(mjb_dir)
-    mjb_dir.mkdir(parents=True, exist_ok=True)
+    # pbf3
+    pbf3_dir = output_dir / "pbf3"
+    if pbf3_dir.exists():
+        shutil.rmtree(pbf3_dir)
+    pbf3_dir.mkdir(parents=True, exist_ok=True)
 
     config = OctreeConfig(max_zoom=max_zoom)
-    gen = TileGenerator3D(config, output_format="mjb", workers=workers)
+    gen = TileGenerator3D(config, output_format="pbf3", workers=workers)
 
-    print(f"\nGenerating mjb tiles (zoom 0-{max_zoom})...")
+    print(f"\nGenerating pbf3 tiles (zoom 0-{max_zoom})...")
     t0 = time.perf_counter()
     gen.add_features(collection)
     t_index = time.perf_counter() - t0
     print(f"  Indexing: {_fmt_time(t_index)}")
 
     t0 = time.perf_counter()
-    n_tiles = gen.generate(mjb_dir)
+    n_tiles = gen.generate(pbf3_dir)
     t_gen = time.perf_counter() - t0
-    gen.write_metadata(mjb_dir)
+    gen.write_metadata(pbf3_dir)
 
-    mjb_size = _dir_size(mjb_dir)
-    mjb_gzip = _dir_size_gzipped(mjb_dir)
+    pbf3_size = _dir_size(pbf3_dir)
+    pbf3_gzip = _dir_size_gzipped(pbf3_dir)
 
-    results["mjb_tiles"] = n_tiles
-    results["mjb_index_time"] = t_index
-    results["mjb_gen_time"] = t_gen
-    results["mjb_size_raw"] = mjb_size
-    results["mjb_size_gzip"] = mjb_gzip
-    results["mjb_dir"] = mjb_dir
+    results["pbf3_tiles"] = n_tiles
+    results["pbf3_index_time"] = t_index
+    results["pbf3_gen_time"] = t_gen
+    results["pbf3_size_raw"] = pbf3_size
+    results["pbf3_size_gzip"] = pbf3_gzip
+    results["pbf3_dir"] = pbf3_dir
 
     print(f"  {n_tiles} tiles in {_fmt_time(t_gen)}")
-    print(f"  Size: {_fmt_bytes(mjb_size)} raw, {_fmt_bytes(mjb_gzip)} gzipped")
+    print(f"  Size: {_fmt_bytes(pbf3_size)} raw, {_fmt_bytes(pbf3_gzip)} gzipped")
     print(f"  Throughput: {n_tiles / t_gen:.0f} tiles/s")
 
     # 3dtiles (optional)
@@ -315,11 +315,11 @@ def generate_tiles_streaming(
     n_cores = os.cpu_count() or 1
     print(f"  Parallel ingest using {n_cores} cores (rayon)")
 
-    # --- mjb ---
-    mjb_dir = output_dir / "mjb"
-    if mjb_dir.exists():
-        shutil.rmtree(mjb_dir)
-    mjb_dir.mkdir(parents=True, exist_ok=True)
+    # --- pbf3 ---
+    pbf3_dir = output_dir / "pbf3"
+    if pbf3_dir.exists():
+        shutil.rmtree(pbf3_dir)
+    pbf3_dir.mkdir(parents=True, exist_ok=True)
 
     gen = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
     print(f"\nIngesting {len(obj_paths)} OBJ files (parallel Rust, zoom 0-{max_zoom})...")
@@ -328,26 +328,26 @@ def generate_tiles_streaming(
     t_ingest = time.perf_counter() - t0
     print(f"  Ingest: {_fmt_time(t_ingest)} ({len(obj_paths) / t_ingest:.0f} files/s)")
 
-    print("Encoding mjb tiles (parallel rayon)...")
+    print("Encoding pbf3 tiles (parallel rayon)...")
     t0 = time.perf_counter()
-    n_tiles = gen.generate_mjb(str(mjb_dir), "default")
+    n_tiles = gen.generate_pbf3(str(pbf3_dir), "default")
     t_gen = time.perf_counter() - t0
 
-    tilejson_path = mjb_dir / "tilejson3d.json"
+    tilejson_path = pbf3_dir / "tilejson3d.json"
     gen.write_tilejson3d(str(tilejson_path), bounds, "default")
 
-    mjb_size = _dir_size(mjb_dir)
-    mjb_gzip = _dir_size_gzipped(mjb_dir)
+    pbf3_size = _dir_size(pbf3_dir)
+    pbf3_gzip = _dir_size_gzipped(pbf3_dir)
 
-    results["mjb_tiles"] = n_tiles
-    results["mjb_index_time"] = t_ingest
-    results["mjb_gen_time"] = t_gen
-    results["mjb_size_raw"] = mjb_size
-    results["mjb_size_gzip"] = mjb_gzip
-    results["mjb_dir"] = mjb_dir
+    results["pbf3_tiles"] = n_tiles
+    results["pbf3_index_time"] = t_ingest
+    results["pbf3_gen_time"] = t_gen
+    results["pbf3_size_raw"] = pbf3_size
+    results["pbf3_size_gzip"] = pbf3_gzip
+    results["pbf3_dir"] = pbf3_dir
 
     print(f"  {n_tiles} tiles in {_fmt_time(t_gen)}")
-    print(f"  Size: {_fmt_bytes(mjb_size)} raw, {_fmt_bytes(mjb_gzip)} gzipped")
+    print(f"  Size: {_fmt_bytes(pbf3_size)} raw, {_fmt_bytes(pbf3_gzip)} gzipped")
     if t_gen > 0:
         print(f"  Throughput: {n_tiles / t_gen:.0f} tiles/s")
 
@@ -385,32 +385,32 @@ def generate_tiles_streaming(
         if t_gen_3d > 0:
             print(f"  Throughput: {n_tiles_3d / t_gen_3d:.0f} tiles/s")
 
-    # --- feature-centric mjb ---
-    feat_mjb_dir = output_dir / "feature_mjb"
-    if feat_mjb_dir.exists():
-        shutil.rmtree(feat_mjb_dir)
-    feat_mjb_dir.mkdir(parents=True, exist_ok=True)
+    # --- feature-centric pbf3 ---
+    feat_pbf3_dir = output_dir / "mudm_feature_pbf3"
+    if feat_pbf3_dir.exists():
+        shutil.rmtree(feat_pbf3_dir)
+    feat_pbf3_dir.mkdir(parents=True, exist_ok=True)
 
-    gen_fmjb = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
-    print(f"\nIngesting for feature-centric MJB (parallel Rust)...")
+    gen_fpbf3 = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
+    print(f"\nIngesting for feature-centric PBF3 (parallel Rust)...")
     t0 = time.perf_counter()
-    gen_fmjb.add_obj_files(path_strs, bounds, tags_list)
-    t_ingest_fmjb = time.perf_counter() - t0
-    print(f"  Ingest: {_fmt_time(t_ingest_fmjb)}")
+    gen_fpbf3.add_obj_files(path_strs, bounds, tags_list)
+    t_ingest_fpbf3 = time.perf_counter() - t0
+    print(f"  Ingest: {_fmt_time(t_ingest_fpbf3)}")
 
-    print("Encoding per-feature MJB (parallel rayon)...")
+    print("Encoding per-feature PBF3 (parallel rayon)...")
     t0 = time.perf_counter()
-    n_features_fmjb = gen_fmjb.generate_feature_mjb(str(feat_mjb_dir), bounds)
-    t_gen_fmjb = time.perf_counter() - t0
+    n_features_fpbf3 = gen_fpbf3.generate_feature_pbf3(str(feat_pbf3_dir), bounds)
+    t_gen_fpbf3 = time.perf_counter() - t0
 
-    feat_mjb_size = _dir_size(feat_mjb_dir)
-    results["feature_mjb_features"] = n_features_fmjb
-    results["feature_mjb_gen_time"] = t_gen_fmjb
-    results["feature_mjb_size_raw"] = feat_mjb_size
-    results["feature_mjb_dir"] = feat_mjb_dir
+    feat_pbf3_size = _dir_size(feat_pbf3_dir)
+    results["feature_pbf3_features"] = n_features_fpbf3
+    results["feature_pbf3_gen_time"] = t_gen_fpbf3
+    results["feature_pbf3_size_raw"] = feat_pbf3_size
+    results["feature_pbf3_dir"] = feat_pbf3_dir
 
-    print(f"  {n_features_fmjb} features in {_fmt_time(t_gen_fmjb)}")
-    print(f"  Size: {_fmt_bytes(feat_mjb_size)} raw")
+    print(f"  {n_features_fpbf3} features in {_fmt_time(t_gen_fpbf3)}")
+    print(f"  Size: {_fmt_bytes(feat_pbf3_size)} raw")
 
     # --- neuroglancer ---
     ng_dir = output_dir / "neuroglancer"
@@ -472,21 +472,21 @@ def generate_tiles_streaming(
 # ---------------------------------------------------------------------------
 
 def bench_decode(
-    mjb_dir: Path,
+    pbf3_dir: Path,
     *,
     n_iterations: int = 20,
     max_sample: int = 50,
 ) -> dict[str, Any]:
-    """Benchmark mjb decode latency on sample tiles."""
-    mjb_files = _collect_tile_files(mjb_dir, ".mjb")
-    if not mjb_files:
+    """Benchmark pbf3 decode latency on sample tiles."""
+    pbf3_files = _collect_tile_files(pbf3_dir, ".pbf3")
+    if not pbf3_files:
         return {}
 
-    if len(mjb_files) > max_sample:
-        mjb_files = random.sample(mjb_files, max_sample)
+    if len(pbf3_files) > max_sample:
+        pbf3_files = random.sample(pbf3_files, max_sample)
 
     # Pre-load bytes
-    tile_bytes = [f.read_bytes() for f in mjb_files]
+    tile_bytes = [f.read_bytes() for f in pbf3_files]
     tile_sizes = [len(b) for b in tile_bytes]
 
     # Warmup
@@ -566,18 +566,18 @@ def bench_decode_3dtiles(
 # Step 4: Memory Benchmark
 # ---------------------------------------------------------------------------
 
-def bench_memory(mjb_dir: Path, tiles3d_dir: Path | None = None) -> dict[str, Any]:
+def bench_memory(pbf3_dir: Path, tiles3d_dir: Path | None = None) -> dict[str, Any]:
     """Measure peak memory during full-tileset decode."""
     results: dict[str, Any] = {}
 
-    mjb_bytes = [f.read_bytes() for f in _collect_tile_files(mjb_dir, ".mjb")]
+    pbf3_bytes = [f.read_bytes() for f in _collect_tile_files(pbf3_dir, ".pbf3")]
 
     tracemalloc.start()
-    for data in mjb_bytes:
+    for data in pbf3_bytes:
         decode_tile(data)
-    _, mjb_peak = tracemalloc.get_traced_memory()
+    _, pbf3_peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
-    results["mjb_peak_mb"] = mjb_peak / (1024 * 1024)
+    results["pbf3_peak_mb"] = pbf3_peak / (1024 * 1024)
 
     if tiles3d_dir:
         try:
@@ -601,7 +601,7 @@ def bench_memory(mjb_dir: Path, tiles3d_dir: Path | None = None) -> dict[str, An
 # ---------------------------------------------------------------------------
 
 def bench_dataloader(
-    mjb_dir: Path,
+    pbf3_dir: Path,
     tiles3d_dir: Path | None = None,
     *,
     n_epochs: int = 3,
@@ -617,7 +617,7 @@ def bench_dataloader(
 
     class Mvt3Dataset(Dataset):
         def __init__(self, tile_dir: Path):
-            self._data = [f.read_bytes() for f in _collect_tile_files(tile_dir, ".mjb")]
+            self._data = [f.read_bytes() for f in _collect_tile_files(tile_dir, ".pbf3")]
 
         def __len__(self) -> int:
             return len(self._data)
@@ -641,7 +641,7 @@ def bench_dataloader(
 
     results: dict[str, Any] = {}
 
-    ds = Mvt3Dataset(mjb_dir)
+    ds = Mvt3Dataset(pbf3_dir)
     if len(ds) == 0:
         return results
 
@@ -653,8 +653,8 @@ def bench_dataloader(
         for batch in loader:
             total_tiles += len(batch)
     elapsed = time.perf_counter() - t0
-    results["mjb_tiles_per_sec"] = total_tiles / elapsed if elapsed > 0 else 0
-    results["mjb_elapsed_sec"] = elapsed
+    results["pbf3_tiles_per_sec"] = total_tiles / elapsed if elapsed > 0 else 0
+    results["pbf3_elapsed_sec"] = elapsed
 
     if tiles3d_dir:
         try:
@@ -696,7 +696,7 @@ def bench_dataloader(
 def print_report(
     convert_time: float,
     tile_results: dict[str, Any],
-    decode_mjb: dict[str, Any],
+    decode_pbf3: dict[str, Any],
     decode_3dt: dict[str, Any],
     memory: dict[str, Any],
     dataloader: dict[str, Any] | None,
@@ -718,73 +718,73 @@ def print_report(
     print(f"\n  Tile Generation")
     has_3dt = "3dtiles_tiles" in tile_results
     if has_3dt:
-        print(f"  {'':30s} {'mjb':>15s} {'3dtiles':>15s}")
+        print(f"  {'':30s} {'pbf3':>15s} {'3dtiles':>15s}")
         print(f"  {'─' * 62}")
-        print(f"  {'Tile count':30s} {tile_results['mjb_tiles']:>15,d} {tile_results['3dtiles_tiles']:>15,d}")
-        print(f"  {'Index time':30s} {_fmt_time(tile_results['mjb_index_time']):>15s} {_fmt_time(tile_results['3dtiles_index_time']):>15s}")
-        print(f"  {'Generation time':30s} {_fmt_time(tile_results['mjb_gen_time']):>15s} {_fmt_time(tile_results['3dtiles_gen_time']):>15s}")
-        print(f"  {'Raw size':30s} {_fmt_bytes(tile_results['mjb_size_raw']):>15s} {_fmt_bytes(tile_results['3dtiles_size_raw']):>15s}")
-        print(f"  {'Gzipped size':30s} {_fmt_bytes(tile_results['mjb_size_gzip']):>15s} {_fmt_bytes(tile_results['3dtiles_size_gzip']):>15s}")
+        print(f"  {'Tile count':30s} {tile_results['pbf3_tiles']:>15,d} {tile_results['3dtiles_tiles']:>15,d}")
+        print(f"  {'Index time':30s} {_fmt_time(tile_results['pbf3_index_time']):>15s} {_fmt_time(tile_results['3dtiles_index_time']):>15s}")
+        print(f"  {'Generation time':30s} {_fmt_time(tile_results['pbf3_gen_time']):>15s} {_fmt_time(tile_results['3dtiles_gen_time']):>15s}")
+        print(f"  {'Raw size':30s} {_fmt_bytes(tile_results['pbf3_size_raw']):>15s} {_fmt_bytes(tile_results['3dtiles_size_raw']):>15s}")
+        print(f"  {'Gzipped size':30s} {_fmt_bytes(tile_results['pbf3_size_gzip']):>15s} {_fmt_bytes(tile_results['3dtiles_size_gzip']):>15s}")
         if tile_results["3dtiles_size_raw"] > 0:
-            ratio = tile_results["3dtiles_size_raw"] / tile_results["mjb_size_raw"]
-            print(f"  {'Size ratio (3dtiles/mjb)':30s} {ratio:>15.1f}x")
+            ratio = tile_results["3dtiles_size_raw"] / tile_results["pbf3_size_raw"]
+            print(f"  {'Size ratio (3dtiles/pbf3)':30s} {ratio:>15.1f}x")
         if tile_results["3dtiles_gen_time"] > 0:
-            speedup = tile_results["3dtiles_gen_time"] / tile_results["mjb_gen_time"]
-            print(f"  {'Gen speedup (mjb vs 3dt)':30s} {speedup:>15.1f}x")
+            speedup = tile_results["3dtiles_gen_time"] / tile_results["pbf3_gen_time"]
+            print(f"  {'Gen speedup (pbf3 vs 3dt)':30s} {speedup:>15.1f}x")
     else:
         print(f"  {'─' * 50}")
-        print(f"  {'Tile count':30s} {tile_results['mjb_tiles']:>15,d}")
-        print(f"  {'Index time':30s} {_fmt_time(tile_results['mjb_index_time']):>15s}")
-        print(f"  {'Generation time':30s} {_fmt_time(tile_results['mjb_gen_time']):>15s}")
-        print(f"  {'Raw size':30s} {_fmt_bytes(tile_results['mjb_size_raw']):>15s}")
-        print(f"  {'Gzipped size':30s} {_fmt_bytes(tile_results['mjb_size_gzip']):>15s}")
+        print(f"  {'Tile count':30s} {tile_results['pbf3_tiles']:>15,d}")
+        print(f"  {'Index time':30s} {_fmt_time(tile_results['pbf3_index_time']):>15s}")
+        print(f"  {'Generation time':30s} {_fmt_time(tile_results['pbf3_gen_time']):>15s}")
+        print(f"  {'Raw size':30s} {_fmt_bytes(tile_results['pbf3_size_raw']):>15s}")
+        print(f"  {'Gzipped size':30s} {_fmt_bytes(tile_results['pbf3_size_gzip']):>15s}")
 
     # --- Decode Latency ---
-    if decode_mjb:
+    if decode_pbf3:
         print(f"\n  Decode Latency (per tile)")
         if decode_3dt:
-            print(f"  {'':30s} {'mjb':>15s} {'3dtiles':>15s}")
+            print(f"  {'':30s} {'pbf3':>15s} {'3dtiles':>15s}")
             print(f"  {'─' * 62}")
-            print(f"  {'Median':30s} {decode_mjb['decode_median_us']:>13.0f}us {decode_3dt['decode_median_us']:>13.0f}us")
-            print(f"  {'P95':30s} {decode_mjb['decode_p95_us']:>13.0f}us {decode_3dt['decode_p95_us']:>13.0f}us")
+            print(f"  {'Median':30s} {decode_pbf3['decode_median_us']:>13.0f}us {decode_3dt['decode_median_us']:>13.0f}us")
+            print(f"  {'P95':30s} {decode_pbf3['decode_p95_us']:>13.0f}us {decode_3dt['decode_p95_us']:>13.0f}us")
             if decode_3dt["decode_median_us"] > 0:
-                speedup = decode_3dt["decode_median_us"] / decode_mjb["decode_median_us"]
-                print(f"  {'Speedup (mjb vs 3dt)':30s} {speedup:>15.1f}x")
+                speedup = decode_3dt["decode_median_us"] / decode_pbf3["decode_median_us"]
+                print(f"  {'Speedup (pbf3 vs 3dt)':30s} {speedup:>15.1f}x")
         else:
             print(f"  {'─' * 50}")
-            print(f"  {'Sampled tiles':30s} {decode_mjb['sampled_tiles']:>15,d}")
-            print(f"  {'Features in sample':30s} {decode_mjb['total_features']:>15,d}")
-            print(f"  {'Mesh bytes in sample':30s} {_fmt_bytes(decode_mjb['total_mesh_bytes']):>15s}")
-            print(f"  {'Median':30s} {decode_mjb['decode_median_us']:>13.0f}us")
-            print(f"  {'P95':30s} {decode_mjb['decode_p95_us']:>13.0f}us")
-            print(f"  {'P99':30s} {decode_mjb['decode_p99_us']:>13.0f}us")
+            print(f"  {'Sampled tiles':30s} {decode_pbf3['sampled_tiles']:>15,d}")
+            print(f"  {'Features in sample':30s} {decode_pbf3['total_features']:>15,d}")
+            print(f"  {'Mesh bytes in sample':30s} {_fmt_bytes(decode_pbf3['total_mesh_bytes']):>15s}")
+            print(f"  {'Median':30s} {decode_pbf3['decode_median_us']:>13.0f}us")
+            print(f"  {'P95':30s} {decode_pbf3['decode_p95_us']:>13.0f}us")
+            print(f"  {'P99':30s} {decode_pbf3['decode_p99_us']:>13.0f}us")
 
     # --- Memory ---
     if memory:
         print(f"\n  Peak Memory (full decode)")
         if "3dtiles_peak_mb" in memory:
-            print(f"  {'':30s} {'mjb':>15s} {'3dtiles':>15s}")
+            print(f"  {'':30s} {'pbf3':>15s} {'3dtiles':>15s}")
             print(f"  {'─' * 62}")
-            print(f"  {'Peak':30s} {memory['mjb_peak_mb']:>13.1f}MB {memory['3dtiles_peak_mb']:>13.1f}MB")
-            ratio = memory["3dtiles_peak_mb"] / memory["mjb_peak_mb"] if memory["mjb_peak_mb"] > 0 else 0
-            print(f"  {'Ratio (3dtiles/mjb)':30s} {ratio:>15.1f}x")
+            print(f"  {'Peak':30s} {memory['pbf3_peak_mb']:>13.1f}MB {memory['3dtiles_peak_mb']:>13.1f}MB")
+            ratio = memory["3dtiles_peak_mb"] / memory["pbf3_peak_mb"] if memory["pbf3_peak_mb"] > 0 else 0
+            print(f"  {'Ratio (3dtiles/pbf3)':30s} {ratio:>15.1f}x")
         else:
             print(f"  {'─' * 50}")
-            print(f"  {'mjb peak':30s} {memory['mjb_peak_mb']:>13.1f}MB")
+            print(f"  {'pbf3 peak':30s} {memory['pbf3_peak_mb']:>13.1f}MB")
 
     # --- DataLoader ---
     if dataloader:
         print(f"\n  ML DataLoader Throughput")
         if "3dtiles_tiles_per_sec" in dataloader:
-            print(f"  {'':30s} {'mjb':>15s} {'3dtiles':>15s}")
+            print(f"  {'':30s} {'pbf3':>15s} {'3dtiles':>15s}")
             print(f"  {'─' * 62}")
-            print(f"  {'Tiles/sec':30s} {dataloader['mjb_tiles_per_sec']:>15.1f} {dataloader['3dtiles_tiles_per_sec']:>15.1f}")
+            print(f"  {'Tiles/sec':30s} {dataloader['pbf3_tiles_per_sec']:>15.1f} {dataloader['3dtiles_tiles_per_sec']:>15.1f}")
             if dataloader["3dtiles_tiles_per_sec"] > 0:
-                speedup = dataloader["mjb_tiles_per_sec"] / dataloader["3dtiles_tiles_per_sec"]
-                print(f"  {'Speedup (mjb vs 3dt)':30s} {speedup:>15.1f}x")
+                speedup = dataloader["pbf3_tiles_per_sec"] / dataloader["3dtiles_tiles_per_sec"]
+                print(f"  {'Speedup (pbf3 vs 3dt)':30s} {speedup:>15.1f}x")
         else:
             print(f"  {'─' * 50}")
-            print(f"  {'mjb tiles/sec':30s} {dataloader['mjb_tiles_per_sec']:>15.1f}")
+            print(f"  {'pbf3 tiles/sec':30s} {dataloader['pbf3_tiles_per_sec']:>15.1f}")
 
     print()
 
@@ -797,7 +797,7 @@ def export_csv(
     path: Path,
     convert_time: float,
     tile_results: dict[str, Any],
-    decode_mjb: dict[str, Any],
+    decode_pbf3: dict[str, Any],
     decode_3dt: dict[str, Any],
     memory: dict[str, Any],
     dataloader: dict[str, Any] | None,
@@ -812,8 +812,8 @@ def export_csv(
         if not isinstance(v, Path):
             row[f"tilegen_{k}"] = v
 
-    for k, v in decode_mjb.items():
-        row[f"decode_mjb_{k}"] = v
+    for k, v in decode_pbf3.items():
+        row[f"decode_pbf3_{k}"] = v
     for k, v in decode_3dt.items():
         row[f"decode_3dt_{k}"] = v
     for k, v in memory.items():
@@ -915,20 +915,20 @@ def generate_all_brains(
         n_features = len(index.get("features", {}))
         print(f"  {n_features} features indexed")
 
-        # Feature-centric MJB
-        feat_mjb_dir = output_dir / brain_id / "feature_mjb"
-        if feat_mjb_dir.exists():
-            shutil.rmtree(feat_mjb_dir)
-        feat_mjb_dir.mkdir(parents=True, exist_ok=True)
+        # Feature-centric PBF3
+        feat_pbf3_dir = output_dir / brain_id / "mudm_feature_pbf3"
+        if feat_pbf3_dir.exists():
+            shutil.rmtree(feat_pbf3_dir)
+        feat_pbf3_dir.mkdir(parents=True, exist_ok=True)
 
-        gen_fmjb = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
-        gen_fmjb.add_obj_files(path_strs, bounds, tags_list)
+        gen_fpbf3 = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
+        gen_fpbf3.add_obj_files(path_strs, bounds, tags_list)
         t0 = time.perf_counter()
-        n_feat_mjb = gen_fmjb.generate_feature_mjb(str(feat_mjb_dir), bounds)
-        t_feat_mjb = time.perf_counter() - t0
-        feat_mjb_size = _dir_size(feat_mjb_dir)
-        del gen_fmjb
-        print(f"  Feature MJB: {n_feat_mjb} features in {_fmt_time(t_feat_mjb)} ({_fmt_bytes(feat_mjb_size)})")
+        n_feat_pbf3 = gen_fpbf3.generate_feature_pbf3(str(feat_pbf3_dir), bounds)
+        t_feat_pbf3 = time.perf_counter() - t0
+        feat_pbf3_size = _dir_size(feat_pbf3_dir)
+        del gen_fpbf3
+        print(f"  Feature PBF3: {n_feat_pbf3} features in {_fmt_time(t_feat_pbf3)} ({_fmt_bytes(feat_pbf3_size)})")
 
         # Neuroglancer
         ng_dir = output_dir / brain_id / "neuroglancer"
@@ -965,7 +965,7 @@ def generate_all_brains(
             "features": n_features,
             "max_zoom": max_zoom,
             "size_bytes": tiles_size,
-            "feature_mjb_size": feat_mjb_size,
+            "feature_pbf3_size": feat_pbf3_size,
             "neuroglancer_size": ng_size,
             "parquet_size": pq_size,
         })
@@ -1017,7 +1017,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--skip-3dtiles", action="store_true",
-        help="Skip 3D Tiles generation (only generate mjb)",
+        help="Skip 3D Tiles generation (only generate pbf3)",
     )
     parser.add_argument(
         "--streaming", action="store_true",
@@ -1084,11 +1084,11 @@ def main() -> None:
         )
 
     # Step 3: Decode benchmarks
-    mjb_dir = tile_results["mjb_dir"]
+    pbf3_dir = tile_results["pbf3_dir"]
     tiles3d_dir = tile_results.get("3dtiles_dir")
 
-    print(f"\nBenchmarking mjb decode ({args.decode_iters} iterations)...")
-    decode_mjb = bench_decode(mjb_dir, n_iterations=args.decode_iters)
+    print(f"\nBenchmarking pbf3 decode ({args.decode_iters} iterations)...")
+    decode_pbf3 = bench_decode(pbf3_dir, n_iterations=args.decode_iters)
 
     decode_3dt: dict[str, Any] = {}
     if tiles3d_dir:
@@ -1097,18 +1097,18 @@ def main() -> None:
 
     # Step 4: Memory
     print("Measuring peak memory...")
-    memory = bench_memory(mjb_dir, tiles3d_dir)
+    memory = bench_memory(pbf3_dir, tiles3d_dir)
 
     # Step 5: DataLoader (optional)
     dataloader_results = None
     if args.dataloader:
         print("Benchmarking DataLoader throughput...")
-        dataloader_results = bench_dataloader(mjb_dir, tiles3d_dir)
+        dataloader_results = bench_dataloader(pbf3_dir, tiles3d_dir)
 
     # Report
     print_report(
         convert_time, tile_results,
-        decode_mjb, decode_3dt,
+        decode_pbf3, decode_3dt,
         memory, dataloader_results,
     )
 
@@ -1116,7 +1116,7 @@ def main() -> None:
     if args.csv:
         export_csv(
             args.csv, convert_time, tile_results,
-            decode_mjb, decode_3dt,
+            decode_pbf3, decode_3dt,
             memory, dataloader_results,
         )
 

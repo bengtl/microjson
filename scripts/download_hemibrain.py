@@ -517,7 +517,7 @@ def tile_streaming(
     max_zoom: int = 3,
     max_files: int | None = None,
     skip_3dtiles: bool = False,
-    skip_mjb: bool = False,
+    skip_pbf3: bool = False,
     pyramid_name: str = "hemibrain",
 ) -> dict:
     """True streaming tiling — O(1 mesh) memory during ingest.
@@ -530,7 +530,7 @@ def tile_streaming(
 
     Output uses pyramid directory structure:
         {output_dir}/{pyramid_name}/3dtiles/  (tileset.json, features.json, *.glb)
-        {output_dir}/{pyramid_name}/mjb/      (tilejson3d.json, *.mjb)
+        {output_dir}/{pyramid_name}/pbf3/      (tilejson3d.json, *.pbf3)
     """
     import shutil
     import subprocess
@@ -623,36 +623,36 @@ def tile_streaming(
     # Pyramid directory structure
     pyramid_dir = output_dir / pyramid_name
 
-    # --- mjb ---
-    if not skip_mjb:
-        mjb_dir = pyramid_dir / "mjb"
-        if mjb_dir.exists():
-            shutil.rmtree(mjb_dir)
-        mjb_dir.mkdir(parents=True, exist_ok=True)
+    # --- pbf3 ---
+    if not skip_pbf3:
+        pbf3_dir = pyramid_dir / "pbf3"
+        if pbf3_dir.exists():
+            shutil.rmtree(pbf3_dir)
+        pbf3_dir.mkdir(parents=True, exist_ok=True)
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
-        print(f"\nStreaming mjb ingest (zoom 0-{max_zoom})...")
+        print(f"\nStreaming pbf3 ingest (zoom 0-{max_zoom})...")
         t_index = _ingest_chunked(gen)
         print(f"  Ingest: {_fmt_time(t_index)}")
 
         t0 = time.perf_counter()
-        n_tiles = gen.generate_mjb(str(mjb_dir), "default")
+        n_tiles = gen.generate_pbf3(str(pbf3_dir), "default")
         t_gen = time.perf_counter() - t0
 
-        tilejson_path = mjb_dir / "tilejson3d.json"
+        tilejson_path = pbf3_dir / "tilejson3d.json"
         gen.write_tilejson3d(str(tilejson_path), bounds, "default")
         del gen
 
-        mjb_size = sum(f.stat().st_size for f in mjb_dir.rglob("*") if f.is_file())
-        results["mjb_tiles"] = n_tiles
-        results["mjb_index_time"] = t_index
-        results["mjb_gen_time"] = t_gen
-        results["mjb_size_raw"] = mjb_size
-        results["mjb_size_gzip"] = 0  # skip gzip for speed
-        results["mjb_dir"] = mjb_dir
+        pbf3_size = sum(f.stat().st_size for f in pbf3_dir.rglob("*") if f.is_file())
+        results["pbf3_tiles"] = n_tiles
+        results["pbf3_index_time"] = t_index
+        results["pbf3_gen_time"] = t_gen
+        results["pbf3_size_raw"] = pbf3_size
+        results["pbf3_size_gzip"] = 0  # skip gzip for speed
+        results["pbf3_dir"] = pbf3_dir
 
         print(f"  {n_tiles} tiles in {_fmt_time(t_gen)}")
-        print(f"  Size: {_fmt_bytes(mjb_size)} raw")
+        print(f"  Size: {_fmt_bytes(pbf3_size)} raw")
         if t_gen > 0:
             print(f"  Throughput: {n_tiles / t_gen:.0f} tiles/s")
 
@@ -698,30 +698,30 @@ def tile_streaming(
             check=True,
         )
 
-    # --- feature-centric MJB ---
-    feat_mjb_dir = pyramid_dir / "feature_mjb"
-    if feat_mjb_dir.exists():
-        shutil.rmtree(feat_mjb_dir)
-    feat_mjb_dir.mkdir(parents=True, exist_ok=True)
+    # --- feature-centric PBF3 ---
+    feat_pbf3_dir = pyramid_dir / "mudm_feature_pbf3"
+    if feat_pbf3_dir.exists():
+        shutil.rmtree(feat_pbf3_dir)
+    feat_pbf3_dir.mkdir(parents=True, exist_ok=True)
 
-    gen_fmjb = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom, base_cells=100)
-    print(f"\nStreaming feature-centric MJB ingest (zoom 0-{max_zoom}, base_cells=100)...")
-    t_index_fmjb = _ingest_chunked(gen_fmjb)
+    gen_fpbf3 = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom, base_cells=100)
+    print(f"\nStreaming feature-centric PBF3 ingest (zoom 0-{max_zoom}, base_cells=100)...")
+    t_index_fpbf3 = _ingest_chunked(gen_fpbf3)
 
     t0 = time.perf_counter()
-    n_feat_mjb = gen_fmjb.generate_feature_mjb(str(feat_mjb_dir), bounds)
-    t_gen_fmjb = time.perf_counter() - t0
-    del gen_fmjb
+    n_feat_pbf3 = gen_fpbf3.generate_feature_pbf3(str(feat_pbf3_dir), bounds)
+    t_gen_fpbf3 = time.perf_counter() - t0
+    del gen_fpbf3
 
-    feat_mjb_size = sum(f.stat().st_size for f in feat_mjb_dir.rglob("*") if f.is_file())
-    results["feature_mjb_features"] = n_feat_mjb
-    results["feature_mjb_index_time"] = t_index_fmjb
-    results["feature_mjb_gen_time"] = t_gen_fmjb
-    results["feature_mjb_size_raw"] = feat_mjb_size
-    results["feature_mjb_dir"] = feat_mjb_dir
+    feat_pbf3_size = sum(f.stat().st_size for f in feat_pbf3_dir.rglob("*") if f.is_file())
+    results["feature_pbf3_features"] = n_feat_pbf3
+    results["feature_pbf3_index_time"] = t_index_fpbf3
+    results["feature_pbf3_gen_time"] = t_gen_fpbf3
+    results["feature_pbf3_size_raw"] = feat_pbf3_size
+    results["feature_pbf3_dir"] = feat_pbf3_dir
 
-    print(f"  {n_feat_mjb} features in {_fmt_time(t_gen_fmjb)}")
-    print(f"  Size: {_fmt_bytes(feat_mjb_size)} raw")
+    print(f"  {n_feat_pbf3} features in {_fmt_time(t_gen_fpbf3)}")
+    print(f"  Size: {_fmt_bytes(feat_pbf3_size)} raw")
 
     # --- neuroglancer ---
     ng_dir = pyramid_dir / "neuroglancer"
@@ -812,15 +812,15 @@ def tile_and_benchmark(
         results["tile"] = tile_results
 
     if do_benchmark:
-        mjb_dir = output_dir / "mjb"
+        pbf3_dir = output_dir / "pbf3"
         tiles3d_dir = output_dir / "3dtiles" if not skip_3dtiles else None
 
-        if mjb_dir.exists():
-            print(f"\nBenchmarking mjb decode...")
-            decode_mjb = bench_decode(mjb_dir)
-            results["decode_mjb"] = decode_mjb
+        if pbf3_dir.exists():
+            print(f"\nBenchmarking pbf3 decode...")
+            decode_pbf3 = bench_decode(pbf3_dir)
+            results["decode_pbf3"] = decode_pbf3
         else:
-            decode_mjb = {}
+            decode_pbf3 = {}
 
         decode_3dt: dict = {}
         if tiles3d_dir and tiles3d_dir.exists():
@@ -830,7 +830,7 @@ def tile_and_benchmark(
 
         print("Measuring peak memory...")
         memory = bench_memory(
-            mjb_dir if mjb_dir.exists() else Path("/dev/null"),
+            pbf3_dir if pbf3_dir.exists() else Path("/dev/null"),
             tiles3d_dir if tiles3d_dir and tiles3d_dir.exists() else None,
         )
         results["memory"] = memory
@@ -839,7 +839,7 @@ def tile_and_benchmark(
             print_report(
                 results.get("convert_time", 0),
                 tile_results,
-                decode_mjb,
+                decode_pbf3,
                 decode_3dt,
                 memory,
                 None,
@@ -850,7 +850,7 @@ def tile_and_benchmark(
                 csv_path,
                 results.get("convert_time", 0),
                 tile_results if do_tile else {},
-                decode_mjb,
+                decode_pbf3,
                 decode_3dt,
                 memory,
                 None,
@@ -870,14 +870,14 @@ def main() -> None:
     parser.add_argument("--download", action="store_true", help="Download meshes from CloudVolume + metadata from neuPrint")
     parser.add_argument("--update-metadata", action="store_true", help="Re-query neuPrint for richer metadata on already-downloaded neurons")
     parser.add_argument("--convert", action="store_true", help="Convert OBJ to MicroJSON")
-    parser.add_argument("--tile", action="store_true", help="Generate tiles (mjb + 3dtiles)")
+    parser.add_argument("--tile", action="store_true", help="Generate tiles (pbf3 + 3dtiles)")
     parser.add_argument("--benchmark", action="store_true", help="Run decode/memory benchmarks")
     parser.add_argument("--max-neurons", type=int, default=1000, help="Max neurons to download (default: 1000)")
     parser.add_argument("--min-type-count", type=int, default=0, help="Only download neurons whose cell type has >= N instances (default: 0 = no filter)")
     parser.add_argument("--max-zoom", type=int, default=3, help="Max zoom level (default: 3)")
     parser.add_argument("--workers", type=int, default=None, help="Worker processes")
     parser.add_argument("--skip-3dtiles", action="store_true", help="Skip 3D Tiles generation")
-    parser.add_argument("--skip-mjb", action="store_true", help="Skip mjb generation (3D Tiles only)")
+    parser.add_argument("--skip-pbf3", action="store_true", help="Skip pbf3 generation (3D Tiles only)")
     parser.add_argument("--streaming", action="store_true", help="True streaming mode: O(1 mesh) memory, skips MicroFeatureCollection")
     parser.add_argument("--data-dir", type=Path, default=_DATA_DIR, help="Data directory")
     parser.add_argument("--csv", type=Path, default=None, help="Export results to CSV")
@@ -958,7 +958,7 @@ def main() -> None:
             max_zoom=args.max_zoom,
             max_files=args.max_neurons,
             skip_3dtiles=args.skip_3dtiles,
-            skip_mjb=getattr(args, "skip_mjb", False),
+            skip_pbf3=getattr(args, "skip_pbf3", False),
         )
         print("Done.")
         return

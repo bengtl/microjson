@@ -1,7 +1,7 @@
 """Tests for OGC 3D Tiles output format (tileset.json + .glb tiles).
 
 Covers: glTF tile encoding, tileset.json structure, geometric error,
-3D Tiles reader, and end-to-end round-trip comparison with .mjb.
+3D Tiles reader, and end-to-end round-trip comparison with .pbf3.
 """
 
 from __future__ import annotations
@@ -253,7 +253,7 @@ class TestGenerator3DTiles:
     """Test TileGenerator3D with output_format='3dtiles'."""
 
     def test_generates_glb_files(self, tmp_path):
-        """Generator creates .glb files, not .mjb."""
+        """Generator creates .glb files, not .pbf3."""
         coll = _collection(
             _point_feature(1, 2, 3),
             _point_feature(8, 9, 7),
@@ -266,8 +266,8 @@ class TestGenerator3DTiles:
         # Check .glb files exist
         glb_files = list(tmp_path.rglob("*.glb"))
         assert len(glb_files) == count
-        # No .mjb files
-        mvt_files = list(tmp_path.rglob("*.mjb"))
+        # No .pbf3 files
+        mvt_files = list(tmp_path.rglob("*.pbf3"))
         assert len(mvt_files) == 0
 
     def test_glb_files_are_valid(self, tmp_path):
@@ -311,10 +311,10 @@ class TestGenerator3DTiles:
         assert (tmp_path / "tileset.json").exists()
         assert not (tmp_path / "tilejson3d.json").exists()
 
-    def test_write_metadata_dispatches_mjb(self, tmp_path):
-        """write_metadata writes tilejson3d.json for mjb format."""
+    def test_write_metadata_dispatches_pbf3(self, tmp_path):
+        """write_metadata writes tilejson3d.json for pbf3 format."""
         coll = _collection(_point_feature(5, 5, 5))
-        gen = TileGenerator3D(OctreeConfig(max_zoom=0), output_format="mjb")
+        gen = TileGenerator3D(OctreeConfig(max_zoom=0), output_format="pbf3")
         gen.add_features(coll)
         gen.generate(tmp_path)
         gen.write_metadata(tmp_path)
@@ -456,7 +456,7 @@ class TestReader3DTiles:
 
 
 class TestFormatComparison:
-    """Compare mjb and 3dtiles output from the same input."""
+    """Compare pbf3 and 3dtiles output from the same input."""
 
     def test_same_tile_count(self, tmp_path):
         """Both formats produce the same number of tiles."""
@@ -464,25 +464,25 @@ class TestFormatComparison:
             _point_feature(1, 1, 1),
             _point_feature(9, 9, 9),
         )
-        mjb_dir = tmp_path / "mjb"
+        pbf3_dir = tmp_path / "pbf3"
         tiles3d_dir = tmp_path / "3dtiles"
 
-        gen_mjb = TileGenerator3D(OctreeConfig(max_zoom=1), output_format="mjb")
-        gen_mjb.add_features(coll)
-        count_mjb = gen_mjb.generate(mjb_dir)
+        gen_pbf3 = TileGenerator3D(OctreeConfig(max_zoom=1), output_format="pbf3")
+        gen_pbf3.add_features(coll)
+        count_pbf3 = gen_pbf3.generate(pbf3_dir)
 
         gen_3dt = TileGenerator3D(OctreeConfig(max_zoom=1), output_format="3dtiles")
         gen_3dt.add_features(coll)
         count_3dt = gen_3dt.generate(tiles3d_dir)
 
-        assert count_mjb == count_3dt
+        assert count_pbf3 == count_3dt
 
-    def test_default_format_is_mjb(self, tmp_path):
-        """Default output format is mjb."""
+    def test_default_format_is_pbf3(self, tmp_path):
+        """Default output format is pbf3."""
         coll = _collection(_point_feature(5, 5, 5))
         gen = TileGenerator3D(OctreeConfig(max_zoom=0))
         gen.add_features(coll)
         gen.generate(tmp_path)
 
-        assert len(list(tmp_path.rglob("*.mjb"))) >= 1
+        assert len(list(tmp_path.rglob("*.pbf3"))) >= 1
         assert len(list(tmp_path.rglob("*.glb"))) == 0

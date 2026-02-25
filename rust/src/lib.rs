@@ -6,7 +6,7 @@ mod projector;
 mod clip;
 mod simplify;
 mod tile_transform;
-mod encoder_mjb;
+mod encoder_pbf3;
 mod fragment;
 mod encoder_glb;
 mod tileset_json;
@@ -14,6 +14,14 @@ mod streaming;
 mod morton;
 mod encoder_draco;
 mod encoder_meshopt;
+mod types2d;
+mod projector2d;
+mod clip2d;
+mod fragment2d;
+mod simplify2d;
+mod streaming2d;
+mod encoder_mvt;
+mod decoder_mvt;
 
 /// The main Python module implemented in Rust.
 #[pymodule]
@@ -26,10 +34,10 @@ fn _rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(clip::clip_line, m)?)?;
     m.add_function(wrap_pyfunction!(clip::clip_points, m)?)?;
 
-    // Phase 4: Tile transform + MJB encoder
+    // Phase 4: Tile transform + PBF3 encoder
     m.add_function(wrap_pyfunction!(tile_transform::transform_tile_3d, m)?)?;
-    m.add_function(wrap_pyfunction!(encoder_mjb::encode_tile_3d, m)?)?;
-    m.add_function(wrap_pyfunction!(encoder_mjb::build_indexed_mesh, m)?)?;
+    m.add_function(wrap_pyfunction!(encoder_pbf3::encode_tile_3d, m)?)?;
+    m.add_function(wrap_pyfunction!(encoder_pbf3::build_indexed_mesh, m)?)?;
 
     // Phase 5: Projector + Simplification
     m.add_class::<projector::CartesianProjector3D>()?;
@@ -41,6 +49,13 @@ fn _rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Draco encoder
     m.add_function(wrap_pyfunction!(encoder_draco::draco_encode_mesh, m)?)?;
+
+    // 2D tiling pipeline
+    m.add_class::<projector2d::CartesianProjector2D>()?;
+    m.add_class::<streaming2d::StreamingTileGenerator2D>()?;
+
+    // MVT PBF reader
+    m.add_function(wrap_pyfunction!(decoder_mvt::read_pbf, m)?)?;
 
     Ok(())
 }

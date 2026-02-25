@@ -6,7 +6,7 @@ Measures two operations:
   B. Single-feature random access — extract one feature by ID. Median over N samples.
 
 Formats compared:
-  - Feature MJB (multilod): one .mjb per feature, protobuf decode
+  - Feature PBF3 (multilod): one .pbf3 per feature, protobuf decode
   - Parquet ZSTD: shared partitioned table, filter by feature_id
   - Arrow IPC: shared partitioned table (mmap), filter by feature_id
   - Neuroglancer multilod: .index + data per segment, Draco decode
@@ -151,23 +151,23 @@ def _merge_feature_fragments(fragments):
 
 
 # ---------------------------------------------------------------------------
-# Feature MJB benchmark
+# Feature PBF3 benchmark
 # ---------------------------------------------------------------------------
 
-def bench_feature_mjb(feat_mjb_dir: Path, *, n_warmup: int, n_iters: int,
+def bench_feature_pbf3(feat_pbf3_dir: Path, *, n_warmup: int, n_iters: int,
                       n_samples: int, seed: int):
-    """Benchmark Feature MJB decode — per-feature .mjb files."""
+    """Benchmark Feature PBF3 decode — per-feature .pbf3 files."""
     from microjson.tiling3d.reader3d import decode_tile
 
-    mjb_files = sorted(feat_mjb_dir.glob("*.mjb"))
-    if not mjb_files:
+    pbf3_files = sorted(feat_pbf3_dir.glob("*.pbf3"))
+    if not pbf3_files:
         return None
 
     # Map feature_id -> bytes (pre-load)
     feature_ids = []
     feature_bytes: dict[int, bytes] = {}
     disk_size = 0
-    for f in mjb_files:
+    for f in pbf3_files:
         fid = int(f.stem)
         data = f.read_bytes()
         feature_bytes[fid] = data
@@ -175,7 +175,7 @@ def bench_feature_mjb(feat_mjb_dir: Path, *, n_warmup: int, n_iters: int,
         disk_size += len(data)
 
     def extract_feature(data: bytes):
-        """Decode .mjb, extract finest LOD, merge fragments."""
+        """Decode .pbf3, extract finest LOD, merge fragments."""
         layers = decode_tile(data)
         if not layers:
             return np.empty((0, 3), dtype=np.float32), np.empty(0, dtype=np.uint32)
@@ -234,8 +234,8 @@ def bench_feature_mjb(feat_mjb_dir: Path, *, n_warmup: int, n_iters: int,
         single_times.append((time.perf_counter() - t0) * 1000)
 
     return {
-        "name": "Feature MJB",
-        "files": len(mjb_files),
+        "name": "Feature PBF3",
+        "files": len(pbf3_files),
         "disk_bytes": disk_size,
         "features": n_features,
         "vertices": total_verts,
@@ -597,7 +597,7 @@ def bench_neuroglancer(ng_dir: Path, *, n_warmup: int, n_iters: int,
 # ---------------------------------------------------------------------------
 
 def generate_formats(brain_id: str, max_zoom: int = 3):
-    """Re-ingest OBJs and generate Feature MJB v2 + Neuroglancer multilod."""
+    """Re-ingest OBJs and generate Feature PBF3 v2 + Neuroglancer multilod."""
     from microjson._rs import StreamingTileGenerator, scan_obj_bounds
 
     sys.path.insert(0, str(_ROOT / "scripts"))
@@ -642,22 +642,22 @@ def generate_formats(brain_id: str, max_zoom: int = 3):
     bounds = scan_obj_bounds(path_strs)
     print(f"  Bounds scanned ({_fmt_time((time.perf_counter() - t0) * 1000)})")
 
-    # --- Feature MJB v2 (multilod=True) ---
-    feat_mjb_dir = output_dir / "feature_mjb"
-    if feat_mjb_dir.exists():
-        shutil.rmtree(feat_mjb_dir)
-    feat_mjb_dir.mkdir(parents=True, exist_ok=True)
+    # --- Feature PBF3 v2 (multilod=True) ---
+    feat_pbf3_dir = output_dir / "mudm_feature_pbf3"
+    if feat_pbf3_dir.exists():
+        shutil.rmtree(feat_pbf3_dir)
+    feat_pbf3_dir.mkdir(parents=True, exist_ok=True)
 
     gen = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
-    print(f"\nIngesting OBJs for Feature MJB (parallel Rust, zoom 0-{max_zoom})...")
+    print(f"\nIngesting OBJs for Feature PBF3 (parallel Rust, zoom 0-{max_zoom})...")
     t0 = time.perf_counter()
     gen.add_obj_files(path_strs, bounds, tags_list)
     t_ingest = time.perf_counter() - t0
     print(f"  Ingest: {_fmt_time(t_ingest * 1000)}")
 
-    print("Generating Feature MJB v2 (multilod=True)...")
+    print("Generating Feature PBF3 v2 (multilod=True)...")
     t0 = time.perf_counter()
-    n_feat = gen.generate_feature_mjb(str(feat_mjb_dir), bounds)
+    n_feat = gen.generate_feature_pbf3(str(feat_pbf3_dir), bounds)
     t_gen = time.perf_counter() - t0
     print(f"  {n_feat} features in {_fmt_time(t_gen * 1000)}")
     del gen
@@ -719,7 +719,7 @@ def main():
     )
     parser.add_argument(
         "--generate", action="store_true",
-        help="Regenerate Feature MJB v2 + Neuroglancer multilod before benchmarking",
+        help="Regenerate Feature PBF3 v2 + Neuroglancer multilod before benchmarking",
     )
     args = parser.parse_args()
 
@@ -746,10 +746,10 @@ def main():
 
     results = []
 
-    # Feature MJB
-    feat_mjb_dir = base / "feature_mjb"
-    print("--- Feature MJB ---")
-    r = bench_feature_mjb(feat_mjb_dir, **bench_kwargs)
+    # Feature PBF3
+    feat_pbf3_dir = base / "mudm_feature_pbf3"
+    print("--- Feature PBF3 ---")
+    r = bench_feature_pbf3(feat_pbf3_dir, **bench_kwargs)
     if r:
         results.append(r)
         print(f"  {r['files']} files, {_fmt_bytes(r['disk_bytes'])} on disk")
@@ -852,7 +852,7 @@ def main():
         )
     print()
 
-    print("Note: Feature MJB/Neuroglancer bytes pre-loaded to RAM (I/O excluded).")
+    print("Note: Feature PBF3/Neuroglancer bytes pre-loaded to RAM (I/O excluded).")
     print("      Parquet/Arrow bulk includes disk I/O; single-feature uses pre-loaded table.")
 
 

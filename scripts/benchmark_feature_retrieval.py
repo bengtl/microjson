@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-feature retrieval benchmark: tile-centric MJB vs feature-centric MJB vs Neuroglancer.
+"""Per-feature retrieval benchmark: tile-centric PBF3 vs feature-centric PBF3 vs Neuroglancer.
 
 Measures the query "give me all geometry for feature X" across three access patterns.
 
@@ -11,8 +11,8 @@ Usage::
     uv run python scripts/benchmark_feature_retrieval.py --data-dir data/mouselight/2021-09-16/HortaObj/
 
 Access patterns:
-  1. Tile-centric MJB: Scan all max-zoom tiles, decode each, filter for feature X
-  2. Feature-centric MJB: Read features/{X}.mjb, decode one file
+  1. Tile-centric PBF3: Scan all max-zoom tiles, decode each, filter for feature X
+  2. Feature-centric PBF3: Read features/{X}.pbf3, decode one file
   3. Neuroglancer: Read {X} binary, np.frombuffer (trivial decode)
 
 Metrics: wall-clock retrieval time (median/P95), bytes read, decode time.
@@ -137,24 +137,24 @@ def generate_all_formats(
     output_base: Path,
     max_zoom: int = 2,
 ) -> dict[str, Path]:
-    """Generate tile-centric MJB, feature-centric MJB, and Neuroglancer from same features."""
+    """Generate tile-centric PBF3, feature-centric PBF3, and Neuroglancer from same features."""
     paths = {}
 
-    # Tile-centric MJB
-    mjb_dir = output_base / "tile_mjb"
+    # Tile-centric PBF3
+    pbf3_dir = output_base / "tile_pbf3"
     gen1 = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
     for feat in features:
         gen1.add_feature(feat)
-    gen1.generate_mjb(str(mjb_dir))
-    paths["tile_mjb"] = mjb_dir
+    gen1.generate_pbf3(str(pbf3_dir))
+    paths["tile_pbf3"] = pbf3_dir
 
-    # Feature-centric MJB
-    feat_dir = output_base / "feature_mjb"
+    # Feature-centric PBF3
+    feat_dir = output_base / "feature_pbf3"
     gen2 = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
     for feat in features:
         gen2.add_feature(feat)
-    gen2.generate_feature_mjb(str(feat_dir), world_bounds)
-    paths["feature_mjb"] = feat_dir
+    gen2.generate_feature_pbf3(str(feat_dir), world_bounds)
+    paths["feature_pbf3"] = feat_dir
 
     # Neuroglancer
     ng_dir = output_base / "neuroglancer"
@@ -178,18 +178,18 @@ def generate_all_formats_obj(
     tags_list = [{"name": Path(p).stem, "id": i} for i, p in enumerate(obj_paths)]
 
     for name, gen_func in [
-        ("tile_mjb", "generate_mjb"),
-        ("feature_mjb", "generate_feature_mjb"),
+        ("tile_pbf3", "generate_pbf3"),
+        ("feature_pbf3", "generate_feature_pbf3"),
         ("neuroglancer", "generate_neuroglancer_multilod"),
     ]:
         out_dir = output_base / name
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
         gen.add_obj_files(obj_paths, world_bounds, tags_list)
 
-        if name == "tile_mjb":
-            gen.generate_mjb(str(out_dir))
-        elif name == "feature_mjb":
-            gen.generate_feature_mjb(str(out_dir), world_bounds)
+        if name == "tile_pbf3":
+            gen.generate_pbf3(str(out_dir))
+        elif name == "feature_pbf3":
+            gen.generate_feature_pbf3(str(out_dir), world_bounds)
         else:
             gen.generate_neuroglancer_multilod(str(out_dir), world_bounds)
 
@@ -213,7 +213,7 @@ def retrieve_tile_centric(tile_dir: Path, feature_id: int, max_zoom: int) -> dic
     if not zoom_dir.exists():
         return {"time": time.perf_counter() - t0, "bytes_read": 0, "decode_time": 0, "n_verts": 0}
 
-    for tile_path in zoom_dir.rglob("*.mjb"):
+    for tile_path in zoom_dir.rglob("*.pbf3"):
         data = tile_path.read_bytes()
         bytes_read += len(data)
 
@@ -238,10 +238,10 @@ def retrieve_tile_centric(tile_dir: Path, feature_id: int, max_zoom: int) -> dic
 
 
 def retrieve_feature_centric(feat_dir: Path, feature_id: int) -> dict:
-    """Retrieve feature X by reading one .mjb file."""
+    """Retrieve feature X by reading one .pbf3 file."""
     t0 = time.perf_counter()
 
-    feat_path = feat_dir / f"{feature_id}.mjb"
+    feat_path = feat_dir / f"{feature_id}.pbf3"
     if not feat_path.exists():
         return {"time": time.perf_counter() - t0, "bytes_read": 0, "decode_time": 0, "n_verts": 0}
 
@@ -281,7 +281,9 @@ def retrieve_neuroglancer(ng_dir: Path, feature_id: int) -> dict:
     td0 = time.perf_counter()
     (n_verts,) = struct.unpack_from("<I", data, 0)
     # Just verify we can read the vertices (no full decode needed for benchmark)
-    _ = np.frombuffer(data, dtype=np.float32, offset=4, count=n_verts * 3)
+    needed = 4 + n_verts * 3 * 4
+    if needed <= len(data):
+        _ = np.frombuffer(data, dtype=np.float32, offset=4, count=n_verts * 3)
     decode_time = time.perf_counter() - td0
 
     total_time = time.perf_counter() - t0
@@ -330,8 +332,8 @@ def benchmark_scale(
         # Benchmark each access pattern
         results = {}
         for method_name, retrieve_fn, extra_args in [
-            ("tile_mjb", retrieve_tile_centric, (paths["tile_mjb"], max_zoom)),
-            ("feature_mjb", retrieve_feature_centric, (paths["feature_mjb"],)),
+            ("tile_pbf3", retrieve_tile_centric, (paths["tile_pbf3"], max_zoom)),
+            ("feature_pbf3", retrieve_feature_centric, (paths["feature_pbf3"],)),
             ("neuroglancer", retrieve_neuroglancer, (paths["neuroglancer"],)),
         ]:
             times = []
@@ -341,7 +343,7 @@ def benchmark_scale(
 
             for fid in sample_ids:
                 for _ in range(n_iterations):
-                    if method_name == "tile_mjb":
+                    if method_name == "tile_pbf3":
                         r = retrieve_fn(extra_args[0], fid, extra_args[1])
                     else:
                         r = retrieve_fn(extra_args[0], fid)
@@ -388,11 +390,11 @@ def print_results(all_results: list[dict]) -> None:
               f"{'Bytes Read':>14} {'Decode Time':>12} {'Total Size':>12}")
         print("-" * 86)
 
-        for method in ["tile_mjb", "feature_mjb", "neuroglancer"]:
+        for method in ["tile_pbf3", "feature_pbf3", "neuroglancer"]:
             r = result["results"][method]
             labels = {
-                "tile_mjb": "Tile-centric MJB",
-                "feature_mjb": "Feature-centric MJB",
+                "tile_pbf3": "Tile-centric PBF3",
+                "feature_pbf3": "Feature-centric PBF3",
                 "neuroglancer": "Neuroglancer",
             }
             print(f"{labels[method]:<22} "
@@ -405,11 +407,11 @@ def print_results(all_results: list[dict]) -> None:
 
     # Speedup summary
     if all_results:
-        print("Speedup Summary (feature-centric MJB vs tile-centric MJB):")
+        print("Speedup Summary (feature-centric PBF3 vs tile-centric PBF3):")
         for result in all_results:
             n = result["n_features"]
-            tile_time = result["results"]["tile_mjb"]["median_time"]
-            feat_time = result["results"]["feature_mjb"]["median_time"]
+            tile_time = result["results"]["tile_pbf3"]["median_time"]
+            feat_time = result["results"]["feature_pbf3"]["median_time"]
             if feat_time > 0:
                 speedup = tile_time / feat_time
                 print(f"  {n} features: {speedup:.1f}x faster")

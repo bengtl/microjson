@@ -1,6 +1,6 @@
-"""Tests for per-feature MJB output (feature-centric dual-index architecture).
+"""Tests for per-feature PBF3 output (feature-centric dual-index architecture).
 
-Covers: generate_feature_mjb(), manifest.json structure, decode roundtrip,
+Covers: generate_feature_pbf3(), manifest.json structure, decode roundtrip,
 world coordinates, vertex count parity with Neuroglancer, bbox accuracy,
 point features, and empty features.
 """
@@ -90,11 +90,11 @@ def _build_generator_with_features(features, min_zoom=0, max_zoom=2):
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestFeatureMjbProducesFiles:
-    """Test that generate_feature_mjb creates the expected files."""
+class TestFeaturePbf3ProducesFiles:
+    """Test that generate_feature_pbf3 creates the expected files."""
 
-    def test_feature_mjb_produces_files(self, tmp_path):
-        """N .mjb files created, one per feature."""
+    def test_feature_pbf3_produces_files(self, tmp_path):
+        """N .pbf3 files created, one per feature."""
         features = [
             _make_tin_feature(
                 [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
@@ -111,18 +111,18 @@ class TestFeatureMjbProducesFiles:
         ]
         gen, fids = _build_generator_with_features(features)
         out = str(tmp_path / "features")
-        count = gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        count = gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         assert count == 2
-        assert (tmp_path / "features" / "0.mjb").exists()
-        assert (tmp_path / "features" / "1.mjb").exists()
+        assert (tmp_path / "features" / "0.pbf3").exists()
+        assert (tmp_path / "features" / "1.pbf3").exists()
         assert (tmp_path / "features" / "manifest.json").exists()
 
 
-class TestFeatureMjbManifest:
+class TestFeaturePbf3Manifest:
     """Test manifest.json structure and contents."""
 
-    def test_feature_mjb_manifest_structure(self, tmp_path):
+    def test_feature_pbf3_manifest_structure(self, tmp_path):
         """manifest.json has correct format/version/features."""
         features = [
             _make_tin_feature(
@@ -140,10 +140,10 @@ class TestFeatureMjbManifest:
         ]
         gen, _ = _build_generator_with_features(features)
         out = str(tmp_path / "features")
-        gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         manifest = json.loads((tmp_path / "features" / "manifest.json").read_text())
-        assert manifest["format"] == "microjson_feature_mjb"
+        assert manifest["format"] == "mudm_feature_pbf3"
         assert manifest["version"] == 2  # multilod=True is new default
         assert manifest["feature_count"] == 2
         assert manifest["world_bounds"] == list(WORLD_BOUNDS)
@@ -162,10 +162,10 @@ class TestFeatureMjbManifest:
         assert f0["lod_count"] >= 1
 
 
-class TestFeatureMjbDecodeRoundtrip:
-    """Test that decode_tile() works on per-feature .mjb files."""
+class TestFeaturePbf3DecodeRoundtrip:
+    """Test that decode_tile() works on per-feature .pbf3 files."""
 
-    def test_feature_mjb_decode_roundtrip(self, tmp_path):
+    def test_feature_pbf3_decode_roundtrip(self, tmp_path):
         """decode_tile() works on per-feature files, correct tags."""
         from microjson.tiling3d.reader3d import decode_tile
 
@@ -179,10 +179,10 @@ class TestFeatureMjbDecodeRoundtrip:
         ]
         gen, _ = _build_generator_with_features(features)
         out = str(tmp_path / "features")
-        gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
-        # Decode the per-feature MJB (multilod=True default, so multiple layers)
-        data = (tmp_path / "features" / "0.mjb").read_bytes()
+        # Decode the per-feature PBF3 (multilod=True default, so multiple layers)
+        data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
         assert len(layers) >= 1  # at least lod_0
 
@@ -201,10 +201,10 @@ class TestFeatureMjbDecodeRoundtrip:
         assert len(feat["mesh_indices"]) > 0
 
 
-class TestFeatureMjbWorldCoordinates:
+class TestFeaturePbf3WorldCoordinates:
     """Test that mesh positions are in world coordinate range."""
 
-    def test_feature_mjb_world_coordinates(self, tmp_path):
+    def test_feature_pbf3_world_coordinates(self, tmp_path):
         """Mesh positions are in world coordinate range."""
         # Feature near center of [0,1]³ → world coords near center of bounds
         features = [
@@ -217,9 +217,9 @@ class TestFeatureMjbWorldCoordinates:
         ]
         gen, _ = _build_generator_with_features(features)
         out = str(tmp_path / "features")
-        gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
-        data = (tmp_path / "features" / "0.mjb").read_bytes()
+        data = (tmp_path / "features" / "0.pbf3").read_bytes()
         from microjson.tiling3d.reader3d import decode_tile
         layers = decode_tile(data)
         feat = layers[0]["features"][0]
@@ -244,10 +244,10 @@ class TestFeatureMjbWorldCoordinates:
             assert 130.0 < z < 170.0, f"z={z} out of range"
 
 
-class TestFeatureMjbVertexCountMatchesNeuroglancer:
-    """Test vertex count parity between feature MJB and Neuroglancer."""
+class TestFeaturePbf3VertexCountMatchesNeuroglancer:
+    """Test vertex count parity between feature PBF3 and Neuroglancer."""
 
-    def test_feature_mjb_vertex_count_matches_neuroglancer(self, tmp_path):
+    def test_feature_pbf3_vertex_count_matches_neuroglancer(self, tmp_path):
         """Same geometry from both outputs."""
         features = [
             _make_tin_feature(
@@ -259,36 +259,36 @@ class TestFeatureMjbVertexCountMatchesNeuroglancer:
             ),
         ]
 
-        # Generate feature MJB
+        # Generate feature PBF3
         gen1, _ = _build_generator_with_features(features)
         feat_dir = str(tmp_path / "features")
-        gen1.generate_feature_mjb(feat_dir, WORLD_BOUNDS)
+        gen1.generate_feature_pbf3(feat_dir, WORLD_BOUNDS)
 
         # Generate Neuroglancer
         gen2, _ = _build_generator_with_features(features)
         ng_dir = str(tmp_path / "neuroglancer")
         gen2.generate_neuroglancer(ng_dir, WORLD_BOUNDS)
 
-        # Decode feature MJB
+        # Decode feature PBF3
         from microjson.tiling3d.reader3d import decode_tile
-        mjb_data = (tmp_path / "features" / "0.mjb").read_bytes()
-        layers = decode_tile(mjb_data)
-        mjb_feat = layers[0]["features"][0]
-        mjb_pos = mjb_feat["mesh_positions"]
-        mjb_n_verts = len(mjb_pos) // 12  # 3 floats × 4 bytes
+        pbf3_data = (tmp_path / "features" / "0.pbf3").read_bytes()
+        layers = decode_tile(pbf3_data)
+        pbf3_feat = layers[0]["features"][0]
+        pbf3_pos = pbf3_feat["mesh_positions"]
+        pbf3_n_verts = len(pbf3_pos) // 12  # 3 floats × 4 bytes
 
         # Decode Neuroglancer
         ng_data = (tmp_path / "neuroglancer" / "0").read_bytes()
         (ng_n_verts,) = struct.unpack_from("<I", ng_data, 0)
 
         # Both should have the same vertex count (same dedup logic)
-        assert mjb_n_verts == ng_n_verts
+        assert pbf3_n_verts == ng_n_verts
 
 
-class TestFeatureMjbBboxCorrect:
+class TestFeaturePbf3BboxCorrect:
     """Test that manifest bbox matches actual geometry bounds."""
 
-    def test_feature_mjb_bbox_correct(self, tmp_path):
+    def test_feature_pbf3_bbox_correct(self, tmp_path):
         """Manifest bbox matches actual geometry bounds."""
         features = [
             _make_tin_feature(
@@ -300,14 +300,14 @@ class TestFeatureMjbBboxCorrect:
         ]
         gen, _ = _build_generator_with_features(features)
         out = str(tmp_path / "features")
-        gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         manifest = json.loads((tmp_path / "features" / "manifest.json").read_text())
         bbox = manifest["features"]["0"]["bbox"]
 
-        # Extract actual positions from MJB file
+        # Extract actual positions from PBF3 file
         from microjson.tiling3d.reader3d import decode_tile
-        data = (tmp_path / "features" / "0.mjb").read_bytes()
+        data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
         feat = layers[0]["features"][0]
         pos_bytes = feat["mesh_positions"]
@@ -328,10 +328,10 @@ class TestFeatureMjbBboxCorrect:
         assert bbox[5] >= max(zs) - 0.1  # zmax
 
 
-class TestFeatureMjbPointFeatures:
+class TestFeaturePbf3PointFeatures:
     """Test non-mesh geometry types."""
 
-    def test_feature_mjb_point_features(self, tmp_path):
+    def test_feature_pbf3_point_features(self, tmp_path):
         """Point features are encoded and decodable."""
         from microjson.tiling3d.reader3d import decode_tile
 
@@ -340,16 +340,16 @@ class TestFeatureMjbPointFeatures:
         ]
         gen, _ = _build_generator_with_features(features, min_zoom=0, max_zoom=0)
         out = str(tmp_path / "features")
-        count = gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        count = gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         assert count == 1
-        data = (tmp_path / "features" / "0.mjb").read_bytes()
+        data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
         feat = layers[0]["features"][0]
         assert feat["type"] == 1  # POINT3D
         assert feat["tags"]["label"] == "center"
 
-    def test_feature_mjb_line_features(self, tmp_path):
+    def test_feature_pbf3_line_features(self, tmp_path):
         """LineString features are encoded and decodable."""
         from microjson.tiling3d.reader3d import decode_tile
 
@@ -362,20 +362,20 @@ class TestFeatureMjbPointFeatures:
         ]
         gen, _ = _build_generator_with_features(features, min_zoom=0, max_zoom=0)
         out = str(tmp_path / "features")
-        count = gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        count = gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         assert count == 1
-        data = (tmp_path / "features" / "0.mjb").read_bytes()
+        data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
         feat = layers[0]["features"][0]
         assert feat["type"] == 2  # LINESTRING3D
         assert feat["tags"]["road"] == "A1"
 
 
-class TestFeatureMjbEmptyFeature:
+class TestFeaturePbf3EmptyFeature:
     """Test features with no max_zoom fragments."""
 
-    def test_feature_mjb_empty_feature(self, tmp_path):
+    def test_feature_pbf3_empty_feature(self, tmp_path):
         """Features with no max_zoom fragments produce no file."""
         # Create a feature that only appears at zoom 0 but max_zoom is 2
         # A point at exactly (0, 0, 0) should still clip to tiles at all zooms,
@@ -388,7 +388,7 @@ class TestFeatureMjbEmptyFeature:
         # Instead test with zero features: should produce 0 files.
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=2)
         out = str(tmp_path / "features")
-        count = gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        count = gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         assert count == 0
         manifest = json.loads((tmp_path / "features" / "manifest.json").read_text())
@@ -396,11 +396,11 @@ class TestFeatureMjbEmptyFeature:
         assert manifest["features"] == {}
 
 
-class TestFeatureMjbMultipleFeatures:
+class TestFeaturePbf3MultipleFeatures:
     """Test multiple features with different tags."""
 
     def test_multiple_features_separate_files(self, tmp_path):
-        """Each feature gets its own .mjb with correct tags."""
+        """Each feature gets its own .pbf3 with correct tags."""
         from microjson.tiling3d.reader3d import decode_tile
 
         features = [
@@ -425,12 +425,12 @@ class TestFeatureMjbMultipleFeatures:
         ]
         gen, _ = _build_generator_with_features(features)
         out = str(tmp_path / "features")
-        count = gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        count = gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         assert count == 3
 
         for fid in range(3):
-            data = (tmp_path / "features" / f"{fid}.mjb").read_bytes()
+            data = (tmp_path / "features" / f"{fid}.pbf3").read_bytes()
             layers = decode_tile(data)
             feat = layers[0]["features"][0]
             assert feat["type"] == 5
@@ -467,10 +467,10 @@ class TestMultilodLayerCount:
         features = [_make_dense_tin_feature(20)]
         gen, _ = _build_generator_with_features(features, min_zoom=0, max_zoom=max_zoom)
         out = str(tmp_path / "features")
-        gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         from microjson.tiling3d.reader3d import decode_tile
-        data = (tmp_path / "features" / "0.mjb").read_bytes()
+        data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
         # Should have up to max_zoom + 1 layers (zoom 0, 1, 2)
         assert len(layers) == max_zoom + 1
@@ -485,10 +485,10 @@ class TestMultilodLayerNames:
         features = [_make_dense_tin_feature(20)]
         gen, _ = _build_generator_with_features(features, min_zoom=0, max_zoom=max_zoom)
         out = str(tmp_path / "features")
-        gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         from microjson.tiling3d.reader3d import decode_tile
-        data = (tmp_path / "features" / "0.mjb").read_bytes()
+        data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
         names = [l["name"] for l in layers]
         assert names == ["lod_0", "lod_1", "lod_2"]
@@ -502,10 +502,10 @@ class TestMultilodVertexReduction:
         features = [_make_dense_tin_feature(50)]
         gen, _ = _build_generator_with_features(features, min_zoom=0, max_zoom=2)
         out = str(tmp_path / "features")
-        gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         from microjson.tiling3d.reader3d import decode_tile
-        data = (tmp_path / "features" / "0.mjb").read_bytes()
+        data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
 
         # Count unique vertices per LOD
@@ -535,10 +535,10 @@ class TestMultilodWorldCoords:
         features = [_make_dense_tin_feature(20)]
         gen, _ = _build_generator_with_features(features, min_zoom=0, max_zoom=2)
         out = str(tmp_path / "features")
-        gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         from microjson.tiling3d.reader3d import decode_tile
-        data = (tmp_path / "features" / "0.mjb").read_bytes()
+        data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
 
         for layer in layers:
@@ -564,14 +564,14 @@ class TestMultilodFalseBackwardCompat:
     """multilod=False gives single-layer output (backward compat)."""
 
     def test_multilod_false_backward_compat(self, tmp_path):
-        """Setting multilod=False produces single-layer MJB like version 1."""
+        """Setting multilod=False produces single-layer PBF3 like version 1."""
         features = [_make_dense_tin_feature(20)]
         gen, _ = _build_generator_with_features(features, min_zoom=0, max_zoom=2)
         out = str(tmp_path / "features")
-        gen.generate_feature_mjb(out, WORLD_BOUNDS, multilod=False)
+        gen.generate_feature_pbf3(out, WORLD_BOUNDS, multilod=False)
 
         from microjson.tiling3d.reader3d import decode_tile
-        data = (tmp_path / "features" / "0.mjb").read_bytes()
+        data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
         assert len(layers) == 1
         assert layers[0]["name"] == "default"
@@ -597,7 +597,7 @@ class TestMultilodManifest:
         ]
         gen, _ = _build_generator_with_features(features, min_zoom=0, max_zoom=2)
         out = str(tmp_path / "features")
-        gen.generate_feature_mjb(out, WORLD_BOUNDS)
+        gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         manifest = json.loads((tmp_path / "features" / "manifest.json").read_text())
         assert manifest["version"] == 2

@@ -2,11 +2,11 @@
 ///
 /// Memory model:
 /// - During ingestion (add_feature): O(1 feature) — clip through octree, write fragments
-/// - During encoding (generate_mjb): O(all fragments) — read from disk, transform, encode
+/// - During encoding (generate_pbf3): O(all fragments) — read from disk, transform, encode
 ///
 /// Architecture:
 ///   For each feature: clip through octree → write binary fragments to temp file
-///   For each tile (rayon parallel): read fragments → transform → encode → write .mjb
+///   For each tile (rayon parallel): read fragments → transform → encode → write .pbf3
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use ahash::AHashMap;
 
 use crate::types::BBox3D;
 use crate::fragment::{Fragment, FragmentWriter, FragmentReader};
-use crate::encoder_mjb;
+use crate::encoder_pbf3;
 use crate::encoder_glb::{self, GlbFeature};
 use crate::tileset_json;
 use crate::tile_transform;
@@ -414,21 +414,21 @@ fn encode_tag_value(val: &TagValue) -> Vec<u8> {
     let mut buf = Vec::new();
     match val {
         TagValue::Bool(b) => {
-            encoder_mjb::write_varint_field(&mut buf, encoder_mjb::VALUE_BOOL, if *b { 1 } else { 0 });
+            encoder_pbf3::write_varint_field(&mut buf, encoder_pbf3::VALUE_BOOL, if *b { 1 } else { 0 });
         }
         TagValue::Str(s) => {
-            encoder_mjb::write_bytes_field(&mut buf, encoder_mjb::VALUE_STRING, s.as_bytes());
+            encoder_pbf3::write_bytes_field(&mut buf, encoder_pbf3::VALUE_STRING, s.as_bytes());
         }
         TagValue::Float(d) => {
-            encoder_mjb::write_tag(&mut buf, encoder_mjb::VALUE_DOUBLE, 1); // wire type 1 = 64-bit
+            encoder_pbf3::write_tag(&mut buf, encoder_pbf3::VALUE_DOUBLE, 1); // wire type 1 = 64-bit
             buf.extend_from_slice(&d.to_le_bytes());
         }
         TagValue::Int(i) => {
             if *i < 0 {
-                encoder_mjb::write_tag(&mut buf, encoder_mjb::VALUE_SINT, 0);
-                encoder_mjb::encode_varint(&mut buf, encoder_mjb::zigzag(*i));
+                encoder_pbf3::write_tag(&mut buf, encoder_pbf3::VALUE_SINT, 0);
+                encoder_pbf3::encode_varint(&mut buf, encoder_pbf3::zigzag(*i));
             } else {
-                encoder_mjb::write_varint_field(&mut buf, encoder_mjb::VALUE_UINT, *i as u64);
+                encoder_pbf3::write_varint_field(&mut buf, encoder_pbf3::VALUE_UINT, *i as u64);
             }
         }
     }
@@ -463,10 +463,10 @@ fn encode_tile_from_fragments(
         let mut feat_buf = Vec::new();
 
         // id
-        encoder_mjb::write_varint_field(&mut feat_buf, encoder_mjb::FEAT_ID, feat_idx as u64);
+        encoder_pbf3::write_varint_field(&mut feat_buf, encoder_pbf3::FEAT_ID, feat_idx as u64);
 
         // type
-        encoder_mjb::write_varint_field(&mut feat_buf, encoder_mjb::FEAT_TYPE, frag.geom_type as u64);
+        encoder_pbf3::write_varint_field(&mut feat_buf, encoder_pbf3::FEAT_TYPE, frag.geom_type as u64);
 
         // tags (dictionary-encoded from registry)
         if let Some(tags) = tags_registry.get(&frag.feature_id) {
@@ -502,7 +502,7 @@ fn encode_tile_from_fragments(
                 };
                 tag_indices.push(vi);
             }
-            encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_TAGS, &tag_indices);
+            encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_TAGS, &tag_indices);
         }
 
         // Transform geometry to tile-local integers
@@ -523,16 +523,16 @@ fn encode_tile_from_fragments(
         let gt = frag.geom_type;
         if gt == 1 {
             // POINT3D
-            let geom = encoder_mjb::encode_point_geometry(&new_xy);
-            encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY, &geom);
-            let z_enc = encoder_mjb::encode_z(&new_z);
-            encoder_mjb::encode_packed_sint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY_Z, &z_enc);
+            let geom = encoder_pbf3::encode_point_geometry(&new_xy);
+            encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY, &geom);
+            let z_enc = encoder_pbf3::encode_z(&new_z);
+            encoder_pbf3::encode_packed_sint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY_Z, &z_enc);
         } else if gt == 2 {
             // LINESTRING3D
-            let geom = encoder_mjb::encode_line_geometry(&new_xy);
-            encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY, &geom);
-            let z_enc = encoder_mjb::encode_z(&new_z);
-            encoder_mjb::encode_packed_sint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY_Z, &z_enc);
+            let geom = encoder_pbf3::encode_line_geometry(&new_xy);
+            encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY, &geom);
+            let z_enc = encoder_pbf3::encode_z(&new_z);
+            encoder_pbf3::encode_packed_sint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY_Z, &z_enc);
         } else if gt == 4 || gt == 5 {
             // TIN / POLYHEDRALSURFACE — indexed mesh
             let rls: Vec<usize> = if frag.ring_lengths.is_empty() {
@@ -576,8 +576,8 @@ fn encode_tile_from_fragments(
 
             let pos_bytes: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
             let idx_bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
-            encoder_mjb::write_bytes_field(&mut feat_buf, encoder_mjb::FEAT_MESH_POSITIONS, &pos_bytes);
-            encoder_mjb::write_bytes_field(&mut feat_buf, encoder_mjb::FEAT_MESH_INDICES, &idx_bytes);
+            encoder_pbf3::write_bytes_field(&mut feat_buf, encoder_pbf3::FEAT_MESH_POSITIONS, &pos_bytes);
+            encoder_pbf3::write_bytes_field(&mut feat_buf, encoder_pbf3::FEAT_MESH_INDICES, &idx_bytes);
         } else if gt == 3 {
             // POLYGON3D
             let rls: Vec<usize> = if frag.ring_lengths.is_empty() {
@@ -585,16 +585,16 @@ fn encode_tile_from_fragments(
             } else {
                 frag.ring_lengths.iter().map(|&r| r as usize).collect()
             };
-            let geom = encoder_mjb::encode_polygon_geometry(&new_xy, &rls);
-            encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY, &geom);
-            let z_enc = encoder_mjb::encode_z(&new_z);
-            encoder_mjb::encode_packed_sint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY_Z, &z_enc);
+            let geom = encoder_pbf3::encode_polygon_geometry(&new_xy, &rls);
+            encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY, &geom);
+            let z_enc = encoder_pbf3::encode_z(&new_z);
+            encoder_pbf3::encode_packed_sint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY_Z, &z_enc);
         } else {
             // Default: line encoding
-            let geom = encoder_mjb::encode_line_geometry(&new_xy);
-            encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY, &geom);
-            let z_enc = encoder_mjb::encode_z(&new_z);
-            encoder_mjb::encode_packed_sint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY_Z, &z_enc);
+            let geom = encoder_pbf3::encode_line_geometry(&new_xy);
+            encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY, &geom);
+            let z_enc = encoder_pbf3::encode_z(&new_z);
+            encoder_pbf3::encode_packed_sint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY_Z, &z_enc);
         }
 
         features_encoded.push(feat_buf);
@@ -602,39 +602,39 @@ fn encode_tile_from_fragments(
 
     // --- Encode layer ---
     let mut layer_buf = Vec::new();
-    encoder_mjb::write_varint_field(&mut layer_buf, encoder_mjb::LAYER_VERSION, 3);
-    encoder_mjb::write_bytes_field(&mut layer_buf, encoder_mjb::LAYER_NAME, layer_name.as_bytes());
+    encoder_pbf3::write_varint_field(&mut layer_buf, encoder_pbf3::LAYER_VERSION, 3);
+    encoder_pbf3::write_bytes_field(&mut layer_buf, encoder_pbf3::LAYER_NAME, layer_name.as_bytes());
     for feat_buf in &features_encoded {
-        encoder_mjb::write_bytes_field(&mut layer_buf, encoder_mjb::LAYER_FEATURES, feat_buf);
+        encoder_pbf3::write_bytes_field(&mut layer_buf, encoder_pbf3::LAYER_FEATURES, feat_buf);
     }
     for key in &keys_list {
-        encoder_mjb::write_bytes_field(&mut layer_buf, encoder_mjb::LAYER_KEYS, key.as_bytes());
+        encoder_pbf3::write_bytes_field(&mut layer_buf, encoder_pbf3::LAYER_KEYS, key.as_bytes());
     }
     for val_buf in &values_encoded {
-        encoder_mjb::write_bytes_field(&mut layer_buf, encoder_mjb::LAYER_VALUES, val_buf);
+        encoder_pbf3::write_bytes_field(&mut layer_buf, encoder_pbf3::LAYER_VALUES, val_buf);
     }
-    encoder_mjb::write_varint_field(&mut layer_buf, encoder_mjb::LAYER_EXTENT, extent as u64);
-    encoder_mjb::write_varint_field(&mut layer_buf, encoder_mjb::LAYER_EXTENT_Z, extent_z as u64);
+    encoder_pbf3::write_varint_field(&mut layer_buf, encoder_pbf3::LAYER_EXTENT, extent as u64);
+    encoder_pbf3::write_varint_field(&mut layer_buf, encoder_pbf3::LAYER_EXTENT_Z, extent_z as u64);
 
     // --- Encode tile ---
     let mut tile_buf = Vec::new();
-    encoder_mjb::write_bytes_field(&mut tile_buf, encoder_mjb::TILE_LAYERS, &layer_buf);
+    encoder_pbf3::write_bytes_field(&mut tile_buf, encoder_pbf3::TILE_LAYERS, &layer_buf);
     tile_buf
 }
 
 // ---------------------------------------------------------------------------
-// Per-feature MJB encoding (world coordinates, single feature per tile)
+// Per-feature PBF3 encoding (world coordinates, single feature per tile)
 // ---------------------------------------------------------------------------
 
-/// Encode a single feature's max-zoom fragments as one MJB tile in world coordinates.
+/// Encode a single feature's max-zoom fragments as one PBF3 tile in world coordinates.
 ///
-/// Unlike tile-centric MJB (which uses tile-local integer coordinates), this
-/// produces a feature-centric MJB where mesh positions are float32 world
+/// Unlike tile-centric PBF3 (which uses tile-local integer coordinates), this
+/// produces a feature-centric PBF3 where mesh positions are float32 world
 /// coordinates. Non-mesh geometry (point, line, polygon) is encoded with
 /// MVT commands in a bbox-local integer space.
 ///
-/// Returns `(mjb_bytes, feature_bbox)` where feature_bbox is [xmin,ymin,zmin,xmax,ymax,zmax].
-fn encode_feature_mjb(
+/// Returns `(pbf3_bytes, feature_bbox)` where feature_bbox is [xmin,ymin,zmin,xmax,ymax,zmax].
+fn encode_feature_pbf3(
     frags: &[&Fragment],
     tags: Option<&Vec<(String, TagValue)>>,
     world_bounds: &(f64, f64, f64, f64, f64, f64),
@@ -674,12 +674,12 @@ fn encode_feature_mjb(
     // --- Encode TIN/PolyhedralSurface as a single merged indexed mesh ---
     if !mesh_frags.is_empty() {
         let mut feat_buf = Vec::new();
-        encoder_mjb::write_varint_field(&mut feat_buf, encoder_mjb::FEAT_ID, feat_idx);
+        encoder_pbf3::write_varint_field(&mut feat_buf, encoder_pbf3::FEAT_ID, feat_idx);
         feat_idx += 1;
 
         // Use geom_type from first mesh fragment
         let geom_type = mesh_frags[0].geom_type;
-        encoder_mjb::write_varint_field(&mut feat_buf, encoder_mjb::FEAT_TYPE, geom_type as u64);
+        encoder_pbf3::write_varint_field(&mut feat_buf, encoder_pbf3::FEAT_TYPE, geom_type as u64);
 
         // Tags
         if let Some(tag_list) = tags {
@@ -713,7 +713,7 @@ fn encode_feature_mjb(
                 };
                 tag_indices_vec.push(vi);
             }
-            encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_TAGS, &tag_indices_vec);
+            encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_TAGS, &tag_indices_vec);
         }
 
         // Merge geometry with vertex dedup (float32 bit-level, like Neuroglancer)
@@ -788,8 +788,8 @@ fn encode_feature_mjb(
         if !positions.is_empty() && !indices.is_empty() {
             let pos_bytes: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
             let idx_bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
-            encoder_mjb::write_bytes_field(&mut feat_buf, encoder_mjb::FEAT_MESH_POSITIONS, &pos_bytes);
-            encoder_mjb::write_bytes_field(&mut feat_buf, encoder_mjb::FEAT_MESH_INDICES, &idx_bytes);
+            encoder_pbf3::write_bytes_field(&mut feat_buf, encoder_pbf3::FEAT_MESH_POSITIONS, &pos_bytes);
+            encoder_pbf3::write_bytes_field(&mut feat_buf, encoder_pbf3::FEAT_MESH_INDICES, &idx_bytes);
         }
 
         features_encoded.push(feat_buf);
@@ -839,9 +839,9 @@ fn encode_feature_mjb(
         }
 
         let mut feat_buf = Vec::new();
-        encoder_mjb::write_varint_field(&mut feat_buf, encoder_mjb::FEAT_ID, feat_idx);
+        encoder_pbf3::write_varint_field(&mut feat_buf, encoder_pbf3::FEAT_ID, feat_idx);
         feat_idx += 1;
-        encoder_mjb::write_varint_field(&mut feat_buf, encoder_mjb::FEAT_TYPE, frag.geom_type as u64);
+        encoder_pbf3::write_varint_field(&mut feat_buf, encoder_pbf3::FEAT_TYPE, frag.geom_type as u64);
 
         // Tags (only on first non-mesh feature to avoid duplication)
         if features_encoded.is_empty() {
@@ -876,37 +876,37 @@ fn encode_feature_mjb(
                     };
                     tag_indices_vec.push(vi);
                 }
-                encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_TAGS, &tag_indices_vec);
+                encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_TAGS, &tag_indices_vec);
             }
         }
 
         // Encode geometry by type
         let gt = frag.geom_type;
         if gt == 1 {
-            let geom = encoder_mjb::encode_point_geometry(&new_xy);
-            encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY, &geom);
-            let z_enc = encoder_mjb::encode_z(&new_z);
-            encoder_mjb::encode_packed_sint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY_Z, &z_enc);
+            let geom = encoder_pbf3::encode_point_geometry(&new_xy);
+            encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY, &geom);
+            let z_enc = encoder_pbf3::encode_z(&new_z);
+            encoder_pbf3::encode_packed_sint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY_Z, &z_enc);
         } else if gt == 2 {
-            let geom = encoder_mjb::encode_line_geometry(&new_xy);
-            encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY, &geom);
-            let z_enc = encoder_mjb::encode_z(&new_z);
-            encoder_mjb::encode_packed_sint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY_Z, &z_enc);
+            let geom = encoder_pbf3::encode_line_geometry(&new_xy);
+            encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY, &geom);
+            let z_enc = encoder_pbf3::encode_z(&new_z);
+            encoder_pbf3::encode_packed_sint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY_Z, &z_enc);
         } else if gt == 3 {
             let rls: Vec<usize> = if frag.ring_lengths.is_empty() {
                 vec![new_xy.len() / 2]
             } else {
                 frag.ring_lengths.iter().map(|&r| r as usize).collect()
             };
-            let geom = encoder_mjb::encode_polygon_geometry(&new_xy, &rls);
-            encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY, &geom);
-            let z_enc = encoder_mjb::encode_z(&new_z);
-            encoder_mjb::encode_packed_sint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY_Z, &z_enc);
+            let geom = encoder_pbf3::encode_polygon_geometry(&new_xy, &rls);
+            encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY, &geom);
+            let z_enc = encoder_pbf3::encode_z(&new_z);
+            encoder_pbf3::encode_packed_sint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY_Z, &z_enc);
         } else {
-            let geom = encoder_mjb::encode_line_geometry(&new_xy);
-            encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY, &geom);
-            let z_enc = encoder_mjb::encode_z(&new_z);
-            encoder_mjb::encode_packed_sint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY_Z, &z_enc);
+            let geom = encoder_pbf3::encode_line_geometry(&new_xy);
+            encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY, &geom);
+            let z_enc = encoder_pbf3::encode_z(&new_z);
+            encoder_pbf3::encode_packed_sint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY_Z, &z_enc);
         }
 
         features_encoded.push(feat_buf);
@@ -914,40 +914,40 @@ fn encode_feature_mjb(
 
     // --- Encode layer ---
     let mut layer_buf = Vec::new();
-    encoder_mjb::write_varint_field(&mut layer_buf, encoder_mjb::LAYER_VERSION, 3);
-    encoder_mjb::write_bytes_field(&mut layer_buf, encoder_mjb::LAYER_NAME, layer_name.as_bytes());
+    encoder_pbf3::write_varint_field(&mut layer_buf, encoder_pbf3::LAYER_VERSION, 3);
+    encoder_pbf3::write_bytes_field(&mut layer_buf, encoder_pbf3::LAYER_NAME, layer_name.as_bytes());
     for feat_buf in &features_encoded {
-        encoder_mjb::write_bytes_field(&mut layer_buf, encoder_mjb::LAYER_FEATURES, feat_buf);
+        encoder_pbf3::write_bytes_field(&mut layer_buf, encoder_pbf3::LAYER_FEATURES, feat_buf);
     }
     for key in &keys_list {
-        encoder_mjb::write_bytes_field(&mut layer_buf, encoder_mjb::LAYER_KEYS, key.as_bytes());
+        encoder_pbf3::write_bytes_field(&mut layer_buf, encoder_pbf3::LAYER_KEYS, key.as_bytes());
     }
     for val_buf in &values_encoded {
-        encoder_mjb::write_bytes_field(&mut layer_buf, encoder_mjb::LAYER_VALUES, val_buf);
+        encoder_pbf3::write_bytes_field(&mut layer_buf, encoder_pbf3::LAYER_VALUES, val_buf);
     }
-    encoder_mjb::write_varint_field(&mut layer_buf, encoder_mjb::LAYER_EXTENT, extent as u64);
-    encoder_mjb::write_varint_field(&mut layer_buf, encoder_mjb::LAYER_EXTENT_Z, extent_z as u64);
+    encoder_pbf3::write_varint_field(&mut layer_buf, encoder_pbf3::LAYER_EXTENT, extent as u64);
+    encoder_pbf3::write_varint_field(&mut layer_buf, encoder_pbf3::LAYER_EXTENT_Z, extent_z as u64);
 
     // --- Encode tile ---
     let mut tile_buf = Vec::new();
-    encoder_mjb::write_bytes_field(&mut tile_buf, encoder_mjb::TILE_LAYERS, &layer_buf);
+    encoder_pbf3::write_bytes_field(&mut tile_buf, encoder_pbf3::TILE_LAYERS, &layer_buf);
 
     let bbox = [bb_min[0], bb_min[1], bb_min[2], bb_max[0], bb_max[1], bb_max[2]];
     (tile_buf, bbox)
 }
 
 // ---------------------------------------------------------------------------
-// Multi-LOD per-feature MJB encoder
+// Multi-LOD per-feature PBF3 encoder
 // ---------------------------------------------------------------------------
 
-/// Encode a feature's fragments across all zoom levels into a multi-LOD MJB tile.
+/// Encode a feature's fragments across all zoom levels into a multi-LOD PBF3 tile.
 ///
 /// Each zoom level becomes a separate Layer named "lod_0" (finest) through "lod_N" (coarsest).
-/// - At max_zoom: exact float32 vertex dedup (same as single-LOD encode_feature_mjb)
+/// - At max_zoom: exact float32 vertex dedup (same as single-LOD encode_feature_pbf3)
 /// - At coarser levels: grid-based vertex clustering (cell_size = world_extent / (base_cells * 2^zoom))
 ///
-/// Returns (mjb_bytes, finest_lod_bbox).
-fn encode_feature_mjb_multilod(
+/// Returns (pbf3_bytes, finest_lod_bbox).
+fn encode_feature_pbf3_multilod(
     all_frags: &[&Fragment],
     tags: Option<&Vec<(String, TagValue)>>,
     world_bounds: &(f64, f64, f64, f64, f64, f64),
@@ -1001,10 +1001,10 @@ fn encode_feature_mjb_multilod(
         // --- Encode TIN/PolyhedralSurface ---
         if !mesh_frags.is_empty() {
             let mut feat_buf = Vec::new();
-            encoder_mjb::write_varint_field(&mut feat_buf, encoder_mjb::FEAT_ID, feat_idx);
+            encoder_pbf3::write_varint_field(&mut feat_buf, encoder_pbf3::FEAT_ID, feat_idx);
             feat_idx += 1;
             let geom_type = mesh_frags[0].geom_type;
-            encoder_mjb::write_varint_field(&mut feat_buf, encoder_mjb::FEAT_TYPE, geom_type as u64);
+            encoder_pbf3::write_varint_field(&mut feat_buf, encoder_pbf3::FEAT_TYPE, geom_type as u64);
 
             // Tags (only on first feature)
             if let Some(tag_list) = tags {
@@ -1030,7 +1030,7 @@ fn encode_feature_mjb_multilod(
                     });
                     tag_indices_vec.push(vi);
                 }
-                encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_TAGS, &tag_indices_vec);
+                encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_TAGS, &tag_indices_vec);
             }
 
             // Build indexed mesh with exact f32 vertex dedup (all zoom levels)
@@ -1120,8 +1120,8 @@ fn encode_feature_mjb_multilod(
             if !positions.is_empty() && !indices.is_empty() {
                 let pos_bytes: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
                 let idx_bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
-                encoder_mjb::write_bytes_field(&mut feat_buf, encoder_mjb::FEAT_MESH_POSITIONS, &pos_bytes);
-                encoder_mjb::write_bytes_field(&mut feat_buf, encoder_mjb::FEAT_MESH_INDICES, &idx_bytes);
+                encoder_pbf3::write_bytes_field(&mut feat_buf, encoder_pbf3::FEAT_MESH_POSITIONS, &pos_bytes);
+                encoder_pbf3::write_bytes_field(&mut feat_buf, encoder_pbf3::FEAT_MESH_INDICES, &idx_bytes);
             }
 
             features_encoded.push(feat_buf);
@@ -1174,9 +1174,9 @@ fn encode_feature_mjb_multilod(
             }
 
             let mut feat_buf = Vec::new();
-            encoder_mjb::write_varint_field(&mut feat_buf, encoder_mjb::FEAT_ID, feat_idx);
+            encoder_pbf3::write_varint_field(&mut feat_buf, encoder_pbf3::FEAT_ID, feat_idx);
             feat_idx += 1;
-            encoder_mjb::write_varint_field(&mut feat_buf, encoder_mjb::FEAT_TYPE, frag.geom_type as u64);
+            encoder_pbf3::write_varint_field(&mut feat_buf, encoder_pbf3::FEAT_TYPE, frag.geom_type as u64);
 
             // Tags only on first non-mesh feature if no mesh features exist
             if features_encoded.is_empty() {
@@ -1203,36 +1203,36 @@ fn encode_feature_mjb_multilod(
                         });
                         tag_indices_vec.push(vi);
                     }
-                    encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_TAGS, &tag_indices_vec);
+                    encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_TAGS, &tag_indices_vec);
                 }
             }
 
             let gt = frag.geom_type;
             if gt == 1 {
-                let geom = encoder_mjb::encode_point_geometry(&new_xy);
-                encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY, &geom);
-                let z_enc = encoder_mjb::encode_z(&new_z);
-                encoder_mjb::encode_packed_sint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY_Z, &z_enc);
+                let geom = encoder_pbf3::encode_point_geometry(&new_xy);
+                encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY, &geom);
+                let z_enc = encoder_pbf3::encode_z(&new_z);
+                encoder_pbf3::encode_packed_sint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY_Z, &z_enc);
             } else if gt == 2 {
-                let geom = encoder_mjb::encode_line_geometry(&new_xy);
-                encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY, &geom);
-                let z_enc = encoder_mjb::encode_z(&new_z);
-                encoder_mjb::encode_packed_sint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY_Z, &z_enc);
+                let geom = encoder_pbf3::encode_line_geometry(&new_xy);
+                encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY, &geom);
+                let z_enc = encoder_pbf3::encode_z(&new_z);
+                encoder_pbf3::encode_packed_sint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY_Z, &z_enc);
             } else if gt == 3 {
                 let rls: Vec<usize> = if frag.ring_lengths.is_empty() {
                     vec![new_xy.len() / 2]
                 } else {
                     frag.ring_lengths.iter().map(|&r| r as usize).collect()
                 };
-                let geom = encoder_mjb::encode_polygon_geometry(&new_xy, &rls);
-                encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY, &geom);
-                let z_enc = encoder_mjb::encode_z(&new_z);
-                encoder_mjb::encode_packed_sint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY_Z, &z_enc);
+                let geom = encoder_pbf3::encode_polygon_geometry(&new_xy, &rls);
+                encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY, &geom);
+                let z_enc = encoder_pbf3::encode_z(&new_z);
+                encoder_pbf3::encode_packed_sint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY_Z, &z_enc);
             } else {
-                let geom = encoder_mjb::encode_line_geometry(&new_xy);
-                encoder_mjb::encode_packed_uint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY, &geom);
-                let z_enc = encoder_mjb::encode_z(&new_z);
-                encoder_mjb::encode_packed_sint32(&mut feat_buf, encoder_mjb::FEAT_GEOMETRY_Z, &z_enc);
+                let geom = encoder_pbf3::encode_line_geometry(&new_xy);
+                encoder_pbf3::encode_packed_uint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY, &geom);
+                let z_enc = encoder_pbf3::encode_z(&new_z);
+                encoder_pbf3::encode_packed_sint32(&mut feat_buf, encoder_pbf3::FEAT_GEOMETRY_Z, &z_enc);
             }
 
             features_encoded.push(feat_buf);
@@ -1240,19 +1240,19 @@ fn encode_feature_mjb_multilod(
 
         // --- Encode layer ---
         let mut layer_buf = Vec::new();
-        encoder_mjb::write_varint_field(&mut layer_buf, encoder_mjb::LAYER_VERSION, 3);
-        encoder_mjb::write_bytes_field(&mut layer_buf, encoder_mjb::LAYER_NAME, layer_name.as_bytes());
+        encoder_pbf3::write_varint_field(&mut layer_buf, encoder_pbf3::LAYER_VERSION, 3);
+        encoder_pbf3::write_bytes_field(&mut layer_buf, encoder_pbf3::LAYER_NAME, layer_name.as_bytes());
         for feat_buf in &features_encoded {
-            encoder_mjb::write_bytes_field(&mut layer_buf, encoder_mjb::LAYER_FEATURES, feat_buf);
+            encoder_pbf3::write_bytes_field(&mut layer_buf, encoder_pbf3::LAYER_FEATURES, feat_buf);
         }
         for key in &keys_list {
-            encoder_mjb::write_bytes_field(&mut layer_buf, encoder_mjb::LAYER_KEYS, key.as_bytes());
+            encoder_pbf3::write_bytes_field(&mut layer_buf, encoder_pbf3::LAYER_KEYS, key.as_bytes());
         }
         for val_buf in &values_encoded {
-            encoder_mjb::write_bytes_field(&mut layer_buf, encoder_mjb::LAYER_VALUES, val_buf);
+            encoder_pbf3::write_bytes_field(&mut layer_buf, encoder_pbf3::LAYER_VALUES, val_buf);
         }
-        encoder_mjb::write_varint_field(&mut layer_buf, encoder_mjb::LAYER_EXTENT, extent as u64);
-        encoder_mjb::write_varint_field(&mut layer_buf, encoder_mjb::LAYER_EXTENT_Z, extent_z as u64);
+        encoder_pbf3::write_varint_field(&mut layer_buf, encoder_pbf3::LAYER_EXTENT, extent as u64);
+        encoder_pbf3::write_varint_field(&mut layer_buf, encoder_pbf3::LAYER_EXTENT_Z, extent_z as u64);
 
         layer_bufs.push(layer_buf);
     }
@@ -1260,7 +1260,7 @@ fn encode_feature_mjb_multilod(
     // --- Assemble tile with all layers ---
     let mut tile_buf = Vec::new();
     for layer_buf in &layer_bufs {
-        encoder_mjb::write_bytes_field(&mut tile_buf, encoder_mjb::TILE_LAYERS, layer_buf);
+        encoder_pbf3::write_bytes_field(&mut tile_buf, encoder_pbf3::TILE_LAYERS, layer_buf);
     }
 
     let bbox = [bb_min[0], bb_min[1], bb_min[2], bb_max[0], bb_max[1], bb_max[2]];
@@ -1716,8 +1716,8 @@ fn extract_clip_feature(feat: &Bound<'_, PyDict>) -> PyResult<ClipFeature> {
 ///
 /// Processes features one at a time via ``add_feature()``, clipping through
 /// an octree and writing binary fragments to a temp file. Call
-/// ``generate_mjb()`` to read fragments back, transform to tile-local
-/// integers, encode to protobuf, and write ``.mjb`` tiles in parallel.
+/// ``generate_pbf3()`` to read fragments back, transform to tile-local
+/// integers, encode to protobuf, and write ``.pbf3`` tiles in parallel.
 ///
 /// Memory: O(1 feature) during ingestion, O(fragments) during encoding.
 #[pyclass]
@@ -1813,7 +1813,7 @@ impl StreamingTileGenerator {
         // Write fragments to disk
         let writer = self.fragment_writer.as_mut()
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-                "Cannot add features after generate_mjb()"))?;
+                "Cannot add features after generate_pbf3()"))?;
 
         for ((tz, tx, ty, td), cf) in fragments {
             let frag = Fragment {
@@ -1834,17 +1834,17 @@ impl StreamingTileGenerator {
         Ok(fid)
     }
 
-    /// Generate .mjb tiles from accumulated fragments.
+    /// Generate .pbf3 tiles from accumulated fragments.
     ///
     /// Reads all fragments from the temp file, groups by tile key,
     /// transforms geometry to tile-local integers, encodes to protobuf,
-    /// and writes tiles to ``output_dir/{z}/{x}/{y}/{d}.mjb``.
+    /// and writes tiles to ``output_dir/{z}/{x}/{y}/{d}.pbf3``.
     ///
     /// Uses rayon for parallel tile encoding (GIL released).
     ///
     /// Returns the number of tiles written.
     #[pyo3(signature = (output_dir, layer_name="default"))]
-    fn generate_mjb(&mut self, py: Python<'_>, output_dir: &str, layer_name: &str) -> PyResult<u32> {
+    fn generate_pbf3(&mut self, py: Python<'_>, output_dir: &str, layer_name: &str) -> PyResult<u32> {
         // Flush and close the fragment writer
         if let Some(mut writer) = self.fragment_writer.take() {
             writer.flush()
@@ -1878,7 +1878,7 @@ impl StreamingTileGenerator {
                         .join(tz.to_string())
                         .join(tx.to_string())
                         .join(ty.to_string())
-                        .join(format!("{}.mjb", td));
+                        .join(format!("{}.pbf3", td));
                     if let Some(parent) = tile_path.parent() {
                         std::fs::create_dir_all(parent).ok();
                     }
@@ -1892,7 +1892,7 @@ impl StreamingTileGenerator {
         Ok(count)
     }
 
-    /// Number of tiles written by the last generate_mjb() call.
+    /// Number of tiles written by the last generate_pbf3() call.
     fn tile_count(&self) -> u32 {
         self.tiles_written
     }
@@ -2498,7 +2498,7 @@ impl StreamingTileGenerator {
 
     /// Generate Neuroglancer precomputed legacy meshes from accumulated fragments.
     ///
-    /// Unlike MJB/3D Tiles which are tile-centric (one tile → many features),
+    /// Unlike PBF3/3D Tiles which are tile-centric (one tile → many features),
     /// Neuroglancer meshes are segment-centric (one mesh per feature ID).
     ///
     /// For each feature:
@@ -2756,12 +2756,12 @@ impl StreamingTileGenerator {
         Ok(count)
     }
 
-    /// Generate per-feature .mjb files from accumulated fragments.
+    /// Generate per-feature .pbf3 files from accumulated fragments.
     ///
-    /// Unlike tile-centric MJB (one tile → many features), this produces
-    /// feature-centric MJB (one .mjb file per feature) for O(1) segment retrieval.
+    /// Unlike tile-centric PBF3 (one tile → many features), this produces
+    /// feature-centric PBF3 (one .pbf3 file per feature) for O(1) segment retrieval.
     ///
-    /// When `multilod=True` (default), each .mjb contains one Layer per zoom level
+    /// When `multilod=True` (default), each .pbf3 contains one Layer per zoom level
     /// with genuine vertex reduction at coarser levels via grid-based clustering.
     /// When `multilod=False`, only max_zoom fragments are used (single-LOD, backward compat).
     ///
@@ -2769,7 +2769,7 @@ impl StreamingTileGenerator {
     ///
     /// Returns the number of feature files written.
     #[pyo3(signature = (output_dir, world_bounds, layer_name="default", multilod=true))]
-    fn generate_feature_mjb(
+    fn generate_feature_pbf3(
         &mut self,
         py: Python<'_>,
         output_dir: &str,
@@ -2815,11 +2815,11 @@ impl StreamingTileGenerator {
                         }
 
                         let tags = tags_ref.get(feature_id);
-                        let (mjb_bytes, bbox) = encode_feature_mjb_multilod(
+                        let (pbf3_bytes, bbox) = encode_feature_pbf3_multilod(
                             &all_refs, tags, &wb, max_zoom, extent, extent_z, base_cells,
                         );
 
-                        if mjb_bytes.is_empty() {
+                        if pbf3_bytes.is_empty() {
                             return None;
                         }
 
@@ -2827,10 +2827,10 @@ impl StreamingTileGenerator {
                         let mut zoom_set: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
                         for f in frags { zoom_set.insert(f.tile_z); }
                         let lod_count = zoom_set.len() as u32;
-                        let byte_count = mjb_bytes.len();
+                        let byte_count = pbf3_bytes.len();
 
-                        let feat_path = out_dir.join(format!("{}.mjb", feature_id));
-                        std::fs::write(&feat_path, mjb_bytes).ok();
+                        let feat_path = out_dir.join(format!("{}.pbf3", feature_id));
+                        std::fs::write(&feat_path, pbf3_bytes).ok();
 
                         Some((*feature_id, bbox, byte_count, lod_count))
                     } else {
@@ -2844,17 +2844,17 @@ impl StreamingTileGenerator {
                         }
 
                         let tags = tags_ref.get(feature_id);
-                        let (mjb_bytes, bbox) = encode_feature_mjb(
+                        let (pbf3_bytes, bbox) = encode_feature_pbf3(
                             &max_zoom_frags, tags, &wb, &layer, extent, extent_z,
                         );
 
-                        if mjb_bytes.is_empty() {
+                        if pbf3_bytes.is_empty() {
                             return None;
                         }
 
-                        let byte_count = mjb_bytes.len();
-                        let feat_path = out_dir.join(format!("{}.mjb", feature_id));
-                        std::fs::write(&feat_path, mjb_bytes).ok();
+                        let byte_count = pbf3_bytes.len();
+                        let feat_path = out_dir.join(format!("{}.pbf3", feature_id));
+                        std::fs::write(&feat_path, pbf3_bytes).ok();
 
                         Some((*feature_id, bbox, byte_count, 1u32))
                     }
@@ -2891,7 +2891,7 @@ impl StreamingTileGenerator {
 
             let version = if multilod { 2 } else { 1 };
             let mut manifest_map = serde_json::Map::new();
-            manifest_map.insert("format".to_string(), serde_json::json!("microjson_feature_mjb"));
+            manifest_map.insert("format".to_string(), serde_json::json!("mudm_feature_pbf3"));
             manifest_map.insert("version".to_string(), serde_json::json!(version));
             manifest_map.insert("feature_count".to_string(), serde_json::json!(results.len()));
             manifest_map.insert("world_bounds".to_string(), serde_json::json!([wb_xmin, wb_ymin, wb_zmin, wb_xmax, wb_ymax, wb_zmax]));
@@ -3283,7 +3283,7 @@ impl StreamingTileGenerator {
 
         let json = serde_json::json!({
             "tilejson": "3.0.0",
-            "tiles": ["{z}/{x}/{y}/{d}.mjb"],
+            "tiles": ["{z}/{x}/{y}/{d}.pbf3"],
             "name": layer_name,
             "minzoom": self.min_zoom,
             "maxzoom": self.max_zoom,

@@ -28,7 +28,7 @@ pytestmark = pytest.mark.skipif(
 
 
 # ---------------------------------------------------------------------------
-# Helpers (same patterns as test_tiling3d_feature_mjb.py)
+# Helpers (same patterns as test_tiling3d_feature_pbf3.py)
 # ---------------------------------------------------------------------------
 
 def _make_tin_feature(xy, z, ring_lengths, tags=None):

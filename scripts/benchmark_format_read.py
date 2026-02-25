@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Benchmark mesh read + recreate across all output formats.
 
-Reads all meshes at a given zoom level from MJB, Parquet, Arrow IPC, and
+Reads all meshes at a given zoom level from PBF3, Parquet, Arrow IPC, and
 3D Tiles (GLB), reconstructs numpy arrays, and reports median timings.
 
 Usage:
@@ -39,19 +39,19 @@ def _median(values: list[float]) -> float:
     return s[len(s) // 2]
 
 
-def bench_mjb(mjb_dir: Path, *, n_warmup: int, n_iters: int):
-    """Benchmark MJB protobuf decode (bytes pre-loaded to RAM)."""
+def bench_pbf3(pbf3_dir: Path, *, n_warmup: int, n_iters: int):
+    """Benchmark PBF3 protobuf decode (bytes pre-loaded to RAM)."""
     from microjson.tiling3d.reader3d import decode_tile
 
-    mjb_files = sorted(mjb_dir.rglob("*.mjb"))
-    if not mjb_files:
+    pbf3_files = sorted(pbf3_dir.rglob("*.pbf3"))
+    if not pbf3_files:
         return None
-    mjb_bytes_list = [f.read_bytes() for f in mjb_files]
-    disk_size = sum(len(b) for b in mjb_bytes_list)
+    pbf3_bytes_list = [f.read_bytes() for f in pbf3_files]
+    disk_size = sum(len(b) for b in pbf3_bytes_list)
 
     def run():
         meshes = []
-        for data in mjb_bytes_list:
+        for data in pbf3_bytes_list:
             layers = decode_tile(data)
             for layer in layers:
                 for feat in layer["features"]:
@@ -81,8 +81,8 @@ def bench_mjb(mjb_dir: Path, *, n_warmup: int, n_iters: int):
     gc.collect()
 
     return {
-        "name": "MJB (protobuf)",
-        "files": len(mjb_files),
+        "name": "PBF3 (protobuf)",
+        "files": len(pbf3_files),
         "disk_bytes": disk_size,
         "meshes": n_meshes,
         "vertices": total_verts,
@@ -297,7 +297,7 @@ def bench_3dtiles(tiles3d_dir: Path, *, n_warmup: int, n_iters: int):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark mesh read+recreate across MJB, Parquet, Arrow, 3D Tiles",
+        description="Benchmark mesh read+recreate across PBF3, Parquet, Arrow, 3D Tiles",
     )
     parser.add_argument(
         "--brain", type=str, default="2016-10-31",
@@ -329,10 +329,10 @@ def main():
 
     results = []
 
-    # MJB
-    mjb_dir = base / "mjb" / str(zoom)
-    print(f"--- MJB (protobuf) ---")
-    r = bench_mjb(mjb_dir, n_warmup=args.warmup, n_iters=args.iters)
+    # PBF3
+    pbf3_dir = base / "pbf3" / str(zoom)
+    print(f"--- PBF3 (protobuf) ---")
+    r = bench_pbf3(pbf3_dir, n_warmup=args.warmup, n_iters=args.iters)
     if r:
         results.append(r)
         print(f"  {r['files']} tiles, {r['disk_bytes']/1e6:.1f} MB on disk")
@@ -408,7 +408,7 @@ def main():
             f"{ratio:>7.1f}x"
         )
     print()
-    print("Note: MJB/3D Tiles bytes pre-loaded to RAM (I/O excluded).")
+    print("Note: PBF3/3D Tiles bytes pre-loaded to RAM (I/O excluded).")
     print("      Parquet/Arrow read from disk each iteration (I/O included).")
 
 

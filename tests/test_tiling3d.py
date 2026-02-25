@@ -240,7 +240,7 @@ class TestTileModel3D:
     def test_basic_validation(self):
         m = TileModel3D(
             tilejson="3.0.0",
-            tiles=["tiles/{z}/{x}/{y}/{d}.mjb"],
+            tiles=["tiles/{z}/{x}/{y}/{d}.pbf3"],
             vector_layers=[{"id": "test", "fields": {}}],
             bounds3d=[0.0, 0.0, 0.0, 100.0, 100.0, 50.0],
         )
@@ -733,8 +733,8 @@ class TestGenerator3D:
         assert count > 0
 
         # Verify files exist
-        mjb_files = list(tmp_path.rglob("*.mjb"))
-        assert len(mjb_files) == count
+        pbf3_files = list(tmp_path.rglob("*.pbf3"))
+        assert len(pbf3_files) == count
 
     def test_line_pipeline(self, tmp_path):
         """Generate tiles from 3D lines."""
@@ -791,7 +791,7 @@ class TestGenerator3D:
         gen.add_features(coll)
         gen.generate(tmp_path)
 
-        tile_file = list(tmp_path.rglob("*.mjb"))[0]
+        tile_file = list(tmp_path.rglob("*.pbf3"))[0]
         layers = decode_tile(tile_file.read_bytes())
         assert layers[0]["extent"] == 8192
         assert layers[0]["extent_z"] == 2048
@@ -810,7 +810,7 @@ class TestGenerator3D:
         gen.add_features(coll, layer_name="neurons")
         gen.generate(tmp_path)
 
-        tile_file = list(tmp_path.rglob("*.mjb"))[0]
+        tile_file = list(tmp_path.rglob("*.pbf3"))[0]
         layers = decode_tile(tile_file.read_bytes())
         assert layers[0]["name"] == "neurons"
 
@@ -1193,7 +1193,7 @@ class TestIndexedMesh:
         gen.add_features(coll)
         gen.generate(tmp_path)
 
-        tile_file = list(tmp_path.rglob("*.mjb"))[0]
+        tile_file = list(tmp_path.rglob("*.pbf3"))[0]
         layers = decode_tile(tile_file.read_bytes())
 
         # Find a TIN feature

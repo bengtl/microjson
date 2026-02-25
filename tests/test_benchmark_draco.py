@@ -1,7 +1,7 @@
 """Smoke tests for Draco compression benchmark utilities.
 
 Verifies encode/decode round-trip, L2 error computation, and
-MJB size helpers work correctly.
+PBF3 size helpers work correctly.
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ from benchmark_draco import (
     draco_decode,
     draco_encode,
     generate_synthetic_mesh,
-    hybrid_mjb_draco_size,
-    mjb_gzipped_size,
-    mjb_raw_size,
+    hybrid_pbf3_draco_size,
+    pbf3_gzipped_size,
+    pbf3_raw_size,
 )
 
 
@@ -108,7 +108,7 @@ class TestDracoRoundTrip:
     def test_compression_effective(self, large_mesh):
         """Draco output should be smaller than raw float32 data."""
         verts, faces = large_mesh
-        raw_size = mjb_raw_size(verts, faces)
+        raw_size = pbf3_raw_size(verts, faces)
         encoded = draco_encode(verts, faces, quantization_bits=14)
         assert len(encoded) < raw_size
 
@@ -152,23 +152,23 @@ class TestL2Error:
             assert key in l2
 
 
-class TestMjbSize:
-    """Verify MJB size calculation helpers."""
+class TestPbf3Size:
+    """Verify PBF3 size calculation helpers."""
 
     def test_raw_size(self, simple_mesh):
         verts, faces = simple_mesh
         expected = 4 * 3 * 4 + 2 * 3 * 4  # 4 verts * 3 * 4B + 2 faces * 3 * 4B
-        assert mjb_raw_size(verts, faces) == expected
+        assert pbf3_raw_size(verts, faces) == expected
 
     def test_gzipped_smaller_than_raw(self, large_mesh):
         verts, faces = large_mesh
-        raw = mjb_raw_size(verts, faces)
-        gz = mjb_gzipped_size(verts, faces)
+        raw = pbf3_raw_size(verts, faces)
+        gz = pbf3_gzipped_size(verts, faces)
         assert gz < raw
 
     def test_hybrid_produces_positive_size(self, simple_mesh):
         verts, faces = simple_mesh
-        gz, draco_raw = hybrid_mjb_draco_size(verts, faces, 14)
+        gz, draco_raw = hybrid_pbf3_draco_size(verts, faces, 14)
         assert gz > 0
         assert draco_raw > 0
 

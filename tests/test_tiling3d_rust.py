@@ -594,12 +594,12 @@ class TestStreamingTileGenerator:
         assert gen.feature_count_val() == 1
 
         out = str(tmp_path / "tiles")
-        count = gen.generate_mjb(out, "test")
+        count = gen.generate_pbf3(out, "test")
         assert count > 0
         assert gen.tile_count() == count
 
         # Decode z0 tile
-        z0 = decode_tile((tmp_path / "tiles" / "0" / "0" / "0" / "0.mjb").read_bytes())
+        z0 = decode_tile((tmp_path / "tiles" / "0" / "0" / "0" / "0.pbf3").read_bytes())
         assert len(z0) == 1  # one layer
         layer = z0[0]
         assert layer["name"] == "test"
@@ -647,7 +647,7 @@ class TestStreamingTileGenerator:
 
         # Batch
         batch_dir = tmp_path / "batch"
-        batch_gen = TileGenerator3D(config=config, output_format="mjb", workers=1)
+        batch_gen = TileGenerator3D(config=config, output_format="pbf3", workers=1)
         batch_gen.add_features(collection)
         batch_count = batch_gen.generate(batch_dir)
 
@@ -662,7 +662,7 @@ class TestStreamingTileGenerator:
         for feat in collection.features:
             for ifeat in convert_feature_3d(feat, proj):
                 stream_gen.add_feature(ifeat)
-        stream_count = stream_gen.generate_mjb(str(stream_dir))
+        stream_count = stream_gen.generate_pbf3(str(stream_dir))
 
         # Compare tile sets
         def collect_tiles(d):
@@ -693,10 +693,10 @@ class TestStreamingTileGenerator:
             "maxX": 0.9, "maxY": 0.5, "maxZ": 0.5,
         }
         gen.add_feature(feat)
-        count = gen.generate_mjb(str(tmp_path / "tiles"), "roads")
+        count = gen.generate_pbf3(str(tmp_path / "tiles"), "roads")
         assert count > 0
 
-        z0 = decode_tile((tmp_path / "tiles" / "0" / "0" / "0" / "0.mjb").read_bytes())
+        z0 = decode_tile((tmp_path / "tiles" / "0" / "0" / "0" / "0.pbf3").read_bytes())
         layer = z0[0]
         assert layer["name"] == "roads"
         assert layer["features"][0]["type"] == 2
@@ -718,7 +718,7 @@ class TestStreamingTileGenerator:
             "maxX": 0.5, "maxY": 0.5, "maxZ": 0.5,
         }
         gen.add_feature(feat)
-        count = gen.generate_mjb(str(tmp_path / "tiles"))
+        count = gen.generate_pbf3(str(tmp_path / "tiles"))
         assert count == 1
 
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
@@ -746,7 +746,7 @@ class TestStreamingTileGenerator:
         from microjson._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=2)
-        count = gen.generate_mjb(str(tmp_path / "tiles"))
+        count = gen.generate_pbf3(str(tmp_path / "tiles"))
         assert count == 0
 
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
@@ -770,10 +770,10 @@ class TestStreamingTileGenerator:
             assert fid == i
 
         assert gen.feature_count_val() == 5
-        count = gen.generate_mjb(str(tmp_path / "tiles"))
+        count = gen.generate_pbf3(str(tmp_path / "tiles"))
         assert count == 1  # single tile at zoom 0
 
-        z0 = decode_tile((tmp_path / "tiles" / "0" / "0" / "0" / "0.mjb").read_bytes())
+        z0 = decode_tile((tmp_path / "tiles" / "0" / "0" / "0" / "0.pbf3").read_bytes())
         assert len(z0[0]["features"]) == 5
 
 

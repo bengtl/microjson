@@ -1,4 +1,4 @@
-/// Hand-rolled protobuf encoder for MJB (MicroJSON Binary) 3D vector tiles.
+/// Hand-rolled protobuf encoder for PBF3 (3D protobuf vector tiles).
 ///
 /// Replaces encoder3d_cy.pyx. Encodes tiles directly to protobuf wire
 /// format without any protobuf library dependency. Implements:

@@ -5,7 +5,7 @@ Runs decode/memory/DataLoader benchmarks across all 5 benchmark datasets
 and produces a comparison table (console, CSV, and LaTeX).
 
 Assumes each dataset has already been downloaded, converted, and tiled.
-Looks for tiles in: data/{dataset}/tiles/{mjb,3dtiles}/
+Looks for tiles in: data/{dataset}/tiles/{pbf3,3dtiles}/
 
 Usage::
 
@@ -145,13 +145,13 @@ def benchmark_dataset(
 ) -> dict[str, Any] | None:
     """Run benchmarks for a single dataset. Returns results dict or None."""
     tiles_dir = info["tiles_dir"]
-    mjb_dir = tiles_dir / "mjb"
+    pbf3_dir = tiles_dir / "pbf3"
     tiles3d_dir = tiles_dir / "3dtiles"
 
-    has_mjb = mjb_dir.exists() and list(mjb_dir.rglob("*.mjb"))
+    has_pbf3 = pbf3_dir.exists() and list(pbf3_dir.rglob("*.pbf3"))
     has_3dt = tiles3d_dir.exists() and list(tiles3d_dir.rglob("*.glb"))
 
-    if not has_mjb and not has_3dt:
+    if not has_pbf3 and not has_3dt:
         print(f"  SKIP: No tiles found at {tiles_dir}")
         return None
 
@@ -163,11 +163,11 @@ def benchmark_dataset(
     }
 
     # --- Tile stats ---
-    if has_mjb:
-        mjb_files = _collect_files(mjb_dir, ".mjb")
-        results["mjb_tile_count"] = len(mjb_files)
-        results["mjb_size_raw"] = _dir_size(mjb_dir)
-        results["mjb_size_gzip"] = _dir_size_gzipped(mjb_dir)
+    if has_pbf3:
+        pbf3_files = _collect_files(pbf3_dir, ".pbf3")
+        results["pbf3_tile_count"] = len(pbf3_files)
+        results["pbf3_size_raw"] = _dir_size(pbf3_dir)
+        results["pbf3_size_gzip"] = _dir_size_gzipped(pbf3_dir)
 
     if has_3dt:
         glb_files = _collect_files(tiles3d_dir, ".glb")
@@ -193,10 +193,10 @@ def benchmark_dataset(
         except Exception:
             pass
 
-    # --- mjb decode benchmark ---
-    if has_mjb:
-        mjb_files = _collect_files(mjb_dir, ".mjb")
-        sample = mjb_files
+    # --- pbf3 decode benchmark ---
+    if has_pbf3:
+        pbf3_files = _collect_files(pbf3_dir, ".pbf3")
+        sample = pbf3_files
         if len(sample) > max_sample:
             sample = random.sample(sample, max_sample)
 
@@ -228,8 +228,8 @@ def benchmark_dataset(
                 decode_tile(data)
                 times.append(time.perf_counter() - t0)
 
-        results["mjb_decode_median_us"] = statistics.median(times) * 1_000_000
-        results["mjb_decode_p95_us"] = sorted(times)[int(len(times) * 0.95)] * 1_000_000
+        results["pbf3_decode_median_us"] = statistics.median(times) * 1_000_000
+        results["pbf3_decode_p95_us"] = sorted(times)[int(len(times) * 0.95)] * 1_000_000
 
     # --- 3D Tiles decode benchmark ---
     if has_3dt:
@@ -261,14 +261,14 @@ def benchmark_dataset(
             results["3dt_decode_p95_us"] = sorted(times)[int(len(times) * 0.95)] * 1_000_000
 
     # --- Memory benchmark ---
-    if has_mjb:
-        mjb_bytes = [f.read_bytes() for f in _collect_files(mjb_dir, ".mjb")]
+    if has_pbf3:
+        pbf3_bytes = [f.read_bytes() for f in _collect_files(pbf3_dir, ".pbf3")]
         tracemalloc.start()
-        for data in mjb_bytes:
+        for data in pbf3_bytes:
             decode_tile(data)
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        results["mjb_peak_mb"] = peak / (1024 * 1024)
+        results["pbf3_peak_mb"] = peak / (1024 * 1024)
 
     if has_3dt and pygltflib:
         glb_bytes = [f.read_bytes() for f in _collect_files(tiles3d_dir, ".glb")]
@@ -279,10 +279,10 @@ def benchmark_dataset(
         tracemalloc.stop()
         results["3dt_peak_mb"] = peak / (1024 * 1024)
 
-    # --- Metadata extraction benchmark (mjb) ---
-    if has_mjb:
-        mjb_files = _collect_files(mjb_dir, ".mjb")
-        sample = mjb_files[:max_sample]
+    # --- Metadata extraction benchmark (pbf3) ---
+    if has_pbf3:
+        pbf3_files = _collect_files(pbf3_dir, ".pbf3")
+        sample = pbf3_files[:max_sample]
         tile_bytes = [f.read_bytes() for f in sample]
 
         meta_times: list[float] = []
@@ -295,17 +295,17 @@ def benchmark_dataset(
             meta_times.append(time.perf_counter() - t0)
 
         if meta_times:
-            results["mjb_metadata_median_us"] = statistics.median(meta_times) * 1_000_000
+            results["pbf3_metadata_median_us"] = statistics.median(meta_times) * 1_000_000
 
     # --- DataLoader benchmark (optional) ---
-    if do_dataloader and has_mjb:
+    if do_dataloader and has_pbf3:
         try:
             import torch
             from torch.utils.data import DataLoader, Dataset
 
             class Mvt3Dataset(Dataset):
                 def __init__(self, tile_dir: Path):
-                    self._data = [f.read_bytes() for f in _collect_files(tile_dir, ".mjb")]
+                    self._data = [f.read_bytes() for f in _collect_files(tile_dir, ".pbf3")]
                 def __len__(self):
                     return len(self._data)
                 def __getitem__(self, idx):
@@ -318,7 +318,7 @@ def benchmark_dataset(
                                 parts.append(torch.frombuffer(bytearray(mesh), dtype=torch.float32))
                     return torch.cat(parts) if parts else torch.zeros(1)
 
-            ds = Mvt3Dataset(mjb_dir)
+            ds = Mvt3Dataset(pbf3_dir)
             if len(ds) > 0:
                 loader = DataLoader(ds, batch_size=4, num_workers=0, collate_fn=lambda x: x)
                 total = 0
@@ -327,7 +327,7 @@ def benchmark_dataset(
                     for batch in loader:
                         total += len(batch)
                 elapsed = time.perf_counter() - t0
-                results["mjb_dataloader_tps"] = total / elapsed if elapsed > 0 else 0
+                results["pbf3_dataloader_tps"] = total / elapsed if elapsed > 0 else 0
         except ImportError:
             pass
 
@@ -367,46 +367,46 @@ def print_comparison_table(all_results: list[dict]) -> None:
     _row("Domain", "domain")
     _row("Geometry type", "geometry")
     _row("Features", "feature_count", lambda v: f"{v:,}")
-    _row("mjb tiles", "mjb_tile_count", lambda v: f"{v:,}")
-    _row("mjb raw size", "mjb_size_raw", _fmt_bytes)
-    _row("mjb gzip size", "mjb_size_gzip", _fmt_bytes)
+    _row("pbf3 tiles", "pbf3_tile_count", lambda v: f"{v:,}")
+    _row("pbf3 raw size", "pbf3_size_raw", _fmt_bytes)
+    _row("pbf3 gzip size", "pbf3_size_gzip", _fmt_bytes)
     _row("3DT tiles", "3dt_tile_count", lambda v: f"{v:,}")
     _row("3DT raw size", "3dt_size_raw", _fmt_bytes)
 
     print()
-    _row("mjb decode median", "mjb_decode_median_us", lambda v: f"{v:.0f}us")
-    _row("mjb decode P95", "mjb_decode_p95_us", lambda v: f"{v:.0f}us")
+    _row("pbf3 decode median", "pbf3_decode_median_us", lambda v: f"{v:.0f}us")
+    _row("pbf3 decode P95", "pbf3_decode_p95_us", lambda v: f"{v:.0f}us")
     _row("3DT decode median", "3dt_decode_median_us", lambda v: f"{v:.0f}us")
     _row("3DT decode P95", "3dt_decode_p95_us", lambda v: f"{v:.0f}us")
 
     # Speedup
-    line = f"  {'Decode speedup (mjb/3DT)':<{metric_w}}"
+    line = f"  {'Decode speedup (pbf3/3DT)':<{metric_w}}"
     for r in all_results:
-        mjb = r.get("mjb_decode_median_us")
+        pbf3 = r.get("pbf3_decode_median_us")
         tdt = r.get("3dt_decode_median_us")
-        if mjb and tdt and tdt > 0:
-            line += f" {tdt / mjb:>{col_w}.1f}x"
+        if pbf3 and tdt and tdt > 0:
+            line += f" {tdt / pbf3:>{col_w}.1f}x"
         else:
             line += f" {'—':>{col_w}}"
     print(line)
 
     print()
-    _row("mjb peak memory", "mjb_peak_mb", lambda v: f"{v:.1f} MB")
+    _row("pbf3 peak memory", "pbf3_peak_mb", lambda v: f"{v:.1f} MB")
     _row("3DT peak memory", "3dt_peak_mb", lambda v: f"{v:.1f} MB")
 
     # Memory ratio
-    line = f"  {'Memory ratio (3DT/mjb)':<{metric_w}}"
+    line = f"  {'Memory ratio (3DT/pbf3)':<{metric_w}}"
     for r in all_results:
-        mjb = r.get("mjb_peak_mb")
+        pbf3 = r.get("pbf3_peak_mb")
         tdt = r.get("3dt_peak_mb")
-        if mjb and tdt and mjb > 0:
-            line += f" {tdt / mjb:>{col_w}.1f}x"
+        if pbf3 and tdt and pbf3 > 0:
+            line += f" {tdt / pbf3:>{col_w}.1f}x"
         else:
             line += f" {'—':>{col_w}}"
     print(line)
 
-    _row("mjb metadata extract", "mjb_metadata_median_us", lambda v: f"{v:.0f}us")
-    _row("mjb DataLoader t/s", "mjb_dataloader_tps", lambda v: f"{v:.1f}")
+    _row("pbf3 metadata extract", "pbf3_metadata_median_us", lambda v: f"{v:.0f}us")
+    _row("pbf3 DataLoader t/s", "pbf3_dataloader_tps", lambda v: f"{v:.1f}")
 
     print()
 
@@ -469,46 +469,46 @@ def export_latex_table(path: Path, all_results: list[dict]) -> None:
     _latex_row("Domain", "domain")
     _latex_row("Geometry", "geometry")
     _latex_row("Features", "feature_count", lambda v: f"{v:,}")
-    _latex_row("mjb tiles", "mjb_tile_count", lambda v: f"{v:,}")
-    _latex_row("mjb size (raw)", "mjb_size_raw", _fmt_bytes)
-    _latex_row("mjb size (gzip)", "mjb_size_gzip", _fmt_bytes)
+    _latex_row("pbf3 tiles", "pbf3_tile_count", lambda v: f"{v:,}")
+    _latex_row("pbf3 size (raw)", "pbf3_size_raw", _fmt_bytes)
+    _latex_row("pbf3 size (gzip)", "pbf3_size_gzip", _fmt_bytes)
     _latex_row("3DT tiles", "3dt_tile_count", lambda v: f"{v:,}")
     _latex_row("3DT size (raw)", "3dt_size_raw", _fmt_bytes)
     lines.append(r"\hline")
 
-    _latex_row(r"mjb decode ($\mu$s)", "mjb_decode_median_us", lambda v: f"{v:.0f}")
+    _latex_row(r"pbf3 decode ($\mu$s)", "pbf3_decode_median_us", lambda v: f"{v:.0f}")
     _latex_row(r"3DT decode ($\mu$s)", "3dt_decode_median_us", lambda v: f"{v:.0f}")
 
     # Speedup row
     row = "Decode speedup"
     for r in all_results:
-        mjb = r.get("mjb_decode_median_us")
+        pbf3 = r.get("pbf3_decode_median_us")
         tdt = r.get("3dt_decode_median_us")
-        if mjb and tdt and tdt > 0:
-            row += f" & {tdt / mjb:.0f}$\\times$"
+        if pbf3 and tdt and tdt > 0:
+            row += f" & {tdt / pbf3:.0f}$\\times$"
         else:
             row += " & ---"
     row += r" \\"
     lines.append(row)
     lines.append(r"\hline")
 
-    _latex_row("mjb memory (MB)", "mjb_peak_mb", lambda v: f"{v:.1f}")
+    _latex_row("pbf3 memory (MB)", "pbf3_peak_mb", lambda v: f"{v:.1f}")
     _latex_row("3DT memory (MB)", "3dt_peak_mb", lambda v: f"{v:.1f}")
 
     # Memory ratio
     row = "Memory ratio"
     for r in all_results:
-        mjb = r.get("mjb_peak_mb")
+        pbf3 = r.get("pbf3_peak_mb")
         tdt = r.get("3dt_peak_mb")
-        if mjb and tdt and mjb > 0:
-            row += f" & {tdt / mjb:.1f}$\\times$"
+        if pbf3 and tdt and pbf3 > 0:
+            row += f" & {tdt / pbf3:.1f}$\\times$"
         else:
             row += " & ---"
     row += r" \\"
     lines.append(row)
 
-    _latex_row(r"Metadata ($\mu$s)", "mjb_metadata_median_us", lambda v: f"{v:.0f}")
-    _latex_row("DataLoader (t/s)", "mjb_dataloader_tps", lambda v: f"{v:.1f}")
+    _latex_row(r"Metadata ($\mu$s)", "pbf3_metadata_median_us", lambda v: f"{v:.0f}")
+    _latex_row("DataLoader (t/s)", "pbf3_dataloader_tps", lambda v: f"{v:.1f}")
 
     lines.extend([
         r"\hline",
@@ -560,7 +560,7 @@ def main() -> None:
 
         if result:
             all_results.append(result)
-            print(f"  mjb decode: {result.get('mjb_decode_median_us', 0):.0f}us median")
+            print(f"  pbf3 decode: {result.get('pbf3_decode_median_us', 0):.0f}us median")
             if result.get("3dt_decode_median_us"):
                 print(f"  3DT decode:  {result['3dt_decode_median_us']:.0f}us median")
         print()

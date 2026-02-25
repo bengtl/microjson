@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark .mjb vs OGC 3D Tiles — file size, decode latency, metadata query.
+"""Benchmark .pbf3 vs OGC 3D Tiles — file size, decode latency, metadata query.
 
 Usage::
 
@@ -94,21 +94,21 @@ def _fmt_us(seconds: float) -> str:
 # ---------------------------------------------------------------------------
 
 
-def bench_file_size(mjb_dir: Path, tiles3d_dir: Path) -> dict[str, Any]:
+def bench_file_size(pbf3_dir: Path, tiles3d_dir: Path) -> dict[str, Any]:
     """Measure raw and gzipped file sizes for both formats."""
-    mjb_raw = _dir_size(mjb_dir)
+    pbf3_raw = _dir_size(pbf3_dir)
     tiles3d_raw = _dir_size(tiles3d_dir)
 
-    mjb_gz = _dir_size_gzipped(mjb_dir)
+    pbf3_gz = _dir_size_gzipped(pbf3_dir)
     tiles3d_gz = _dir_size_gzipped(tiles3d_dir)
 
-    mjb_count = len(_collect_tile_files(mjb_dir, ".mjb"))
+    pbf3_count = len(_collect_tile_files(pbf3_dir, ".pbf3"))
     tiles3d_count = len(_collect_tile_files(tiles3d_dir, ".glb"))
 
     return {
-        "mjb_raw": mjb_raw,
-        "mjb_gzip": mjb_gz,
-        "mjb_tiles": mjb_count,
+        "pbf3_raw": pbf3_raw,
+        "pbf3_gzip": pbf3_gz,
+        "pbf3_tiles": pbf3_count,
         "3dtiles_raw": tiles3d_raw,
         "3dtiles_gzip": tiles3d_gz,
         "3dtiles_tiles": tiles3d_count,
@@ -121,7 +121,7 @@ def bench_file_size(mjb_dir: Path, tiles3d_dir: Path) -> dict[str, Any]:
 
 
 def bench_decode_latency(
-    mjb_dir: Path,
+    pbf3_dir: Path,
     tiles3d_dir: Path,
     n_iterations: int = 50,
     max_sample: int = 30,
@@ -134,28 +134,28 @@ def bench_decode_latency(
 
     import pygltflib
 
-    mjb_files = _collect_tile_files(mjb_dir, ".mjb")
+    pbf3_files = _collect_tile_files(pbf3_dir, ".pbf3")
     glb_files = _collect_tile_files(tiles3d_dir, ".glb")
 
-    if not mjb_files or not glb_files:
-        return {"mjb_decode_ms": 0, "3dtiles_decode_ms": 0}
+    if not pbf3_files or not glb_files:
+        return {"pbf3_decode_ms": 0, "3dtiles_decode_ms": 0}
 
     # Sample tiles to keep runtime bounded
-    if len(mjb_files) > max_sample:
-        mjb_files = _rng.sample(mjb_files, max_sample)
+    if len(pbf3_files) > max_sample:
+        pbf3_files = _rng.sample(pbf3_files, max_sample)
     if len(glb_files) > max_sample:
         glb_files = _rng.sample(glb_files, max_sample)
 
-    mjb_bytes = [f.read_bytes() for f in mjb_files]
+    pbf3_bytes = [f.read_bytes() for f in pbf3_files]
     glb_bytes = [f.read_bytes() for f in glb_files]
 
-    # Benchmark mjb decode
-    mjb_times: list[float] = []
+    # Benchmark pbf3 decode
+    pbf3_times: list[float] = []
     for _ in range(n_iterations):
-        for data in mjb_bytes:
+        for data in pbf3_bytes:
             t0 = time.perf_counter()
             decode_tile(data)
-            mjb_times.append(time.perf_counter() - t0)
+            pbf3_times.append(time.perf_counter() - t0)
 
     # Benchmark glb decode
     glb_times: list[float] = []
@@ -166,11 +166,11 @@ def bench_decode_latency(
             glb_times.append(time.perf_counter() - t0)
 
     return {
-        "mjb_decode_median_ms": statistics.median(mjb_times) * 1000,
-        "mjb_decode_p95_ms": sorted(mjb_times)[int(len(mjb_times) * 0.95)] * 1000,
+        "pbf3_decode_median_ms": statistics.median(pbf3_times) * 1000,
+        "pbf3_decode_p95_ms": sorted(pbf3_times)[int(len(pbf3_times) * 0.95)] * 1000,
         "3dtiles_decode_median_ms": statistics.median(glb_times) * 1000,
         "3dtiles_decode_p95_ms": sorted(glb_times)[int(len(glb_times) * 0.95)] * 1000,
-        "mjb_sampled": len(mjb_bytes),
+        "pbf3_sampled": len(pbf3_bytes),
         "3dtiles_sampled": len(glb_bytes),
     }
 
@@ -181,7 +181,7 @@ def bench_decode_latency(
 
 
 def bench_metadata_query(
-    mjb_dir: Path,
+    pbf3_dir: Path,
     tiles3d_dir: Path,
     n_iterations: int = 100,
     max_sample: int = 30,
@@ -191,32 +191,32 @@ def bench_metadata_query(
 
     import pygltflib
 
-    mjb_files = _collect_tile_files(mjb_dir, ".mjb")
+    pbf3_files = _collect_tile_files(pbf3_dir, ".pbf3")
     glb_files = _collect_tile_files(tiles3d_dir, ".glb")
 
-    if not mjb_files or not glb_files:
-        return {"mjb_meta_ms": 0, "3dtiles_meta_ms": 0}
+    if not pbf3_files or not glb_files:
+        return {"pbf3_meta_ms": 0, "3dtiles_meta_ms": 0}
 
-    if len(mjb_files) > max_sample:
-        mjb_files = _rng.sample(mjb_files, max_sample)
+    if len(pbf3_files) > max_sample:
+        pbf3_files = _rng.sample(pbf3_files, max_sample)
     if len(glb_files) > max_sample:
         glb_files = _rng.sample(glb_files, max_sample)
 
-    mjb_bytes = [f.read_bytes() for f in mjb_files]
+    pbf3_bytes = [f.read_bytes() for f in pbf3_files]
     glb_bytes = [f.read_bytes() for f in glb_files]
 
-    # mjb: decode + extract tags from all features
-    mjb_times: list[float] = []
-    mjb_feature_count = 0
+    # pbf3: decode + extract tags from all features
+    pbf3_times: list[float] = []
+    pbf3_feature_count = 0
     for _ in range(n_iterations):
         t0 = time.perf_counter()
-        for data in mjb_bytes:
+        for data in pbf3_bytes:
             layers = decode_tile(data)
             for layer in layers:
                 for feat in layer["features"]:
                     _ = feat["tags"]
-                    mjb_feature_count += 1
-        mjb_times.append(time.perf_counter() - t0)
+                    pbf3_feature_count += 1
+        pbf3_times.append(time.perf_counter() - t0)
 
     # 3dtiles: decode glb + extract extras/metadata
     glb_times: list[float] = []
@@ -232,8 +232,8 @@ def bench_metadata_query(
         glb_times.append(time.perf_counter() - t0)
 
     return {
-        "mjb_meta_median_ms": statistics.median(mjb_times) * 1000,
-        "mjb_features_per_iter": mjb_feature_count // max(n_iterations, 1),
+        "pbf3_meta_median_ms": statistics.median(pbf3_times) * 1000,
+        "pbf3_features_per_iter": pbf3_feature_count // max(n_iterations, 1),
         "3dtiles_meta_median_ms": statistics.median(glb_times) * 1000,
         "3dtiles_features_per_iter": glb_feature_count // max(n_iterations, 1),
     }
@@ -244,18 +244,18 @@ def bench_metadata_query(
 # ---------------------------------------------------------------------------
 
 
-def bench_memory(mjb_dir: Path, tiles3d_dir: Path) -> dict[str, Any]:
+def bench_memory(pbf3_dir: Path, tiles3d_dir: Path) -> dict[str, Any]:
     """Measure peak memory during full-tileset decode."""
     import pygltflib
 
-    mjb_bytes = [f.read_bytes() for f in _collect_tile_files(mjb_dir, ".mjb")]
+    pbf3_bytes = [f.read_bytes() for f in _collect_tile_files(pbf3_dir, ".pbf3")]
     glb_bytes = [f.read_bytes() for f in _collect_tile_files(tiles3d_dir, ".glb")]
 
-    # mjb
+    # pbf3
     tracemalloc.start()
-    for data in mjb_bytes:
+    for data in pbf3_bytes:
         decode_tile(data)
-    _, mjb_peak = tracemalloc.get_traced_memory()
+    _, pbf3_peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
 
     # 3dtiles
@@ -266,7 +266,7 @@ def bench_memory(mjb_dir: Path, tiles3d_dir: Path) -> dict[str, Any]:
     tracemalloc.stop()
 
     return {
-        "mjb_peak_kb": mjb_peak / 1024,
+        "pbf3_peak_kb": pbf3_peak / 1024,
         "3dtiles_peak_kb": glb_peak / 1024,
     }
 
@@ -277,7 +277,7 @@ def bench_memory(mjb_dir: Path, tiles3d_dir: Path) -> dict[str, Any]:
 
 
 def bench_dataloader(
-    mjb_dir: Path,
+    pbf3_dir: Path,
     tiles3d_dir: Path,
     n_epochs: int = 3,
     batch_size: int = 4,
@@ -294,7 +294,7 @@ def bench_dataloader(
 
     class Mvt3Dataset(Dataset):
         def __init__(self, tile_dir: Path):
-            self._files = _collect_tile_files(tile_dir, ".mjb")
+            self._files = _collect_tile_files(tile_dir, ".pbf3")
             self._data = [f.read_bytes() for f in self._files]
 
         def __len__(self) -> int:
@@ -344,7 +344,7 @@ def bench_dataloader(
     results: dict[str, Any] = {}
 
     for label, ds_cls, tile_dir in [
-        ("mjb", Mvt3Dataset, mjb_dir),
+        ("pbf3", Mvt3Dataset, pbf3_dir),
         ("3dtiles", Glb3DDataset, tiles3d_dir),
     ]:
         ds = ds_cls(tile_dir)
@@ -383,7 +383,7 @@ def generate_and_tile(
     work_dir: Path,
     label: str,
 ) -> tuple[Path, Path]:
-    """Generate synthetic data and tile in both formats. Returns (mjb_dir, 3dtiles_dir)."""
+    """Generate synthetic data and tile in both formats. Returns (pbf3_dir, 3dtiles_dir)."""
     # Use roughly 70% TINs, 15% points, 15% lines
     n_tins = max(1, int(n_features * 0.7))
     n_points = max(1, int(n_features * 0.15))
@@ -400,16 +400,16 @@ def generate_and_tile(
         seed=42,
     )
 
-    mjb_dir = work_dir / f"{label}_mjb"
+    pbf3_dir = work_dir / f"{label}_pbf3"
     tiles3d_dir = work_dir / f"{label}_3dtiles"
 
     config = OctreeConfig(max_zoom=max_zoom)
 
-    # mjb
-    gen_mjb = TileGenerator3D(config, output_format="mjb")
-    gen_mjb.add_features(collection)
-    gen_mjb.generate(mjb_dir)
-    gen_mjb.write_metadata(mjb_dir)
+    # pbf3
+    gen_pbf3 = TileGenerator3D(config, output_format="pbf3")
+    gen_pbf3.add_features(collection)
+    gen_pbf3.generate(pbf3_dir)
+    gen_pbf3.write_metadata(pbf3_dir)
 
     # 3dtiles
     gen_3dt = TileGenerator3D(OctreeConfig(max_zoom=max_zoom), output_format="3dtiles")
@@ -417,7 +417,7 @@ def generate_and_tile(
     gen_3dt.generate(tiles3d_dir)
     gen_3dt.write_metadata(tiles3d_dir)
 
-    return mjb_dir, tiles3d_dir
+    return pbf3_dir, tiles3d_dir
 
 
 def generate_swc_tiles(
@@ -430,22 +430,22 @@ def generate_swc_tiles(
 
     collection = swc_to_feature_collection(swc_path)
 
-    mjb_dir = work_dir / "swc_mjb"
+    pbf3_dir = work_dir / "swc_pbf3"
     tiles3d_dir = work_dir / "swc_3dtiles"
 
     config = OctreeConfig(max_zoom=max_zoom)
 
-    gen_mjb = TileGenerator3D(config, output_format="mjb")
-    gen_mjb.add_features(collection)
-    gen_mjb.generate(mjb_dir)
-    gen_mjb.write_metadata(mjb_dir)
+    gen_pbf3 = TileGenerator3D(config, output_format="pbf3")
+    gen_pbf3.add_features(collection)
+    gen_pbf3.generate(pbf3_dir)
+    gen_pbf3.write_metadata(pbf3_dir)
 
     gen_3dt = TileGenerator3D(OctreeConfig(max_zoom=max_zoom), output_format="3dtiles")
     gen_3dt.add_features(collection)
     gen_3dt.generate(tiles3d_dir)
     gen_3dt.write_metadata(tiles3d_dir)
 
-    return mjb_dir, tiles3d_dir
+    return pbf3_dir, tiles3d_dir
 
 
 # ---------------------------------------------------------------------------
@@ -462,49 +462,49 @@ def print_report(label: str, results: dict[str, dict[str, Any]]) -> None:
     if "size" in results:
         s = results["size"]
         print(f"\n  File Size")
-        print(f"  {'':30s} {'mjb':>15s} {'3dtiles':>15s}")
+        print(f"  {'':30s} {'pbf3':>15s} {'3dtiles':>15s}")
         print(f"  {'─' * 62}")
-        print(f"  {'Tile count':30s} {s['mjb_tiles']:>15d} {s['3dtiles_tiles']:>15d}")
-        print(f"  {'Raw total':30s} {_fmt_bytes(s['mjb_raw']):>15s} {_fmt_bytes(s['3dtiles_raw']):>15s}")
-        print(f"  {'Gzipped total':30s} {_fmt_bytes(s['mjb_gzip']):>15s} {_fmt_bytes(s['3dtiles_gzip']):>15s}")
+        print(f"  {'Tile count':30s} {s['pbf3_tiles']:>15d} {s['3dtiles_tiles']:>15d}")
+        print(f"  {'Raw total':30s} {_fmt_bytes(s['pbf3_raw']):>15s} {_fmt_bytes(s['3dtiles_raw']):>15s}")
+        print(f"  {'Gzipped total':30s} {_fmt_bytes(s['pbf3_gzip']):>15s} {_fmt_bytes(s['3dtiles_gzip']):>15s}")
         if s["3dtiles_raw"] > 0:
-            ratio = s["mjb_raw"] / s["3dtiles_raw"]
-            print(f"  {'Ratio (mjb/3dtiles raw)':30s} {ratio:>15.2f}x")
+            ratio = s["pbf3_raw"] / s["3dtiles_raw"]
+            print(f"  {'Ratio (pbf3/3dtiles raw)':30s} {ratio:>15.2f}x")
 
     if "decode" in results:
         d = results["decode"]
         print(f"\n  Decode Latency (per tile)")
-        print(f"  {'':30s} {'mjb':>15s} {'3dtiles':>15s}")
+        print(f"  {'':30s} {'pbf3':>15s} {'3dtiles':>15s}")
         print(f"  {'─' * 62}")
-        print(f"  {'Median':30s} {d['mjb_decode_median_ms']:>13.3f}ms {d['3dtiles_decode_median_ms']:>13.3f}ms")
-        print(f"  {'P95':30s} {d['mjb_decode_p95_ms']:>13.3f}ms {d['3dtiles_decode_p95_ms']:>13.3f}ms")
+        print(f"  {'Median':30s} {d['pbf3_decode_median_ms']:>13.3f}ms {d['3dtiles_decode_median_ms']:>13.3f}ms")
+        print(f"  {'P95':30s} {d['pbf3_decode_p95_ms']:>13.3f}ms {d['3dtiles_decode_p95_ms']:>13.3f}ms")
         if d["3dtiles_decode_median_ms"] > 0:
-            speedup = d["3dtiles_decode_median_ms"] / d["mjb_decode_median_ms"]
-            print(f"  {'Speedup (mjb vs 3dtiles)':30s} {speedup:>15.1f}x")
+            speedup = d["3dtiles_decode_median_ms"] / d["pbf3_decode_median_ms"]
+            print(f"  {'Speedup (pbf3 vs 3dtiles)':30s} {speedup:>15.1f}x")
 
     if "meta" in results:
         m = results["meta"]
         print(f"\n  Metadata Query (all tiles)")
-        print(f"  {'':30s} {'mjb':>15s} {'3dtiles':>15s}")
+        print(f"  {'':30s} {'pbf3':>15s} {'3dtiles':>15s}")
         print(f"  {'─' * 62}")
-        print(f"  {'Median total':30s} {m['mjb_meta_median_ms']:>13.3f}ms {m['3dtiles_meta_median_ms']:>13.3f}ms")
-        print(f"  {'Features/iter':30s} {m['mjb_features_per_iter']:>15d} {m['3dtiles_features_per_iter']:>15d}")
+        print(f"  {'Median total':30s} {m['pbf3_meta_median_ms']:>13.3f}ms {m['3dtiles_meta_median_ms']:>13.3f}ms")
+        print(f"  {'Features/iter':30s} {m['pbf3_features_per_iter']:>15d} {m['3dtiles_features_per_iter']:>15d}")
 
     if "memory" in results:
         mem = results["memory"]
         print(f"\n  Peak Memory (full decode)")
-        print(f"  {'':30s} {'mjb':>15s} {'3dtiles':>15s}")
+        print(f"  {'':30s} {'pbf3':>15s} {'3dtiles':>15s}")
         print(f"  {'─' * 62}")
-        print(f"  {'Peak':30s} {mem['mjb_peak_kb']:>13.1f}KB {mem['3dtiles_peak_kb']:>13.1f}KB")
+        print(f"  {'Peak':30s} {mem['pbf3_peak_kb']:>13.1f}KB {mem['3dtiles_peak_kb']:>13.1f}KB")
 
     if "dataloader" in results and results["dataloader"]:
         dl = results["dataloader"]
         print(f"\n  ML DataLoader Throughput")
-        print(f"  {'':30s} {'mjb':>15s} {'3dtiles':>15s}")
+        print(f"  {'':30s} {'pbf3':>15s} {'3dtiles':>15s}")
         print(f"  {'─' * 62}")
-        mjb_tps = dl.get("mjb_tiles_per_sec", 0)
+        pbf3_tps = dl.get("pbf3_tiles_per_sec", 0)
         dt_tps = dl.get("3dtiles_tiles_per_sec", 0)
-        print(f"  {'Tiles/sec':30s} {mjb_tps:>15.1f} {dt_tps:>15.1f}")
+        print(f"  {'Tiles/sec':30s} {pbf3_tps:>15.1f} {dt_tps:>15.1f}")
 
     print()
 
@@ -527,7 +527,7 @@ def results_to_csv_row(label: str, results: dict[str, dict[str, Any]]) -> dict[s
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Benchmark .mjb vs OGC 3D Tiles formats",
+        description="Benchmark .pbf3 vs OGC 3D Tiles formats",
     )
     parser.add_argument(
         "--scales",
@@ -588,7 +588,7 @@ def main() -> None:
             label = f"synthetic_{n}"
             print(f"\n>>> Generating {n} features (zoom 0-{args.max_zoom})...")
             t0 = time.perf_counter()
-            mjb_dir, tiles3d_dir = generate_and_tile(
+            pbf3_dir, tiles3d_dir = generate_and_tile(
                 n, args.max_zoom, work_dir, label,
             )
             gen_time = time.perf_counter() - t0
@@ -596,21 +596,21 @@ def main() -> None:
 
             results: dict[str, dict[str, Any] | None] = {}
             print("    Measuring file size...")
-            results["size"] = bench_file_size(mjb_dir, tiles3d_dir)
+            results["size"] = bench_file_size(pbf3_dir, tiles3d_dir)
             print("    Measuring decode latency...")
             results["decode"] = bench_decode_latency(
-                mjb_dir, tiles3d_dir, args.decode_iters,
+                pbf3_dir, tiles3d_dir, args.decode_iters,
             )
             print("    Measuring metadata query...")
             results["meta"] = bench_metadata_query(
-                mjb_dir, tiles3d_dir, args.meta_iters,
+                pbf3_dir, tiles3d_dir, args.meta_iters,
             )
             print("    Measuring memory...")
-            results["memory"] = bench_memory(mjb_dir, tiles3d_dir)
+            results["memory"] = bench_memory(pbf3_dir, tiles3d_dir)
 
             if args.dataloader:
                 print("    Measuring DataLoader throughput...")
-                results["dataloader"] = bench_dataloader(mjb_dir, tiles3d_dir)
+                results["dataloader"] = bench_dataloader(pbf3_dir, tiles3d_dir)
             else:
                 results["dataloader"] = None
 
@@ -618,7 +618,7 @@ def main() -> None:
             csv_rows.append(results_to_csv_row(label, results))
 
             if not args.keep_tiles:
-                shutil.rmtree(mjb_dir, ignore_errors=True)
+                shutil.rmtree(pbf3_dir, ignore_errors=True)
                 shutil.rmtree(tiles3d_dir, ignore_errors=True)
 
         # --- SWC benchmark ---
@@ -626,7 +626,7 @@ def main() -> None:
             label = f"swc_{args.swc.stem}"
             print(f"\n>>> Loading SWC: {args.swc} (zoom 0-{args.max_zoom})...")
             t0 = time.perf_counter()
-            mjb_dir, tiles3d_dir = generate_swc_tiles(
+            pbf3_dir, tiles3d_dir = generate_swc_tiles(
                 args.swc, args.max_zoom, work_dir,
             )
             gen_time = time.perf_counter() - t0
@@ -634,21 +634,21 @@ def main() -> None:
 
             results = {}
             print("    Measuring file size...")
-            results["size"] = bench_file_size(mjb_dir, tiles3d_dir)
+            results["size"] = bench_file_size(pbf3_dir, tiles3d_dir)
             print("    Measuring decode latency...")
             results["decode"] = bench_decode_latency(
-                mjb_dir, tiles3d_dir, args.decode_iters,
+                pbf3_dir, tiles3d_dir, args.decode_iters,
             )
             print("    Measuring metadata query...")
             results["meta"] = bench_metadata_query(
-                mjb_dir, tiles3d_dir, args.meta_iters,
+                pbf3_dir, tiles3d_dir, args.meta_iters,
             )
             print("    Measuring memory...")
-            results["memory"] = bench_memory(mjb_dir, tiles3d_dir)
+            results["memory"] = bench_memory(pbf3_dir, tiles3d_dir)
 
             if args.dataloader:
                 print("    Measuring DataLoader throughput...")
-                results["dataloader"] = bench_dataloader(mjb_dir, tiles3d_dir)
+                results["dataloader"] = bench_dataloader(pbf3_dir, tiles3d_dir)
             else:
                 results["dataloader"] = None
 

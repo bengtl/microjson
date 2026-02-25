@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Three-way benchmark: MJB vs OGC 3D Tiles (GLB) vs Neuroglancer precomputed mesh.
+"""Three-way benchmark: PBF3 vs OGC 3D Tiles (GLB) vs Neuroglancer precomputed mesh.
 
 Usage::
 
@@ -82,22 +82,22 @@ def generate_all_formats_streaming(
     max_zoom: int,
     work_dir: Path,
 ) -> tuple[Path, Path, Path, dict[str, float]]:
-    """Generate MJB, 3D Tiles, and Neuroglancer from same streaming pipeline.
+    """Generate PBF3, 3D Tiles, and Neuroglancer from same streaming pipeline.
 
-    Returns (mjb_dir, tiles3d_dir, ng_dir, timing_dict).
+    Returns (pbf3_dir, tiles3d_dir, ng_dir, timing_dict).
     """
-    mjb_dir = work_dir / "mjb"
+    pbf3_dir = work_dir / "pbf3"
     tiles3d_dir = work_dir / "3dtiles"
     ng_dir = work_dir / "neuroglancer"
 
     timings: dict[str, float] = {}
 
-    # --- MJB ---
+    # --- PBF3 ---
     t0 = time.perf_counter()
     gen = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
     gen.add_obj_files(obj_paths, bounds, tags_list)
-    gen.generate_mjb(str(mjb_dir))
-    timings["mjb_gen_sec"] = time.perf_counter() - t0
+    gen.generate_pbf3(str(pbf3_dir))
+    timings["pbf3_gen_sec"] = time.perf_counter() - t0
 
     # --- 3D Tiles (GLB) ---
     t0 = time.perf_counter()
@@ -113,7 +113,7 @@ def generate_all_formats_streaming(
     gen3.generate_neuroglancer_multilod(str(ng_dir), bounds)
     timings["ng_gen_sec"] = time.perf_counter() - t0
 
-    return mjb_dir, tiles3d_dir, ng_dir, timings
+    return pbf3_dir, tiles3d_dir, ng_dir, timings
 
 
 def _make_synthetic_features(n_features: int, seed: int = 42) -> list[dict]:
@@ -154,7 +154,7 @@ def generate_all_formats_synthetic(
     work_dir: Path,
 ) -> tuple[Path, Path, Path, dict[str, float]]:
     """Generate all three formats from synthetic data using streaming generator."""
-    mjb_dir = work_dir / "mjb"
+    pbf3_dir = work_dir / "pbf3"
     tiles3d_dir = work_dir / "3dtiles"
     ng_dir = work_dir / "neuroglancer"
     bounds = (0.0, 0.0, 0.0, 100.0, 100.0, 100.0)
@@ -162,13 +162,13 @@ def generate_all_formats_synthetic(
     features = _make_synthetic_features(n_features)
     timings: dict[str, float] = {}
 
-    # --- MJB ---
+    # --- PBF3 ---
     t0 = time.perf_counter()
     gen = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
     for feat in features:
         gen.add_feature(feat)
-    gen.generate_mjb(str(mjb_dir))
-    timings["mjb_gen_sec"] = time.perf_counter() - t0
+    gen.generate_pbf3(str(pbf3_dir))
+    timings["pbf3_gen_sec"] = time.perf_counter() - t0
 
     # --- 3D Tiles (GLB) ---
     t0 = time.perf_counter()
@@ -180,13 +180,18 @@ def generate_all_formats_synthetic(
 
     # --- Neuroglancer ---
     t0 = time.perf_counter()
-    gen3 = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
-    for feat in features:
-        gen3.add_feature(feat)
-    gen3.generate_neuroglancer_multilod(str(ng_dir), bounds)
-    timings["ng_gen_sec"] = time.perf_counter() - t0
+    try:
+        gen3 = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
+        for feat in features:
+            gen3.add_feature(feat)
+        gen3.generate_neuroglancer_multilod(str(ng_dir), bounds)
+        timings["ng_gen_sec"] = time.perf_counter() - t0
+    except Exception as e:
+        print(f"    [WARN] Neuroglancer generation failed: {e}", file=sys.stderr)
+        ng_dir.mkdir(parents=True, exist_ok=True)
+        timings["ng_gen_sec"] = 0.0
 
-    return mjb_dir, tiles3d_dir, ng_dir, timings
+    return pbf3_dir, tiles3d_dir, ng_dir, timings
 
 
 # ---------------------------------------------------------------------------
@@ -194,11 +199,11 @@ def generate_all_formats_synthetic(
 # ---------------------------------------------------------------------------
 
 
-def bench_decode_latency_mjb(mjb_dir: Path, n_iters: int = 50, max_sample: int = 30) -> dict[str, float]:
-    """MJB decode latency."""
+def bench_decode_latency_pbf3(pbf3_dir: Path, n_iters: int = 50, max_sample: int = 30) -> dict[str, float]:
+    """PBF3 decode latency."""
     import random as rng
 
-    files = sorted(mjb_dir.rglob("*.mjb"))
+    files = sorted(pbf3_dir.rglob("*.pbf3"))
     if not files:
         return {"median_ms": 0, "p95_ms": 0}
     if len(files) > max_sample:
@@ -268,12 +273,18 @@ def bench_decode_latency_ng(ng_dir: Path, n_iters: int = 50, max_sample: int = 3
             # Decode: uint32 num_verts + float32[N*3] + uint32[M]
             num_verts = struct.unpack_from("<I", data, 0)[0]
             n_floats = num_verts * 3
+            needed = 4 + n_floats * 4
+            if needed > len(data):
+                continue  # skip malformed/empty segment
             np.frombuffer(data, dtype=np.float32, count=n_floats, offset=4)
-            remaining = (len(data) - 4 - n_floats * 4) // 4
-            np.frombuffer(data, dtype=np.uint32, count=remaining, offset=4 + n_floats * 4)
+            remaining = (len(data) - needed) // 4
+            if remaining > 0:
+                np.frombuffer(data, dtype=np.uint32, count=remaining, offset=needed)
             times.append(time.perf_counter() - t0)
 
     sorted_t = sorted(times)
+    if not sorted_t:
+        return {"median_ms": 0, "p95_ms": 0}
     return {
         "median_ms": statistics.median(sorted_t) * 1000,
         "p95_ms": sorted_t[int(len(sorted_t) * 0.95)] * 1000 if sorted_t else 0,
@@ -331,35 +342,35 @@ def print_three_way_report(label: str, r: dict[str, Any]) -> None:
     print(f"  {label}")
     print(f"{'=' * 90}")
 
-    print(f"\n  {'Metric':30s} {'MJB':>15s} {'3D Tiles':>15s} {'Neuroglancer':>15s}")
+    print(f"\n  {'Metric':30s} {'PBF3':>15s} {'3D Tiles':>15s} {'Neuroglancer':>15s}")
     print(f"  {'─' * 75}")
 
     # Size
-    if "mjb_raw" in r:
-        print(f"  {'Raw size':30s} {_fmt_bytes(r['mjb_raw']):>15s} {_fmt_bytes(r['3dt_raw']):>15s} {_fmt_bytes(r['ng_raw']):>15s}")
-        print(f"  {'Gzipped size':30s} {_fmt_bytes(r['mjb_gz']):>15s} {_fmt_bytes(r['3dt_gz']):>15s} {_fmt_bytes(r['ng_gz']):>15s}")
-        print(f"  {'File/segment count':30s} {r['mjb_count']:>15d} {r['3dt_count']:>15d} {r['ng_count']:>15d}")
+    if "pbf3_raw" in r:
+        print(f"  {'Raw size':30s} {_fmt_bytes(r['pbf3_raw']):>15s} {_fmt_bytes(r['3dt_raw']):>15s} {_fmt_bytes(r['ng_raw']):>15s}")
+        print(f"  {'Gzipped size':30s} {_fmt_bytes(r['pbf3_gz']):>15s} {_fmt_bytes(r['3dt_gz']):>15s} {_fmt_bytes(r['ng_gz']):>15s}")
+        print(f"  {'File/segment count':30s} {r['pbf3_count']:>15d} {r['3dt_count']:>15d} {r['ng_count']:>15d}")
 
     # Generation time
-    if "mjb_gen_sec" in r:
-        print(f"  {'Generation time':30s} {r['mjb_gen_sec']:>14.2f}s {r['3dt_gen_sec']:>14.2f}s {r['ng_gen_sec']:>14.2f}s")
+    if "pbf3_gen_sec" in r:
+        print(f"  {'Generation time':30s} {r['pbf3_gen_sec']:>14.2f}s {r['3dt_gen_sec']:>14.2f}s {r['ng_gen_sec']:>14.2f}s")
 
     # Decode latency
-    if "mjb_dec_median" in r:
-        print(f"  {'Decode median':30s} {r['mjb_dec_median']:>13.3f}ms {r['3dt_dec_median']:>13.3f}ms {r['ng_dec_median']:>13.3f}ms")
-        print(f"  {'Decode P95':30s} {r['mjb_dec_p95']:>13.3f}ms {r['3dt_dec_p95']:>13.3f}ms {r['ng_dec_p95']:>13.3f}ms")
+    if "pbf3_dec_median" in r:
+        print(f"  {'Decode median':30s} {r['pbf3_dec_median']:>13.3f}ms {r['3dt_dec_median']:>13.3f}ms {r['ng_dec_median']:>13.3f}ms")
+        print(f"  {'Decode P95':30s} {r['pbf3_dec_p95']:>13.3f}ms {r['3dt_dec_p95']:>13.3f}ms {r['ng_dec_p95']:>13.3f}ms")
 
     # Speedups
-    if r.get("3dt_dec_median", 0) > 0 and r.get("mjb_dec_median", 0) > 0:
-        mjb_vs_3dt = r["3dt_dec_median"] / r["mjb_dec_median"]
-        print(f"  {'MJB vs 3D Tiles speedup':30s} {mjb_vs_3dt:>15.1f}x")
-    if r.get("ng_dec_median", 0) > 0 and r.get("mjb_dec_median", 0) > 0:
-        mjb_vs_ng = r["mjb_dec_median"] / r["ng_dec_median"]
-        ng_vs_mjb = r["ng_dec_median"] / r["mjb_dec_median"]
-        if mjb_vs_ng > 1:
-            print(f"  {'Neuroglancer vs MJB':30s} {mjb_vs_ng:>14.1f}x faster")
+    if r.get("3dt_dec_median", 0) > 0 and r.get("pbf3_dec_median", 0) > 0:
+        pbf3_vs_3dt = r["3dt_dec_median"] / r["pbf3_dec_median"]
+        print(f"  {'PBF3 vs 3D Tiles speedup':30s} {pbf3_vs_3dt:>15.1f}x")
+    if r.get("ng_dec_median", 0) > 0 and r.get("pbf3_dec_median", 0) > 0:
+        pbf3_vs_ng = r["pbf3_dec_median"] / r["ng_dec_median"]
+        ng_vs_pbf3 = r["ng_dec_median"] / r["pbf3_dec_median"]
+        if pbf3_vs_ng > 1:
+            print(f"  {'Neuroglancer vs PBF3':30s} {pbf3_vs_ng:>14.1f}x faster")
         else:
-            print(f"  {'MJB vs Neuroglancer':30s} {1/mjb_vs_ng:>14.1f}x faster")
+            print(f"  {'PBF3 vs Neuroglancer':30s} {1/pbf3_vs_ng:>14.1f}x faster")
 
     # Metadata
     if "ng_meta_median" in r:
@@ -379,7 +390,7 @@ def print_three_way_report(label: str, r: dict[str, Any]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Three-way benchmark: MJB vs 3D Tiles vs Neuroglancer",
+        description="Three-way benchmark: PBF3 vs 3D Tiles vs Neuroglancer",
     )
     parser.add_argument(
         "--data-dir",
@@ -438,7 +449,7 @@ def main() -> None:
             with tempfile.TemporaryDirectory() as tmp:
                 work = Path(tmp)
                 print("    Generating all 3 formats...")
-                mjb_dir, t3d_dir, ng_dir, timings = generate_all_formats_streaming(
+                pbf3_dir, t3d_dir, ng_dir, timings = generate_all_formats_streaming(
                     paths, bounds, tags_list, args.max_zoom, work,
                 )
 
@@ -446,9 +457,9 @@ def main() -> None:
                 r.update(timings)
 
                 print("    Measuring sizes...")
-                r["mjb_raw"] = _dir_size(mjb_dir)
-                r["mjb_gz"] = _dir_size_gzipped(mjb_dir)
-                r["mjb_count"] = _file_count(mjb_dir, ".mjb")
+                r["pbf3_raw"] = _dir_size(pbf3_dir)
+                r["pbf3_gz"] = _dir_size_gzipped(pbf3_dir)
+                r["pbf3_count"] = _file_count(pbf3_dir, ".pbf3")
                 r["3dt_raw"] = _dir_size(t3d_dir)
                 r["3dt_gz"] = _dir_size_gzipped(t3d_dir)
                 r["3dt_count"] = _file_count(t3d_dir, ".glb")
@@ -458,9 +469,9 @@ def main() -> None:
                 r["ng_count"] = len(ng_segs)
 
                 print("    Measuring decode latency...")
-                mjb_dec = bench_decode_latency_mjb(mjb_dir, args.decode_iters)
-                r["mjb_dec_median"] = mjb_dec["median_ms"]
-                r["mjb_dec_p95"] = mjb_dec["p95_ms"]
+                pbf3_dec = bench_decode_latency_pbf3(pbf3_dir, args.decode_iters)
+                r["pbf3_dec_median"] = pbf3_dec["median_ms"]
+                r["pbf3_dec_p95"] = pbf3_dec["p95_ms"]
                 glb_dec = bench_decode_latency_glb(t3d_dir, args.decode_iters)
                 r["3dt_dec_median"] = glb_dec["median_ms"]
                 r["3dt_dec_p95"] = glb_dec["p95_ms"]
@@ -487,7 +498,7 @@ def main() -> None:
 
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            mjb_dir, t3d_dir, ng_dir, timings = generate_all_formats_synthetic(
+            pbf3_dir, t3d_dir, ng_dir, timings = generate_all_formats_synthetic(
                 n, args.max_zoom, work,
             )
 
@@ -495,9 +506,9 @@ def main() -> None:
             r.update(timings)
 
             print("    Measuring sizes...")
-            r["mjb_raw"] = _dir_size(mjb_dir)
-            r["mjb_gz"] = _dir_size_gzipped(mjb_dir)
-            r["mjb_count"] = _file_count(mjb_dir, ".mjb")
+            r["pbf3_raw"] = _dir_size(pbf3_dir)
+            r["pbf3_gz"] = _dir_size_gzipped(pbf3_dir)
+            r["pbf3_count"] = _file_count(pbf3_dir, ".pbf3")
             r["3dt_raw"] = _dir_size(t3d_dir)
             r["3dt_gz"] = _dir_size_gzipped(t3d_dir)
             r["3dt_count"] = _file_count(t3d_dir, ".glb")
@@ -507,9 +518,9 @@ def main() -> None:
             r["ng_count"] = len(ng_segs)
 
             print("    Measuring decode latency...")
-            mjb_dec = bench_decode_latency_mjb(mjb_dir, args.decode_iters)
-            r["mjb_dec_median"] = mjb_dec["median_ms"]
-            r["mjb_dec_p95"] = mjb_dec["p95_ms"]
+            pbf3_dec = bench_decode_latency_pbf3(pbf3_dir, args.decode_iters)
+            r["pbf3_dec_median"] = pbf3_dec["median_ms"]
+            r["pbf3_dec_p95"] = pbf3_dec["p95_ms"]
             glb_dec = bench_decode_latency_glb(t3d_dir, args.decode_iters)
             r["3dt_dec_median"] = glb_dec["median_ms"]
             r["3dt_dec_p95"] = glb_dec["p95_ms"]
