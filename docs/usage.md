@@ -1,62 +1,149 @@
-# Create MicroJSON models
+# Using MicroJSON
 
-In this tutorial, we explain how a Python script is used to convert a pandas DataFrame into a MicroJSON FeatureCollection object.
+This page covers common usage patterns for the MicroJSON library, from basic validation to high-performance tiling pipelines.
 
-## Example dataframe to MicroJSON conversion
+## Requirements
+
+- Python >= 3.11, < 3.14
+- Install: `uv add microjson` (or `pip install microjson`)
+- For Rust acceleration (tiling pipelines): built automatically via maturin when installing from source
+
+## Validating MicroJSON and GeoJSON
+
+```python
+import microjson.model as mj
+import json
+
+# Validate a MicroJSON file
+with open("annotations.json") as f:
+    data = json.load(f)
+microjson_obj = mj.MicroJSON.model_validate(data)
+
+# Validate a GeoJSON file (any GeoJSON is valid MicroJSON)
+with open("features.geojson") as f:
+    data = json.load(f)
+geojson_obj = mj.GeoJSON.model_validate(data)
+```
+
+## Creating MicroJSON from a DataFrame
+
+The `df_to_microjson` function converts a pandas DataFrame into a MicroJSON FeatureCollection.
 
 ::: microjson.examples.df_to_microjson.df_to_microjson
     :docstring:
 
-Here's a breakdown of the steps involved:
+```python
+import pandas as pd
+from microjson.examples.df_to_microjson import df_to_microjson
 
-1. **Initialize an empty list of Features**: A list `features` is initialized to hold `Feature` objects.
+data = [
+    {
+        "type": "Feature",
+        "geometryType": "Point",
+        "coordinates": [0, 0],
+        "name": "Point 1",
+        "value": 1,
+        "values": [1, 2, 3],
+    },
+    {
+        "type": "Feature",
+        "geometryType": "Polygon",
+        "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+        "name": "Polygon 1",
+        "value": 2,
+        "values": [4, 5, 6],
+    },
+]
 
-2. **Iterate over DataFrame rows**: The function iterates through each row of the DataFrame, performing the following operations for each row:
+df = pd.DataFrame(data)
+feature_collection = df_to_microjson(df)
+print(feature_collection.model_dump_json(indent=2, exclude_unset=True))
+```
 
-    - **Create a Geometry Object**: It dynamically generates a Geometry object based on the geometry type specified in the row.
+## 2D Tiling (Rust-Accelerated)
 
-    - **Create a Properties Object**: It then creates a `Properties` object to hold metadata about the feature like the name, value, and an array of values.
+Generate vector tiles from GeoJSON data using the Rust pipeline. See the [Tiling](tiling.md) page for the full specification.
 
-    - **Combine into a Feature**: It combines both the geometry and properties into a MicroJSON `Feature` object.
-
-3. **Calculate Value Ranges**: For each numeric attribute, a range of values (min, max) is calculated.
-
-4. **Create a FeatureCollection Object**: Finally, it aggregates all the features into a MicroJSON `FeatureCollection` object, including the calculated value ranges and other optional metadata.
-
-## Example dataframe creation, conversion and MicroJSON output
-
-Below, we convert a pandas DataFrame into a MicroJSON FeatureCollection object. It includes an example of creating a DataFrame with two features, one Point and one Polygon, and converting it into a FeatureCollection model using the `df_to_microjson` function as described above, and then serializing the model to a JSON string.
+### PBF (MVT) Output
 
 ```python
-if __name__ == "__main__":
-    # Example DataFrame with two features: one Point and one Polygon
-    data = [
-        {
-            "type": "Feature",
-            "geometryType": "Point",
-            "coordinates": [0, 0],
-            "name": "Point 1",
-            "value": 1,
-            "values": [1, 2, 3],
-        },
-        {
-            "type": "Feature",
-            "geometryType": "Polygon",
-            "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
-            "name": "Polygon 1",
-            "value": 2,
-            "values": [4, 5, 6],
-        },
-    ]
+from microjson._rs import StreamingTileGenerator2D
+from microjson.tiling2d import generate_pbf, read_pbf
 
-    # Convert this list of dictionaries into a DataFrame
-    df = pd.DataFrame(data)
+gen = StreamingTileGenerator2D(min_zoom=0, max_zoom=7, buffer=64/4096)
 
-    # Convert the DataFrame into a FeatureCollection model
-    feature_collection_model = df_to_microjson(df)
+geojson_str = open("data.json").read()
+bounds = (0.0, 0.0, 10000.0, 10000.0)
+gen.add_geojson(geojson_str, bounds)
 
-    # Serialize the FeatureCollection model to a JSON string
-    print(
-        feature_collection_model.model_dump_json(indent=2, exclude_unset=True)
-    )
+# Write PBF tiles to a directory tree ({z}/{x}/{y}.pbf)
+n_tiles = generate_pbf(gen, "tiles/", bounds, simplify=True)
+
+# Read tiles back
+features = read_pbf("tiles/", bounds, zoom=0)
+```
+
+### Tiled Parquet Output
+
+```python
+from microjson._rs import StreamingTileGenerator2D
+from microjson.tiling2d import generate_parquet, read_parquet
+
+gen = StreamingTileGenerator2D(min_zoom=0, max_zoom=7, buffer=64/4096)
+
+geojson_str = open("data.json").read()
+bounds = (0.0, 0.0, 10000.0, 10000.0)
+gen.add_geojson(geojson_str, bounds)
+
+# Write tiled Parquet (ZSTD compressed)
+n_rows = generate_parquet(gen, "output.parquet", bounds, simplify=True)
+
+# Read with optional zoom/tile filtering
+rows = read_parquet("output.parquet", zoom=0)
+```
+
+A complete example script is at `src/microjson/examples/tiling_rust.py`.
+
+## 3D Tiling
+
+Generate 3D Tiles, Parquet, or Neuroglancer output from OBJ mesh files.
+
+```python
+from microjson._rs import StreamingTileGenerator
+
+gen = StreamingTileGenerator(
+    min_zoom=0, max_zoom=5,
+    extent=4096, extent_z=4096,
+    buffer=0.0, base_cells=16,
+)
+
+# Ingest OBJ files
+obj_paths = ["neuron_001.obj", "neuron_002.obj"]
+bounds = (xmin, ymin, zmin, xmax, ymax, zmax)
+gen.add_obj_files(obj_paths, bounds)
+
+# Generate 3D Tiles with meshopt compression
+gen.generate_3dtiles("output/3dtiles", bounds, compression="meshopt")
+```
+
+## GeoParquet Import/Export
+
+```python
+from microjson import to_geoparquet, from_geoparquet, ArrowConfig
+
+# Export MicroJSON to GeoParquet
+config = ArrowConfig()
+to_geoparquet(feature_collection, "output.parquet", config)
+
+# Import from GeoParquet
+fc = from_geoparquet("output.parquet")
+```
+
+## glTF/GLB Export
+
+```python
+from microjson import to_glb, GltfConfig
+
+config = GltfConfig()
+to_glb(feature_collection, "output.glb", config)
 ```

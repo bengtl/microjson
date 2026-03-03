@@ -1,48 +1,35 @@
 # MicroJSON
 
-MicroJSON is a JSON-based format inspired by [GeoJSON](https://geojson.org), designed to encode a variety of data structures related to microscopy images. It can handle representations of reference points, regions of interest, and other annotations, making it an ideal solution for conveying complex microscopy data in a straightforward, easy-to-use format.
+MicroJSON is a JSON-based format inspired by [GeoJSON](https://geojson.org), designed to encode 2D and 3D annotations for microscopy images. It includes a Rust-accelerated tiling engine for scalable visualization and ML training pipelines.
 
 ## Features
 
-MicroJSON offers a range of features designed to meet the needs of microscopy data representation:
-
-- **Flexible Data Structures:** MicroJSON can represent diverse data structures, including geometries (such as points, multipoints, linestrings, polygons), features (individual entities with specific properties), feature collections (groups of features), and coordinate systems.
-
-- **Standardized Format:** MicroJSON uses the widely adopted JSON format, ensuring compatibility with a wide range of programming languages and tools.
-
-- **Extensibility:** MicroJSON can handle additional properties associated with specific features, such as metadata relating to microscopy images.
-
-## Additional Functions
-There are two additional functionalities added which supports binary images.
-**BinaryMicrojsonModel:** Converts objects in a binary image into polygon coordinates (rectangle, encoding) and save them in json file format using microjson package.
-**MicrojsonBinaryModel:** Reconstruct binary images using polygon coordinates from json file.
+- **2D and 3D Geometry**: Points, LineStrings, Polygons, PolyhedralSurfaces, and TIN mesh surfaces.
+- **Pydantic Validation**: Strict schema validation via Pydantic v2 and geojson-pydantic.
+- **Rust-Accelerated Tiling**: Parallel quadtree (2D) and octree (3D) tile generation with geometry simplification.
+- **Multiple Output Formats**: PBF (MVT) vector tiles, 3D Tiles (GLB) with meshopt/Draco compression, tiled Parquet (ZSTD), and Neuroglancer precomputed meshes.
+- **GeoParquet/Arrow**: Import and export via Apache Arrow.
+- **Coordinate Systems**: OME-compatible multiscale metadata and affine transforms.
 
 ## Installation
 
-To install MicroJSON, you can use the following command:
+```bash
+pip install microjson
+```
 
-```pip install microjson```
-This will install the default version of MicroJSON with the basic functionalities and minimal dependencies. If you want to use the additional functionalities, such as provided by the ```utils``` module, you can install the package with the following command:
+For optional Draco compression: `pip install microjson[draco]`
 
-```pip install microjson[all]```
+For all dependencies: `pip install microjson[all]`
 
-## Usage
+## Requirements
 
-MicroJSON can be used with any application or tool that can process JSON data. Due to its design, it is particularly suited to applications related to the analysis, visualization, and manipulation of microscopy images.
-
-## External Resources
-
-The GeoJSON test files are copied from the [GeoJSON Schema GitHub repository](https://github.com/geojson/schema), and are Copyright (c) 2018 Tim Schaub under MIT License.
-
-## Contribution
-
-We welcome contributions to the development and enhancement of MicroJSON. Whether you're reporting bugs, suggesting enhancements, or contributing to the code, your input is highly appreciated.
+- Python >= 3.11, < 3.14
+- Rust toolchain (for building from source)
 
 ## License
 
-MicroJSON is licensed under MIT License.
-
+MicroJSON is licensed under the MIT License.
 
 ---
 
-This project is maintained by Polus AI. For any queries or further discussion, please contact the author on email address above.
+This project is maintained by NovaGen Research Fund.

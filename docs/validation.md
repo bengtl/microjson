@@ -4,7 +4,7 @@ In this tutorial, we'll explore how to validate MicroJSON and GeoJSON files usin
 
 ## Requirements
 
-- Python 3.9 or higher
+- Python 3.11 or higher
 - `microjson` package
 
 ## Code Explanation

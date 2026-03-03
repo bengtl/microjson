@@ -28,6 +28,13 @@ Each geometry object MUST have a `"coordinates"` member with an array value. The
     - A subtype of “Polygon” is the “Rectangle” geometry: A polygon with an array of four 2D point coordinates representing the corners of the rectangle in a counterclockwise order. It has the property subtype with the value `“Rectangle”`.
 - **MultiPolygon**: The coordinates array must be an array of Polygon coordinate arrays.
 
+#### 3D Geometry Types
+
+MicroJSON supports 3D mesh geometries based on ISO 19107, enabling representation of complex 3D structures such as neurons, organelles, and tissue surfaces.
+
+- **PolyhedralSurface**: A closed surface mesh consisting of polygonal faces. The coordinates array must be an array of Polygon coordinate arrays, where each polygon represents a face of the surface. Each face follows the same structure as a Polygon (a list of linear rings of 3D positions). Must have at least one face.
+- **TIN** (Triangulated Irregular Network): A triangle mesh surface. Each face must be a single closed ring of exactly 4 positions (3 vertices + repeated first vertex to close the ring). Must have at least one face. This is the primary geometry type used for tiled 3D mesh data.
+
 ### GeometryCollection
 
 A GeometryCollection is an array of geometries (Point, multipoint, LinesString, MultiLineString, Polygon, MultiPolygon). It is possible for this array to be empty.
