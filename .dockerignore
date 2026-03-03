@@ -1,0 +1,6 @@
+# Everything by default
+*
+
+# Allow only what the image needs
+!viewer/
+!data/mouselight/tiles/

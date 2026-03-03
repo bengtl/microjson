@@ -1,52 +1,92 @@
 # MicroJSON
 
-MicroJSON is a JSON-based format inspired by [GeoJSON](https://geojson.org), designed to encode a variety of data structures related to microscopy images. It can handle representations of reference points, regions of interest, and other annotations, making it an ideal solution for conveying complex microscopy data in a straightforward, easy-to-use format.
+MicroJSON is a JSON-based format inspired by [GeoJSON](https://geojson.org), designed to encode a variety of data structures related to microscopy images. It supports 2D and 3D annotations — from reference points and regions of interest to triangle mesh surfaces — and includes a high-performance Rust-accelerated tiling engine for scalable visualization and ML training pipelines.
 
 For more extensive documentation, please refer to the [online documentation](https://polusai.github.io/microjson/).
 
-
 ## Features
 
-MicroJSON offers a range of features designed to meet the needs of microscopy data representation:
+- **2D and 3D Geometry**: Points, LineStrings, Polygons, MultiPolygons, PolyhedralSurfaces, and TIN (Triangulated Irregular Network) mesh surfaces.
+- **Pydantic Validation**: Strict schema validation via [Pydantic v2](https://docs.pydantic.dev/) and [geojson-pydantic](https://developmentseed.org/geojson-pydantic/). Any GeoJSON is valid MicroJSON.
+- **Rust-Accelerated Tiling**: Parallel 2D (quadtree) and 3D (octree) tile generation via PyO3 and rayon, with geometry clipping and simplification (Douglas-Peucker for 2D, QEM for 3D meshes).
+- **Multiple Output Formats**:
+  - **PBF (MVT)**: Standard Mapbox Vector Tiles for web map viewers (Leaflet, MapLibre).
+  - **3D Tiles (GLB)**: OGC 3D Tiles with meshopt or Draco mesh compression for Three.js / Cesium.
+  - **Tiled Parquet**: ZSTD-compressed columnar format for ML training with zero-copy reads.
+  - **Neuroglancer**: Precomputed mesh format for browser-based 3D visualization.
+- **GeoParquet/Arrow**: Import and export via Apache Arrow for data science interoperability.
+- **Coordinate Systems**: OME-compatible multiscale metadata, affine transforms, and voxel-to-physical conversions.
+- **Binary Image Utilities**: Convert between binary/label images and MicroJSON polygon annotations.
 
-- **Flexible Data Structures:** MicroJSON can represent diverse data structures, including geometries (such as points, multipoints, linestrings, polygons), features (individual entities with specific properties), feature collections (groups of features), and coordinate systems.
+## Requirements
 
-- **Standardized Format:** MicroJSON uses the widely adopted JSON format, ensuring compatibility with a wide range of programming languages and tools.
-
-- **Extensibility:** MicroJSON can handle additional properties associated with specific features, such as metadata relating to microscopy images.
-
-## Additional Functions
-There are two additional functionalities added which supports binary and label images.
-
-- **OmeMicrojsonModel:** Converts objects in a binary or label images into polygon coordinates (rectangle, encoding) and save them in json file format using microjson package.
-
-- **MicrojsonBinaryModel:** Reconstruct binary images using polygon coordinates from json file.
+- Python >= 3.11, < 3.14
+- Rust toolchain (for building from source via maturin)
 
 ## Installation
 
-To install MicroJSON, you can use the following command:
+Install from PyPI:
 
-```bash 
+```bash
 pip install microjson
 ```
-This will install the default version of MicroJSON with the basic functionalities and minimal dependencies. If you want to use the additional functionalities, such as provided by the ```utils``` module, you can install the package with the following command:
+
+For optional Draco compression support:
+
+```bash
+pip install microjson[draco]
+```
+
+For the full set of dependencies (including binary image utilities):
 
 ```bash
 pip install microjson[all]
 ```
 
+## Quick Start
 
-## Usage
+### Validate MicroJSON / GeoJSON
 
-MicroJSON is compatible with any application or tool that process JSON data. Its design makes it especially well-suited for applications involving analysis, visualization, and manipulation of microscopy images.
+```python
+import microjson.model as mj
+import json
 
-## Examples
+with open("annotations.json") as f:
+    data = json.load(f)
 
-Refer to the examples foler to see samples of MicroJSON files as well as a simple parsing example, or the [example in the documentation](docs/example.md)
+obj = mj.MicroJSON.model_validate(data)
+```
+
+### 2D Tiling (Rust-accelerated)
+
+```python
+from microjson._rs import StreamingTileGenerator2D
+from microjson.tiling2d import generate_pbf
+
+gen = StreamingTileGenerator2D(min_zoom=0, max_zoom=7, buffer=64/4096)
+gen.add_geojson(open("data.json").read(), bounds)
+generate_pbf(gen, "tiles/", bounds)
+```
+
+### 3D Tiling (OBJ meshes to 3D Tiles)
+
+```python
+from microjson._rs import StreamingTileGenerator
+
+gen = StreamingTileGenerator(
+    min_zoom=0, max_zoom=5,
+    extent=4096, extent_z=4096,
+    buffer=0.0, base_cells=16,
+)
+gen.add_obj_files(obj_paths, bounds)
+gen.generate_3dtiles("output/3dtiles", bounds, compression="meshopt")
+```
+
+See `src/microjson/examples/` for more complete examples.
 
 ## Specification
 
-For more detailed information about the MicroJSON structure and its components, please refer to the [Specification](docs/index.md) file.
+For detailed information about the MicroJSON structure, see the [Specification](docs/index.md).
 
 ## External Resources
 
@@ -58,8 +98,11 @@ We welcome contributions to the development and enhancement of MicroJSON. Whethe
 
 ## License
 
-MicroJSON is licensed under [MIT License](./LICENSE).
+MicroJSON is primarily licensed under the [MIT License](./LICENSE).
+
+Portions of this project are derived from 'geojson2vt' and are located in 'src/microjson/microjson2vt'.
+These portions are licensed under the [ISC License](./src/microjson/microjson2vt/LICENSE).
 
 ---
 
-This project is maintained by Polus AI. For any queries or further discussion, please contact [contact details].
+This project is maintained by NovaGen Research Fund. For any queries or further discussion, please contact [Novagen](info@novagenresearch.org).

@@ -82,33 +82,117 @@ This specification is designed to be compatible with the [Vector Tile Specificat
 
 One difference is that we here recommend that the file ending for binary tiles is `.pbf` instead of `.mvt` to avoid confusion with the Mapbox Vector Tile format. The binary tiles should be encoded in the [Protobuf format](https://developers.google.com/protocol-buffers) as defined in the Vector Tile Specification.
 
-## MicroJSON2vt
+## Tiling Pipelines
 
-The MicroJSON2vt module is a helper module that can be used to convert MicroJSON objects to vector tiles. It is designed to be used in conjunction with the TileJSON for MicroJSON specification, and can be used to generate vector tiles from MicroJSON objects. The module is designed to be compatible with the Vector Tile Specification, and can be used to generate vector tiles in the intermediate vector tile JSON-format, which then, using `vt2pbf` may be transformed into protobuf. The module is included in the `microjson` package, and its wrapper function can be imported using the following code:
+MicroJSON provides two tiling pipeline generations. The **Rust-accelerated pipeline** is the recommended approach for new projects, offering significantly better performance through parallel processing and native code. The **legacy Python pipeline** remains available for backwards compatibility.
+
+### Rust-Accelerated 2D Pipeline
+
+The Rust 2D pipeline uses `StreamingTileGenerator2D` for quadtree-based spatial indexing with parallel tile encoding. It supports two output formats:
+
+- **PBF (MVT)**: Standard Mapbox Vector Tiles, compatible with Leaflet, MapLibre, and other web map viewers.
+- **Tiled Parquet**: Columnar format with ZSTD compression, ideal for ML training pipelines with zero-copy reads.
+
+```python
+from microjson._rs import StreamingTileGenerator2D
+from microjson.tiling2d import generate_parquet, generate_pbf
+
+# Create the tile generator
+gen = StreamingTileGenerator2D(min_zoom=0, max_zoom=7, buffer=64/4096)
+
+# Ingest GeoJSON data
+geojson_str = open("data.json").read()
+bounds = (xmin, ymin, xmax, ymax)
+gen.add_geojson(geojson_str, bounds)
+
+# Output as PBF vector tiles
+generate_pbf(gen, "tiles/", bounds, simplify=True)
+
+# Or output as tiled Parquet for ML
+generate_parquet(gen, "output.parquet", bounds, simplify=True)
+```
+
+Key features:
+
+- **Buffer**: Controls tile overlap to prevent visual gaps. Use `buffer=64/4096` (default) for PBF output.
+- **Simplification**: Douglas-Peucker simplification at coarse zoom levels (optional, enabled by default).
+- **Partitioned output**: Hive-style partitioning by zoom level for Parquet.
+- **PBF reader**: `read_pbf(path, bounds, zoom, tile_x, tile_y)` decodes the `{z}/{x}/{y}.pbf` directory tree.
+- **Parquet reader**: `read_parquet(path, zoom, tile_x, tile_y)` reads tiled Parquet with optional filtering.
+
+An example script is located at `src/microjson/examples/tiling_rust.py`.
+
+### Rust-Accelerated 3D Pipeline
+
+The 3D pipeline uses `StreamingTileGenerator` for octree-based spatial indexing of 3D mesh data (OBJ files). It supports multiple output formats:
+
+- **3D Tiles (GLB)**: OGC 3D Tiles with meshopt or Draco mesh compression, for Three.js / Cesium viewers.
+- **PBF3**: Custom protobuf format for compact 3D tile transfer.
+- **Tiled Parquet**: For ML training on 3D mesh data.
+- **Neuroglancer**: Precomputed mesh format for web-based 3D visualization.
+
+```python
+from microjson._rs import StreamingTileGenerator
+
+# Create the tile generator
+gen = StreamingTileGenerator(
+    min_zoom=0, max_zoom=5,
+    extent=4096, extent_z=4096,
+    buffer=0.0, base_cells=16,
+)
+
+# Ingest OBJ mesh files
+gen.add_obj_files(obj_paths, bounds)
+
+# Output as 3D Tiles with meshopt compression
+gen.generate_3dtiles("output/3dtiles", bounds, compression="meshopt")
+
+# Or output as tiled Parquet
+gen.generate_parquet("output.parquet", bounds)
+```
+
+Compression options for 3D Tiles:
+
+| Compression | Speed | Decode | Size | Lossless |
+|---|---|---|---|---|
+| `"meshopt"` (default) | Fast (~2 min/brain) | ~1 GB/s | 82 MB/brain | Yes |
+| `"draco"` | Slower (~6.5 min/brain) | ~50-100 MB/s | 47 MB/brain | No (quantizes) |
+| `"none"` | Fastest | N/A | 232 MB/brain | Yes |
+
+With Brotli HTTP transport compression, meshopt GLBs compress to ~57 MB/brain, approaching Draco sizes while decoding ~100x faster in the browser.
+
+### Legacy Python Pipeline
+
+The original Python modules remain available for backwards compatibility:
+
+#### MicroJSON2vt
+
+The MicroJSON2vt module converts MicroJSON objects to vector tiles in an intermediate JSON format, which can then be transformed into protobuf using `vt2pbf`.
 
 ```python
 from microjson import microjson2vt
 ```
 
-The module:
 ::: microjson.microjson2vt.microjson2vt.MicroJsonVt
     :docstring:
 
-## TileWriter module
+#### TileWriter
 
-The TileWriter module is a helper module that can be used to generate binary tiles from a large MicroJSON file, my utilizing both microjson2vt and vt2pbf.
+The TileWriter module generates binary tiles from a large MicroJSON file, utilizing both microjson2vt and vt2pbf.
+
 ::: microjson.tilewriter
     :docstring:
 
-An example of how to use the TileWriter module is located in the `src/microjson/examples/tiling.py` file of the repository. The example demonstrates how to generate binary tiles from a large MicroJSON file.
+An example is located at `src/microjson/examples/tiling.py`.
 
-## TileReader module
+#### TileReader
 
-Correspondingly, the TileReader module is a helper module that can be used to read binary tiles and convert them back to MicroJSON objects.
+The TileReader module reads binary tiles and converts them back to MicroJSON objects.
+
 ::: microjson.tilereader
     :docstring:
 
-An example of how to use the TileReader module is located in the `src/microjson/examples/readtiles.py` file of the repository. The example demonstrates how to read binary tiles and convert them back to MicroJSON objects.
+An example is located at `src/microjson/examples/readtiles.py`.
 
 ## TileJSON for MicroJSON example with Vector Layers
 

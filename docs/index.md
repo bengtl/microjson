@@ -28,6 +28,13 @@ Each geometry object MUST have a `"coordinates"` member with an array value. The
     - A subtype of “Polygon” is the “Rectangle” geometry: A polygon with an array of four 2D point coordinates representing the corners of the rectangle in a counterclockwise order. It has the property subtype with the value `“Rectangle”`.
 - **MultiPolygon**: The coordinates array must be an array of Polygon coordinate arrays.
 
+#### 3D Geometry Types
+
+MicroJSON supports 3D mesh geometries based on ISO 19107, enabling representation of complex 3D structures such as neurons, organelles, and tissue surfaces.
+
+- **PolyhedralSurface**: A closed surface mesh consisting of polygonal faces. The coordinates array must be an array of Polygon coordinate arrays, where each polygon represents a face of the surface. Each face follows the same structure as a Polygon (a list of linear rings of 3D positions). Must have at least one face.
+- **TIN** (Triangulated Irregular Network): A triangle mesh surface. Each face must be a single closed ring of exactly 4 positions (3 vertices + repeated first vertex to close the ring). Must have at least one face. This is the primary geometry type used for tiled 3D mesh data.
+
 ### GeometryCollection
 
 A GeometryCollection is an array of geometries (Point, multipoint, LinesString, MultiLineString, Polygon, MultiPolygon). It is possible for this array to be empty.
@@ -40,7 +47,7 @@ A feature object represents a spatially bounded entity associated with propertie
 - `"geometry"`: A geometry object as defined in the section above or a JSON null value.
 - `"properties"`: (Optional) A JSON object containing properties and metadata specific to the feature, or a JSON null value. It consists of key-value pairs, where the key is a string and the value is a any JSON value. The value may be a string, number, array, object.
 - `"id"`: (Optional) A unique identifier for this feature.
-- `"ref"`: (Optional) A reference to an external resource, e.g. URI to a zarr strcture, e.g. "s3://zarr-demo/store/my_array.zarr".
+- `"ref"`: (Optional) A reference to an external resource, e.g. URI to a zarr structure, e.g. "s3://zarr-demo/store/my_array.zarr".
 - `"parentId"`: (Optional) A reference to the parent feature, e.g. the id of the feature that this feature is a part of.
 - `"feeatureClass"`: (Optional) A string indicating the class of the feature, e.g. "cell", "nucleus", "mitochondria", etc.
 
