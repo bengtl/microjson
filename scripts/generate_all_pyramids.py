@@ -39,7 +39,7 @@ sys.path.insert(0, str(_ROOT / "scripts"))
 from microjson.tiling3d.generator3d import TileGenerator3D
 from microjson.tiling3d.octree import OctreeConfig
 
-from build_feature_index import build_index
+from build_feature_index import build_index, build_tilejson
 from obj_to_microjson import (
     build_collection,
     fetch_allen_ontology,
@@ -124,10 +124,18 @@ def generate_pyramid(
     gen_time = time.perf_counter() - t0
     print(f"  Generated {n_tiles} tiles in {_fmt_time(gen_time)}")
 
-    # Build feature index
+    # Build feature index and tilejson3d
     print("  Building feature index...")
-    index = build_index(tiles_dir)
-    (tiles_dir / "features.json").write_text(json.dumps(index, indent=2))
+    pyramid_root = output_dir / brain_id
+    index, zoom_counts, max_zoom_found = build_index(tiles_dir)
+    n_features = len(index.get("features", []))
+
+    # Write features.json to pyramid root
+    (pyramid_root / "features.json").write_text(json.dumps(index, indent=2))
+
+    # Write tilejson3d.json to pyramid root
+    tj = build_tilejson(zoom_counts, max_zoom_found)
+    (pyramid_root / "tilejson3d.json").write_text(json.dumps(tj, indent=2))
 
     total_size = _dir_size(tiles_dir)
     print(f"  Size: {_fmt_bytes(total_size)}")
@@ -135,17 +143,17 @@ def generate_pyramid(
     return {
         "id": brain_id,
         "label": f"MouseLight {brain_id}",
-        "path": f"{brain_id}/3dtiles",
+        "tilejson": "tilejson3d.json",
+        "features": "features.json",
         "tiles": n_tiles,
-        "features": len(index.get("features", {})),
-        "max_zoom": index.get("max_zoom", max_zoom),
+        "feature_count": n_features,
         "size_bytes": total_size,
     }
 
 
 def write_manifest(output_base: Path, pyramids: list[dict]) -> None:
-    """Write pyramids.json manifest."""
-    manifest = {"pyramids": pyramids}
+    """Write pyramids.json manifest in PyramidJSON format."""
+    manifest = {"version": "1.0", "pyramids": pyramids}
     path = output_base / "pyramids.json"
     path.write_text(json.dumps(manifest, indent=2))
     print(f"\nWrote manifest: {path}")
@@ -213,21 +221,39 @@ def main() -> None:
 
         if exists and not args.force:
             print(f"[{i}/{len(brains)}] {brain_id} — already exists, skipping (use --force)")
-            # Still include in manifest
-            index_path = tiles_dir / "features.json"
-            if index_path.exists():
-                index = json.loads(index_path.read_text())
+            pyramid_root = args.output_base / brain_id
+            # Rebuild feature index if needed
+            features_path = pyramid_root / "features.json"
+            if not features_path.exists():
+                # Try old location inside 3dtiles/
+                old_path = tiles_dir / "features.json"
+                if old_path.exists():
+                    features_path = old_path
+            if features_path.exists():
+                index = json.loads(features_path.read_text())
             else:
-                index = build_index(tiles_dir)
-                index_path.write_text(json.dumps(index, indent=2))
+                index, _, _ = build_index(tiles_dir)
+                (pyramid_root / "features.json").write_text(json.dumps(index, indent=2))
+
+            features = index.get("features", [])
+            n_features = len(features) if isinstance(features, list) else len(features)
+
+            # Read tilejson3d.json for zoom_counts if available
+            tj_path = pyramid_root / "tilejson3d.json"
+            if tj_path.exists():
+                tj = json.loads(tj_path.read_text())
+                n_tiles = sum(int(v) for v in tj.get("zoom_counts", {}).values())
+            else:
+                # Fallback: count .glb files
+                n_tiles = len(list(tiles_dir.rglob("*.glb")))
 
             pyramids.append({
                 "id": brain_id,
                 "label": f"MouseLight {brain_id}",
-                "path": f"{brain_id}/3dtiles",
-                "tiles": sum(index.get("zoom_counts", {}).values()),
-                "features": len(index.get("features", {})),
-                "max_zoom": index.get("max_zoom", 3),
+                "tilejson": "tilejson3d.json",
+                "features": "features.json",
+                "tiles": n_tiles,
+                "feature_count": n_features,
                 "size_bytes": _dir_size(tiles_dir),
             })
             continue
@@ -251,7 +277,7 @@ def main() -> None:
     print(f"Total time: {_fmt_time(total_time)}")
     print(f"Pyramids: {len(pyramids)}")
     for p in pyramids:
-        print(f"  {p['id']}: {p['tiles']} tiles, {p['features']} features, {_fmt_bytes(p['size_bytes'])}")
+        print(f"  {p['id']}: {p['tiles']} tiles, {p.get('feature_count', '?')} features, {_fmt_bytes(p['size_bytes'])}")
 
 
 if __name__ == "__main__":

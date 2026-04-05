@@ -58,7 +58,7 @@ features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/"]
-pythonpath = ["src/"]
+pythonpath = ["src/", "."]
 
 [tool.bumpver]
 current_version = "0.4.2"
@@ -81,4 +81,8 @@ ignore-regex = '^\s*"image/\S+": ".*'
 [dependency-groups]
 dev = [
     "brotli>=1.2.0",
+    "matplotlib>=3.10.8",
+    "scikit-image>=0.26.0",
+    "scikit-learn>=1.8.0",
+    "torch>=2.10.0",
 ]

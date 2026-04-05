@@ -10,7 +10,8 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use rayon::prelude::*;
 use ahash::AHashMap;
@@ -33,6 +34,76 @@ const TIN: u8 = 5;
 
 /// Small epsilon for boundary points (matches Python octree._EPS).
 const EPS: f64 = 1e-10;
+
+/// Check if a triangle (given as indices into a positions array) is non-degenerate.
+/// Returns false if indices are duplicate, altitude < 1% of longest edge
+/// (sliver artifact), or longest edge exceeds `max_edge_sq` (oversized artifact
+/// from QEM simplification at coarse zoom levels).
+#[inline]
+fn is_valid_triangle(positions: &[f32], tri: &[u32; 3], max_edge_sq: f32) -> bool {
+    if tri[0] == tri[1] || tri[1] == tri[2] || tri[0] == tri[2] {
+        return false;
+    }
+    let p0 = &positions[(tri[0] as usize * 3)..][..3];
+    let p1 = &positions[(tri[1] as usize * 3)..][..3];
+    let p2 = &positions[(tri[2] as usize * 3)..][..3];
+    let e0 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+    let e1 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+    let cx = e0[1] * e1[2] - e0[2] * e1[1];
+    let cy = e0[2] * e1[0] - e0[0] * e1[2];
+    let cz = e0[0] * e1[1] - e0[1] * e1[0];
+    let area_sq = (cx * cx + cy * cy + cz * cz) as f64;
+    let e2 = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+    let longest_edge_sq = ((e0[0] * e0[0] + e0[1] * e0[1] + e0[2] * e0[2]) as f64)
+        .max((e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]) as f64)
+        .max((e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2]) as f64);
+    // Reject oversized triangles (edge > threshold)
+    if longest_edge_sq > max_edge_sq as f64 {
+        return false;
+    }
+    // Reject slivers (altitude < 1% of longest edge)
+    longest_edge_sq <= 0.0 || area_sq >= 1e-4 * longest_edge_sq * longest_edge_sq
+}
+
+/// Remove oversized triangles from an index buffer after QEM simplification.
+/// Triangles with longest edge exceeding `max_edge_sq` are dropped in-place.
+fn filter_oversized_triangles(positions: &[f32], indices: &mut Vec<u32>, max_edge_sq: f32) {
+    let n_tris = indices.len() / 3;
+    let mut write = 0usize;
+    for t in 0..n_tris {
+        let tri = [indices[t * 3], indices[t * 3 + 1], indices[t * 3 + 2]];
+        if is_valid_triangle(positions, &tri, max_edge_sq) {
+            if write != t * 3 {
+                indices[write] = tri[0];
+                indices[write + 1] = tri[1];
+                indices[write + 2] = tri[2];
+            }
+            write += 3;
+        }
+    }
+    indices.truncate(write);
+}
+
+/// Compute max allowed edge² for a tile at a given zoom level (normalized [0,1]³ coords).
+/// Threshold = (3 × tile diagonal)².
+#[inline]
+fn tile_max_edge_sq_normalized(base_cells: u32, zoom: u32) -> f32 {
+    let cells = base_cells as f64 * (1u64 << zoom) as f64;
+    let cell_size = 1.0 / cells;
+    // 3× tile diagonal: 9 × 3 × cell_size²
+    (27.0 * cell_size * cell_size) as f32
+}
+
+/// Compute max allowed edge² for a tile at a given zoom level (world coords).
+/// Threshold = (3 × tile diagonal)².
+#[inline]
+fn tile_max_edge_sq_world(base_cells: u32, zoom: u32, dx: f64, dy: f64, dz: f64) -> f32 {
+    let cells = base_cells as f64 * (1u64 << zoom) as f64;
+    let cx = dx / cells;
+    let cy = dy / cells;
+    let cz = dz / cells;
+    (9.0 * (cx * cx + cy * cy + cz * cz)) as f32
+}
 
 /// Unique generator ID counter for temp file naming.
 static GENERATOR_ID: AtomicU32 = AtomicU32::new(0);
@@ -71,6 +142,132 @@ fn compute_bbox_rs(xy: &[f64], z: &[f64]) -> BBox3D {
         bb.expand(xy[j * 2], xy[j * 2 + 1], z[j]);
     }
     bb
+}
+
+// ---------------------------------------------------------------------------
+// Pre-simplify helpers: build indexed mesh, convert back to ClipFeature,
+// and simplify-then-clip per zoom level
+// ---------------------------------------------------------------------------
+
+/// Convert OBJ vertices + faces to an indexed f32 mesh in [0,1]³ normalized coords.
+///
+/// Returns (positions, indices, bbox) where:
+/// - positions: flat f32 [x,y,z, x,y,z, ...] in [0,1]³
+/// - indices: flat u32 triangle indices [i0,i1,i2, ...]
+/// - bbox: bounding box of the normalized positions
+fn build_indexed_mesh(
+    vertices: &[[f64; 3]],
+    faces: &[[u32; 3]],
+    xmin: f64, ymin: f64, zmin: f64,
+    dx: f64, dy: f64, dz: f64,
+) -> (Vec<f32>, Vec<u32>, BBox3D) {
+    let mut positions = Vec::with_capacity(vertices.len() * 3);
+    let mut bb = BBox3D::empty();
+
+    for v in vertices {
+        let px = ((v[0] - xmin) / dx) as f32;
+        let py = ((v[1] - ymin) / dy) as f32;
+        let pz = ((v[2] - zmin) / dz) as f32;
+        positions.push(px);
+        positions.push(py);
+        positions.push(pz);
+        bb.expand(px as f64, py as f64, pz as f64);
+    }
+
+    let mut indices = Vec::with_capacity(faces.len() * 3);
+    for face in faces {
+        indices.push(face[0]);
+        indices.push(face[1]);
+        indices.push(face[2]);
+    }
+
+    (positions, indices, bb)
+}
+
+/// Convert an indexed f32 mesh back to ring-based ClipFeature format.
+///
+/// Each triangle becomes a 4-vertex ring (v0, v1, v2, v0) with f64 coords,
+/// matching the format expected by `octree_clip()`.
+fn indexed_mesh_to_clip_feature(
+    positions: &[f32],
+    indices: &[u32],
+    bbox: BBox3D,
+) -> ClipFeature {
+    let n_tris = indices.len() / 3;
+    let n_verts_total = n_tris * 4; // 4 verts per ring (closed triangle)
+    let mut xy = Vec::with_capacity(n_verts_total * 2);
+    let mut z = Vec::with_capacity(n_verts_total);
+    let ring_lengths = vec![4u32; n_tris];
+
+    for tri in 0..n_tris {
+        let i0 = indices[tri * 3] as usize;
+        let i1 = indices[tri * 3 + 1] as usize;
+        let i2 = indices[tri * 3 + 2] as usize;
+        // 4 vertices: v0, v1, v2, v0 (closed ring)
+        for &vi in &[i0, i1, i2, i0] {
+            xy.push(positions[vi * 3] as f64);
+            xy.push(positions[vi * 3 + 1] as f64);
+            z.push(positions[vi * 3 + 2] as f64);
+        }
+    }
+
+    ClipFeature { xy, z, ring_lengths, geom_type: TIN, bbox }
+}
+
+/// Pre-simplify a mesh and clip per zoom level using cascaded simplification.
+///
+/// Cascading: simplify full mesh → zoom max-1, then that result → zoom max-2, etc.
+/// Each step starts from the previous (smaller) mesh, so QEM runs on progressively
+/// fewer triangles. For a 10M-tri mesh with max_zoom=4:
+///   zoom 4: 10M tris (full)
+///   zoom 3: simplify 10M → 150K (expensive, but only once)
+///   zoom 2: simplify 150K → 20K (fast)
+///   zoom 1: simplify 20K → 2K (instant)
+///   zoom 0: simplify 2K → 600 (instant)
+fn simplify_and_clip_per_zoom(
+    positions: &[f32],
+    indices: &[u32],
+    bbox: BBox3D,
+    min_zoom: u32,
+    max_zoom: u32,
+    base_cells: u32,
+    buffer: f64,
+) -> Vec<((u32, u32, u32, u32), ClipFeature)> {
+    let mut result = Vec::new();
+    let full_index_count = indices.len();
+
+    // Start with full mesh, cascade downward
+    let mut cur_pos = positions.to_vec();
+    let mut cur_idx = indices.to_vec();
+
+    for zoom in (min_zoom..=max_zoom).rev() {
+        if zoom < max_zoom {
+            // Cascade: simplify from current (already reduced) mesh
+            let target_idx = simplify::compute_target_index_count(
+                base_cells, zoom, max_zoom, full_index_count,
+            );
+            let target_tris = target_idx / 3;
+            if target_tris == 0 {
+                continue;
+            }
+            let (sp, mut si) = simplify::simplify_mesh(&cur_pos, &cur_idx, target_tris);
+            if si.is_empty() {
+                continue;
+            }
+            filter_oversized_triangles(&sp, &mut si, tile_max_edge_sq_normalized(base_cells, zoom));
+            if si.is_empty() {
+                continue;
+            }
+            cur_pos = sp;
+            cur_idx = si;
+        }
+
+        let clip_feat = indexed_mesh_to_clip_feature(&cur_pos, &cur_idx, bbox);
+        let mut clipped = octree_clip(&clip_feat, zoom, zoom, buffer);
+        result.append(&mut clipped);
+    }
+
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -511,9 +708,9 @@ fn encode_tile_from_fragments(
         let mut new_z: Vec<i64> = Vec::with_capacity(nv);
 
         for i in 0..nv {
-            let lx = (frag.xy[i * 2] - x0) * scale_x;
-            let ly = (frag.xy[i * 2 + 1] - y0) * scale_y;
-            let lz = (frag.z[i] - z0) * scale_z;
+            let lx = (frag.xy[i * 2] as f64 - x0) * scale_x;
+            let ly = (frag.xy[i * 2 + 1] as f64 - y0) * scale_y;
+            let lz = (frag.z[i] as f64 - z0) * scale_z;
             new_xy.push(tile_transform::round_half_to_even(lx * extent as f64));
             new_xy.push(tile_transform::round_half_to_even(ly * extent as f64));
             new_z.push(tile_transform::round_half_to_even(lz * extent_z as f64));
@@ -740,9 +937,9 @@ fn encode_feature_pbf3(
                 let mut tri = [0u32; 3];
                 for vi_off in 0..3 {
                     let vi = offset + vi_off;
-                    let wx = xmin + frag.xy[vi * 2] * dx;
-                    let wy = ymin + frag.xy[vi * 2 + 1] * dy;
-                    let wz = zmin + frag.z[vi] * dz;
+                    let wx = xmin + frag.xy[vi * 2] as f64 * dx;
+                    let wy = ymin + frag.xy[vi * 2 + 1] as f64 * dy;
+                    let wz = zmin + frag.z[vi] as f64 * dz;
 
                     // Update bbox
                     if wx < bb_min[0] { bb_min[0] = wx; }
@@ -777,7 +974,7 @@ fn encode_feature_pbf3(
                 }
 
                 // Skip degenerate triangles
-                if tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2] {
+                if is_valid_triangle(&positions, &tri, f32::MAX) {
                     indices.extend_from_slice(&tri);
                 }
 
@@ -804,9 +1001,9 @@ fn encode_feature_pbf3(
 
         // Compute world coordinates and update bbox
         for i in 0..n_verts {
-            let wx = xmin + frag.xy[i * 2] * dx;
-            let wy = ymin + frag.xy[i * 2 + 1] * dy;
-            let wz = zmin + frag.z[i] * dz;
+            let wx = xmin + frag.xy[i * 2] as f64 * dx;
+            let wy = ymin + frag.xy[i * 2 + 1] as f64 * dy;
+            let wz = zmin + frag.z[i] as f64 * dz;
             if wx < bb_min[0] { bb_min[0] = wx; }
             if wy < bb_min[1] { bb_min[1] = wy; }
             if wz < bb_min[2] { bb_min[2] = wz; }
@@ -827,9 +1024,9 @@ fn encode_feature_pbf3(
         let mut new_z: Vec<i64> = Vec::with_capacity(n_verts);
 
         for i in 0..n_verts {
-            let wx = xmin + frag.xy[i * 2] * dx;
-            let wy = ymin + frag.xy[i * 2 + 1] * dy;
-            let wz = zmin + frag.z[i] * dz;
+            let wx = xmin + frag.xy[i * 2] as f64 * dx;
+            let wy = ymin + frag.xy[i * 2 + 1] as f64 * dy;
+            let wz = zmin + frag.z[i] as f64 * dz;
             let lx = (wx - feat_xmin) / feat_dx;
             let ly = (wy - feat_ymin) / feat_dy;
             let lz = (wz - feat_zmin) / feat_dz;
@@ -1058,9 +1255,9 @@ fn encode_feature_pbf3_multilod(
                         let mut tri = [0u32; 3];
                         for vi_off in 0..3 {
                             let vi = offset + vi_off;
-                            let wx_f32 = (xmin + frag.xy[vi * 2] * dx) as f32;
-                            let wy_f32 = (ymin + frag.xy[vi * 2 + 1] * dy) as f32;
-                            let wz_f32 = (zmin + frag.z[vi] * dz) as f32;
+                            let wx_f32 = (xmin + frag.xy[vi * 2] as f64 * dx) as f32;
+                            let wy_f32 = (ymin + frag.xy[vi * 2 + 1] as f64 * dy) as f32;
+                            let wz_f32 = (zmin + frag.z[vi] as f64 * dz) as f32;
 
                             let key = (
                                 wx_f32.to_bits() as i64,
@@ -1082,7 +1279,7 @@ fn encode_feature_pbf3_multilod(
                             tri[vi_off] = idx;
                         }
 
-                        if tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2] {
+                        if is_valid_triangle(&positions, &tri, f32::MAX) {
                             indices.extend_from_slice(&tri);
                         }
                         offset += rl;
@@ -1096,7 +1293,8 @@ fn encode_feature_pbf3_multilod(
                     base_cells, zoom, max_zoom, indices.len(),
                 );
                 let target_tris = target_idx / 3;
-                let (sp, si) = simplify::simplify_mesh(&positions, &indices, target_tris);
+                let (sp, mut si) = simplify::simplify_mesh(&positions, &indices, target_tris);
+                filter_oversized_triangles(&sp, &mut si, tile_max_edge_sq_world(base_cells, zoom, dx, dy, dz));
                 positions = sp;
                 indices = si;
             }
@@ -1136,9 +1334,9 @@ fn encode_feature_pbf3_multilod(
             let mut local_bb_min = [f64::INFINITY; 3];
             let mut local_bb_max = [f64::NEG_INFINITY; 3];
             for i in 0..n_verts {
-                let wx = xmin + frag.xy[i * 2] * dx;
-                let wy = ymin + frag.xy[i * 2 + 1] * dy;
-                let wz = zmin + frag.z[i] * dz;
+                let wx = xmin + frag.xy[i * 2] as f64 * dx;
+                let wy = ymin + frag.xy[i * 2 + 1] as f64 * dy;
+                let wz = zmin + frag.z[i] as f64 * dz;
                 if wx < local_bb_min[0] { local_bb_min[0] = wx; }
                 if wy < local_bb_min[1] { local_bb_min[1] = wy; }
                 if wz < local_bb_min[2] { local_bb_min[2] = wz; }
@@ -1162,9 +1360,9 @@ fn encode_feature_pbf3_multilod(
             let mut new_xy: Vec<i64> = Vec::with_capacity(n_verts * 2);
             let mut new_z: Vec<i64> = Vec::with_capacity(n_verts);
             for i in 0..n_verts {
-                let wx = xmin + frag.xy[i * 2] * dx;
-                let wy = ymin + frag.xy[i * 2 + 1] * dy;
-                let wz = zmin + frag.z[i] * dz;
+                let wx = xmin + frag.xy[i * 2] as f64 * dx;
+                let wy = ymin + frag.xy[i * 2 + 1] as f64 * dy;
+                let wz = zmin + frag.z[i] as f64 * dz;
                 let lx = (wx - local_bb_min[0]) / feat_dx;
                 let ly = (wy - local_bb_min[1]) / feat_dy;
                 let lz = (wz - local_bb_min[2]) / feat_dz;
@@ -1279,173 +1477,700 @@ const DEFAULT_BASE_CELLS: u32 = 10;
 /// For TIN/PolyhedralSurface at non-leaf zoom levels, vertices are snapped to a
 /// world-aligned grid (BASE_CELLS * 2^zoom cells per axis) to produce LOD.
 /// At max_zoom, exact vertex dedup is used instead.
-fn encode_glb_tile_from_fragments(
-    frags: &[Fragment],
+/// Convert a single fragment into a GlbFeature (vertex dedup + QEM simplification).
+///
+/// Pure function with no shared state — safe to call from `par_iter`.
+fn fragment_to_glb_feature(
+    frag: &Fragment,
     tags_registry: &HashMap<u32, Vec<(String, TagValue)>>,
-    world_bounds: &(f64, f64, f64, f64, f64, f64),
-    tz: u32,
+    xmin: f64, ymin: f64, zmin: f64,
+    dx: f64, dy: f64, dz: f64,
+    do_simplify: bool,
     max_zoom: u32,
     base_cells: u32,
-    compression: &str,
-) -> Vec<u8> {
-    let (xmin, ymin, zmin, xmax, ymax, zmax) = *world_bounds;
-    let dx = if xmax != xmin { xmax - xmin } else { 1.0 };
-    let dy = if ymax != ymin { ymax - ymin } else { 1.0 };
-    let dz = if zmax != zmin { zmax - zmin } else { 1.0 };
+    tz: u32,
+) -> Option<GlbFeature> {
+    let n_verts = frag.z.len();
+    if n_verts == 0 {
+        return None;
+    }
 
-    let do_simplify = tz < max_zoom;
-
-    let mut features: Vec<GlbFeature> = Vec::new();
-
-    for frag in frags {
-        let n_verts = frag.z.len();
-        if n_verts == 0 {
-            continue;
-        }
-
-        // Build tags as JSON extras
-        let extras = tags_registry.get(&frag.feature_id).map(|tags| {
-            let obj: serde_json::Map<String, serde_json::Value> = tags
-                .iter()
-                .map(|(k, v)| {
-                    let jv = match v {
-                        TagValue::Str(s) => serde_json::json!(s),
-                        TagValue::Int(i) => serde_json::json!(i),
-                        TagValue::Float(f) => serde_json::json!(f),
-                        TagValue::Bool(b) => serde_json::json!(b),
-                    };
-                    (k.clone(), jv)
-                })
-                .collect();
-            serde_json::Value::Object(obj)
-        });
-
-        match frag.geom_type {
-            5 | 4 => {
-                // TIN or PolyhedralSurface — build indexed mesh with f32 dedup
-                let rls: Vec<usize> = if frag.ring_lengths.is_empty() {
-                    vec![n_verts]
-                } else {
-                    frag.ring_lengths.iter().map(|&r| r as usize).collect()
+    // Build tags as JSON extras
+    let extras = tags_registry.get(&frag.feature_id).map(|tags| {
+        let obj: serde_json::Map<String, serde_json::Value> = tags
+            .iter()
+            .map(|(k, v)| {
+                let jv = match v {
+                    TagValue::Str(s) => serde_json::json!(s),
+                    TagValue::Int(i) => serde_json::json!(i),
+                    TagValue::Float(f) => serde_json::json!(f),
+                    TagValue::Bool(b) => serde_json::json!(b),
                 };
-                let n_faces = rls.len();
-                let do_simplify_this = do_simplify && n_faces > 4;
+                (k.clone(), jv)
+            })
+            .collect();
+        serde_json::Value::Object(obj)
+    });
 
-                // Build indexed mesh with exact f32 vertex dedup
-                let mut positions: Vec<f32> = Vec::new();
-                let mut indices: Vec<u32> = Vec::new();
-                {
-                    let mut vertex_map: AHashMap<(u32, u32, u32), u32> = AHashMap::new();
-                    let mut offset = 0usize;
-                    for &rl in &rls {
-                        let nv = if rl >= 4 { 3 } else { rl };
-                        if nv == 3 && offset + 2 < n_verts {
-                            let mut tri = [0u32; 3];
-                            for vi_off in 0..3 {
-                                let vi = offset + vi_off;
-                                let wx = (xmin + frag.xy[vi * 2] * dx) as f32;
-                                let wy = (ymin + frag.xy[vi * 2 + 1] * dy) as f32;
-                                let wz = (zmin + frag.z[vi] * dz) as f32;
-                                let key = (wx.to_bits(), wy.to_bits(), wz.to_bits());
-                                let idx = match vertex_map.get(&key) {
-                                    Some(&idx) => idx,
-                                    None => {
-                                        let idx = (positions.len() / 3) as u32;
-                                        vertex_map.insert(key, idx);
-                                        positions.push(wx);
-                                        positions.push(wy);
-                                        positions.push(wz);
-                                        idx
-                                    }
-                                };
-                                tri[vi_off] = idx;
-                            }
-                            if tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2] {
-                                indices.extend_from_slice(&tri);
+    match frag.geom_type {
+        5 | 4 => {
+            // TIN or PolyhedralSurface — build indexed mesh with f32 dedup
+            let rls: Vec<usize> = if frag.ring_lengths.is_empty() {
+                vec![n_verts]
+            } else {
+                frag.ring_lengths.iter().map(|&r| r as usize).collect()
+            };
+            let n_faces = rls.len();
+            let do_simplify_this = do_simplify && n_faces > 4;
+
+            // Build indexed mesh with exact f32 vertex dedup
+            let mut positions: Vec<f32> = Vec::new();
+            let mut indices: Vec<u32> = Vec::new();
+            {
+                let mut vertex_map: AHashMap<(u32, u32, u32), u32> = AHashMap::new();
+                let mut offset = 0usize;
+                for &rl in &rls {
+                    let nv = if rl >= 4 { 3 } else { rl };
+                    if nv == 3 && offset + 2 < n_verts {
+                        let mut tri = [0u32; 3];
+                        for vi_off in 0..3 {
+                            let vi = offset + vi_off;
+                            let wx = (xmin + frag.xy[vi * 2] as f64 * dx) as f32;
+                            let wy = (ymin + frag.xy[vi * 2 + 1] as f64 * dy) as f32;
+                            let wz = (zmin + frag.z[vi] as f64 * dz) as f32;
+                            let key = (wx.to_bits(), wy.to_bits(), wz.to_bits());
+                            let idx = match vertex_map.get(&key) {
+                                Some(&idx) => idx,
+                                None => {
+                                    let idx = (positions.len() / 3) as u32;
+                                    vertex_map.insert(key, idx);
+                                    positions.push(wx);
+                                    positions.push(wy);
+                                    positions.push(wz);
+                                    idx
+                                }
+                            };
+                            tri[vi_off] = idx;
+                        }
+                        if is_valid_triangle(&positions, &tri, f32::MAX) {
+                            indices.extend_from_slice(&tri);
+                        }
+                    }
+                    offset += rl;
+                }
+            }
+
+            // QEM simplification for coarser LODs
+            if do_simplify_this && indices.len() > 12 {
+                let target_idx = simplify::compute_target_index_count(
+                    base_cells, tz, max_zoom, indices.len(),
+                );
+                let target_tris = target_idx / 3;
+                let (sp, mut si) = simplify::simplify_mesh(&positions, &indices, target_tris);
+                filter_oversized_triangles(&sp, &mut si, tile_max_edge_sq_world(base_cells, tz, dx, dy, dz));
+                positions = sp;
+                indices = si;
+            }
+
+            if !positions.is_empty() && !indices.is_empty() {
+                Some(GlbFeature {
+                    positions,
+                    indices,
+                    mode: encoder_glb::MODE_TRIANGLES,
+                    extras,
+                })
+            } else {
+                None
+            }
+        }
+        2 => {
+            // LineString — line segments
+            let mut positions: Vec<f32> = Vec::new();
+            let mut indices: Vec<u32> = Vec::new();
+
+            for i in 0..n_verts {
+                let wx = (xmin + frag.xy[i * 2] as f64 * dx) as f32;
+                let wy = (ymin + frag.xy[i * 2 + 1] as f64 * dy) as f32;
+                let wz = (zmin + frag.z[i] as f64 * dz) as f32;
+                positions.push(wx);
+                positions.push(wy);
+                positions.push(wz);
+            }
+
+            for i in 0..n_verts.saturating_sub(1) {
+                indices.push(i as u32);
+                indices.push((i + 1) as u32);
+            }
+
+            if !positions.is_empty() && !indices.is_empty() {
+                Some(GlbFeature {
+                    positions,
+                    indices,
+                    mode: encoder_glb::MODE_LINES,
+                    extras,
+                })
+            } else {
+                None
+            }
+        }
+        1 => {
+            // Point
+            let mut positions: Vec<f32> = Vec::new();
+            for i in 0..n_verts {
+                let wx = (xmin + frag.xy[i * 2] as f64 * dx) as f32;
+                let wy = (ymin + frag.xy[i * 2 + 1] as f64 * dy) as f32;
+                let wz = (zmin + frag.z[i] as f64 * dz) as f32;
+                positions.push(wx);
+                positions.push(wy);
+                positions.push(wz);
+            }
+
+            if !positions.is_empty() {
+                Some(GlbFeature {
+                    positions,
+                    indices: vec![],
+                    mode: encoder_glb::MODE_POINTS,
+                    extras,
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bucketed redistribution for streaming tile generation
+// ---------------------------------------------------------------------------
+
+/// Redistribute fragments from ingestion shards into bucket files keyed by
+/// tile hash. This allows processing one bucket at a time instead of loading
+/// all fragments into memory.
+///
+/// Parallelized: each ingestion shard is read on a separate rayon thread,
+/// writing to per-shard bucket files. The final bucket for each index is
+/// the collection of per-shard files for that bucket.
+///
+/// Returns the paths of the merged bucket files (one per bucket).
+/// Simplify a TIN/PolyhedralSurface fragment via QEM for coarse zoom levels.
+/// Builds indexed mesh, runs QEM, converts back to ring format.
+fn simplify_fragment(frag: Fragment, base_cells: u32, max_zoom: u32) -> Fragment {
+    let n_verts = frag.z.len();
+    if n_verts == 0 || (frag.geom_type != 4 && frag.geom_type != 5) {
+        return frag;
+    }
+
+    let rls: Vec<usize> = if frag.ring_lengths.is_empty() {
+        vec![n_verts]
+    } else {
+        frag.ring_lengths.iter().map(|&r| r as usize).collect()
+    };
+    let n_faces = rls.len();
+    if n_faces <= 4 {
+        return frag;
+    }
+
+    // Build indexed mesh with f32 vertex dedup (same logic as fragment_to_glb_feature)
+    let mut positions: Vec<f32> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    {
+        let mut vertex_map: AHashMap<(u32, u32, u32), u32> = AHashMap::new();
+        let mut offset = 0usize;
+        for &rl in &rls {
+            let nv = if rl >= 4 { 3 } else { rl };
+            if nv == 3 && offset + 2 < n_verts {
+                let mut tri = [0u32; 3];
+                for vi_off in 0..3 {
+                    let vi = offset + vi_off;
+                    // Keep in [0,1] normalized coords (not world coords)
+                    let px = frag.xy[vi * 2];
+                    let py = frag.xy[vi * 2 + 1];
+                    let pz = frag.z[vi];
+                    let key = (px.to_bits(), py.to_bits(), pz.to_bits());
+                    let idx = match vertex_map.get(&key) {
+                        Some(&idx) => idx,
+                        None => {
+                            let idx = (positions.len() / 3) as u32;
+                            vertex_map.insert(key, idx);
+                            positions.push(px);
+                            positions.push(py);
+                            positions.push(pz);
+                            idx
+                        }
+                    };
+                    tri[vi_off] = idx;
+                }
+                if is_valid_triangle(&positions, &tri, f32::MAX) {
+                    indices.extend_from_slice(&tri);
+                }
+            }
+            offset += rl;
+        }
+    }
+
+    if indices.len() <= 12 {
+        return frag;
+    }
+
+    // QEM simplification
+    let target_idx = simplify::compute_target_index_count(
+        base_cells, frag.tile_z, max_zoom, indices.len(),
+    );
+    let target_tris = target_idx / 3;
+    let (sp, mut si) = simplify::simplify_mesh(&positions, &indices, target_tris);
+    filter_oversized_triangles(&sp, &mut si, tile_max_edge_sq_normalized(base_cells, frag.tile_z));
+
+    if si.is_empty() {
+        return frag;
+    }
+
+    // Convert back to ring format (4 vertices per triangle: v0, v1, v2, v0)
+    let n_tris = si.len() / 3;
+    let mut new_xy: Vec<f32> = Vec::with_capacity(n_tris * 4 * 2);
+    let mut new_z: Vec<f32> = Vec::with_capacity(n_tris * 4);
+    let new_ring_lengths: Vec<u32> = vec![4; n_tris];
+
+    for tri_idx in 0..n_tris {
+        let i0 = si[tri_idx * 3] as usize;
+        let i1 = si[tri_idx * 3 + 1] as usize;
+        let i2 = si[tri_idx * 3 + 2] as usize;
+        for &vi in &[i0, i1, i2, i0] {
+            new_xy.push(sp[vi * 3]);
+            new_xy.push(sp[vi * 3 + 1]);
+            new_z.push(sp[vi * 3 + 2]);
+        }
+    }
+
+    Fragment {
+        feature_id: frag.feature_id,
+        tile_z: frag.tile_z,
+        tile_x: frag.tile_x,
+        tile_y: frag.tile_y,
+        tile_d: frag.tile_d,
+        geom_type: frag.geom_type,
+        xy: new_xy,
+        z: new_z,
+        ring_lengths: new_ring_lengths,
+    }
+}
+
+fn redistribute_fragments_to_buckets(
+    frag_dir: &Path,
+    num_buckets: usize,
+    max_zoom: u32,
+    base_cells: u32,
+) -> io::Result<Vec<PathBuf>> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let bucket_dir = frag_dir.join("buckets");
+    std::fs::create_dir_all(&bucket_dir)?;
+
+    // Discover ingestion shard files (exclude the buckets subdirectory)
+    let mut shard_paths: Vec<PathBuf> = std::fs::read_dir(frag_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |ext| ext == "mjf"))
+        .collect();
+    shard_paths.sort();
+
+    if shard_paths.is_empty() {
+        // No fragments — create empty bucket directories
+        let mut bucket_dirs = Vec::with_capacity(num_buckets);
+        for i in 0..num_buckets {
+            let bdir = bucket_dir.join(format!("b_{:04}", i));
+            std::fs::create_dir_all(&bdir)?;
+            bucket_dirs.push(bdir);
+        }
+        return Ok(bucket_dirs);
+    }
+
+    // Phase 1: Each shard writes to its own set of bucket files in parallel.
+    // shard S writes to buckets/shard_{S}_bucket_{B}.mjf
+    let n_shards = shard_paths.len();
+    let errors: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    shard_paths.par_iter().enumerate().for_each(|(shard_idx, shard_path)| {
+        // Each thread creates its own bucket writers
+        let mut writers: Vec<Option<FragmentWriter>> = (0..num_buckets).map(|_| None).collect();
+
+        let mut reader = match FragmentReader::new(shard_path) {
+            Ok(r) => r,
+            Err(e) => {
+                errors.lock().unwrap().push(format!("shard {}: {}", shard_idx, e));
+                return;
+            }
+        };
+
+        loop {
+            match reader.read_next() {
+                Ok(Some(frag)) => {
+                    // Simplify coarse zoom meshes before writing to bucket
+                    let frag = if (frag.geom_type == 4 || frag.geom_type == 5)
+                                  && frag.tile_z < max_zoom {
+                        simplify_fragment(frag, base_cells, max_zoom)
+                    } else {
+                        frag
+                    };
+
+                    let mut hasher = DefaultHasher::new();
+                    (frag.tile_z, frag.tile_x, frag.tile_y, frag.tile_d).hash(&mut hasher);
+                    let bucket = (hasher.finish() as usize) % num_buckets;
+
+                    // Lazy-init writer for this bucket
+                    if writers[bucket].is_none() {
+                        let path = bucket_dir.join(
+                            format!("shard_{:03}_bucket_{:04}.mjf", shard_idx, bucket)
+                        );
+                        match FragmentWriter::new(&path) {
+                            Ok(w) => writers[bucket] = Some(w),
+                            Err(e) => {
+                                errors.lock().unwrap().push(format!(
+                                    "shard {} bucket {}: {}", shard_idx, bucket, e
+                                ));
+                                return;
                             }
                         }
-                        offset += rl;
+                    }
+
+                    if let Some(ref mut w) = writers[bucket] {
+                        if let Err(e) = w.write(&frag) {
+                            errors.lock().unwrap().push(format!(
+                                "shard {} bucket {} write: {}", shard_idx, bucket, e
+                            ));
+                            return;
+                        }
                     }
                 }
-
-                // QEM simplification for coarser LODs
-                if do_simplify_this && indices.len() > 12 {
-                    let target_idx = simplify::compute_target_index_count(
-                        base_cells, tz, max_zoom, indices.len(),
-                    );
-                    let target_tris = target_idx / 3;
-                    let (sp, si) = simplify::simplify_mesh(&positions, &indices, target_tris);
-                    positions = sp;
-                    indices = si;
-                }
-
-                if !positions.is_empty() && !indices.is_empty() {
-                    features.push(GlbFeature {
-                        positions,
-                        indices,
-                        mode: encoder_glb::MODE_TRIANGLES,
-                        extras,
-                    });
+                Ok(None) => break,
+                Err(e) => {
+                    errors.lock().unwrap().push(format!("shard {} read: {}", shard_idx, e));
+                    return;
                 }
             }
-            2 => {
-                // LineString — line segments
-                let mut positions: Vec<f32> = Vec::new();
-                let mut indices: Vec<u32> = Vec::new();
+        }
 
-                for i in 0..n_verts {
-                    let wx = xmin + frag.xy[i * 2] * dx;
-                    let wy = ymin + frag.xy[i * 2 + 1] * dy;
-                    let wz = zmin + frag.z[i] * dz;
-                    positions.push(wx as f32);
-                    positions.push(wy as f32);
-                    positions.push(wz as f32);
+        // Flush all writers for this shard
+        for w in writers.into_iter().flatten() {
+            // Drop handles flush via the Drop impl
+            drop(w);
+        }
+    });
+
+    let errs = errors.into_inner().unwrap();
+    if !errs.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::Other, errs.join("; ")));
+    }
+
+    // Phase 2: For each bucket index, collect all per-shard files into a
+    // single FragmentReader path list. We don't need to merge them into one
+    // file — FragmentReader::open_dir reads multiple files sequentially.
+    // Create per-bucket subdirectories with the per-shard files.
+    let mut bucket_dirs: Vec<PathBuf> = Vec::with_capacity(num_buckets);
+    for b in 0..num_buckets {
+        let bdir = bucket_dir.join(format!("b_{:04}", b));
+        std::fs::create_dir_all(&bdir)?;
+
+        // Move per-shard bucket files into this directory
+        for s in 0..n_shards {
+            let src = bucket_dir.join(format!("shard_{:03}_bucket_{:04}.mjf", s, b));
+            if src.exists() {
+                let dst = bdir.join(format!("shard_{:03}.mjf", s));
+                std::fs::rename(&src, &dst)?;
+            }
+        }
+        bucket_dirs.push(bdir);
+    }
+
+    Ok(bucket_dirs)
+}
+
+/// Memory-adaptive pipeline: per-zoom batched read → group → simplify → encode.
+///
+/// Processes each zoom level separately, with hash-based spatial batching to
+/// stay within the given memory budget. This scales from small datasets on
+/// laptops (128 GB) to 100+ TB datasets on large machines (768 GB+).
+///
+/// For each zoom level, estimates how many batches are needed to fit within
+/// `max_memory_bytes`, then for each batch reads all fragment files (keeping
+/// only matching zoom + batch), groups by tile key, simplifies, and encodes.
+///
+/// Fragment files are re-read for each (zoom, batch) pass. Sequential I/O and
+/// OS page cache make re-reads fast.
+///
+/// Returns (tile_count, tile_keys).
+fn read_group_simplify_encode(
+    frag_dir: &Path,
+    tags_registry: &HashMap<u32, Vec<(String, TagValue)>>,
+    out_dir: &Path,
+    xmin: f64, ymin: f64, zmin: f64,
+    dx: f64, dy: f64, dz: f64,
+    max_zoom: u32,
+    base_cells: u32,
+    effective_compression: &str,
+    max_memory_bytes: usize,
+) -> io::Result<(u32, Vec<(u32, u32, u32, u32)>)> {
+    use dashmap::DashMap;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    // Discover fragment files
+    let mut all_paths: Vec<PathBuf> = std::fs::read_dir(frag_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |ext| ext == "mjf"))
+        .collect();
+    all_paths.sort();
+
+    if all_paths.is_empty() {
+        return Ok((0, Vec::new()));
+    }
+
+    // Partition fragment files by zoom level based on naming convention:
+    //   "frag_XXXXX.mjf"       → plain: contains ALL zoom levels (small neurons)
+    //   "frag_XXXXX_zN.mjf"    → zoom-specific: coarse zoom N only (large neurons)
+    //   "frag_XXXXX_cXXXX.mjf" → chunk: max_zoom only (large neurons)
+    let mut files_per_zoom: Vec<Vec<PathBuf>> = (0..=max_zoom).map(|_| Vec::new()).collect();
+    let mut mixed_files: Vec<PathBuf> = Vec::new();
+
+    for path in &all_paths {
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if let Some(pos) = stem.rfind("_z") {
+            // Zoom-specific file: frag_XXXXX_zN
+            if let Ok(z) = stem[pos + 2..].parse::<u32>() {
+                if z <= max_zoom {
+                    files_per_zoom[z as usize].push(path.clone());
                 }
-
-                for i in 0..n_verts.saturating_sub(1) {
-                    indices.push(i as u32);
-                    indices.push((i + 1) as u32);
-                }
-
-                if !positions.is_empty() && !indices.is_empty() {
-                    features.push(GlbFeature {
-                        positions,
-                        indices,
-                        mode: encoder_glb::MODE_LINES,
-                        extras,
-                    });
+            } else {
+                mixed_files.push(path.clone());
+            }
+        } else if stem.contains("_c") {
+            // Chunk file: frag_XXXXX_cXXXX → max_zoom only
+            // Verify it's actually a chunk pattern (ends with digits after _c)
+            if let Some(pos) = stem.rfind("_c") {
+                if stem[pos + 2..].parse::<u32>().is_ok() {
+                    files_per_zoom[max_zoom as usize].push(path.clone());
+                } else {
+                    mixed_files.push(path.clone());
                 }
             }
-            1 => {
-                // Point
-                let mut positions: Vec<f32> = Vec::new();
-                for i in 0..n_verts {
-                    let wx = xmin + frag.xy[i * 2] * dx;
-                    let wy = ymin + frag.xy[i * 2 + 1] * dy;
-                    let wz = zmin + frag.z[i] * dz;
-                    positions.push(wx as f32);
-                    positions.push(wy as f32);
-                    positions.push(wz as f32);
-                }
-
-                if !positions.is_empty() {
-                    features.push(GlbFeature {
-                        positions,
-                        indices: vec![],
-                        mode: encoder_glb::MODE_POINTS,
-                        extras,
-                    });
-                }
-            }
-            _ => {}
+        } else {
+            // Plain file: contains all zoom levels
+            mixed_files.push(path.clone());
         }
     }
 
-    match compression {
-        "draco" => encoder_glb::encode_glb_draco(&features, 50),
-        "meshopt" => encoder_glb::encode_glb_meshopt(&features, 50),
-        _ => encoder_glb::encode_glb(&features),
+    // Add mixed (all-zoom) files to every zoom level
+    for zoom_files in &mut files_per_zoom {
+        zoom_files.extend(mixed_files.iter().cloned());
+        zoom_files.sort(); // maintain deterministic order
     }
+
+    // Log partition info
+    for (z, files) in files_per_zoom.iter().enumerate() {
+        let disk_bytes: u64 = files.iter()
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .sum();
+        eprintln!(
+            "[encode] zoom {}: {} files ({:.1} GB on disk)",
+            z, files.len(), disk_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+        );
+    }
+
+    // Process all zoom levels in parallel.
+    // Each zoom reads only its own files, groups fragments, and encodes GLBs.
+    let results: Vec<io::Result<(u32, Vec<(u32, u32, u32, u32)>)>> =
+        files_per_zoom.into_par_iter().enumerate().map(|(zoom_idx, zoom_files)| {
+            let zoom = zoom_idx as u32;
+
+            // Estimate memory for this zoom from actual file sizes
+            let zoom_disk_bytes: u64 = zoom_files.iter()
+                .filter_map(|p| std::fs::metadata(p).ok())
+                .map(|m| m.len())
+                .sum();
+            let zoom_estimate = (zoom_disk_bytes as f64 * 3.0) as usize; // ZSTD ~3x
+
+            // Batching: split into batches if estimated memory exceeds budget
+            let effective_budget = (max_memory_bytes as f64 * 0.8) as usize;
+            let n_batches = ((zoom_estimate + effective_budget - 1) / effective_budget).max(1);
+
+            let mut zoom_count = 0u32;
+            let mut zoom_keys = Vec::new();
+
+            for batch in 0..n_batches {
+                let groups: DashMap<(u32, u32, u32, u32), Vec<Fragment>> = DashMap::new();
+                let n_b = n_batches;
+
+                zoom_files.par_iter().for_each(|path| {
+                    let mut reader = match FragmentReader::new(path) {
+                        Ok(r) => r,
+                        Err(_) => return,
+                    };
+
+                    let mut local: AHashMap<(u32, u32, u32, u32), Vec<Fragment>> = AHashMap::new();
+
+                    loop {
+                        match reader.read_next() {
+                            Ok(Some(frag)) => {
+                                // Filter: only this zoom level (needed for mixed files)
+                                if frag.tile_z != zoom {
+                                    continue;
+                                }
+
+                                // Filter: only this batch (by tile key hash)
+                                if n_b > 1 {
+                                    let mut hasher = DefaultHasher::new();
+                                    (frag.tile_x, frag.tile_y, frag.tile_d).hash(&mut hasher);
+                                    if (hasher.finish() as usize) % n_b != batch {
+                                        continue;
+                                    }
+                                }
+
+                                let key = (frag.tile_z, frag.tile_x, frag.tile_y, frag.tile_d);
+                                local.entry(key).or_default().push(frag);
+                            }
+                            Ok(None) => break,
+                            Err(_) => break,
+                        }
+                    }
+
+                    // Batch-insert into shared DashMap
+                    for (key, mut frags) in local {
+                        groups.entry(key).or_default().extend(frags.drain(..));
+                    }
+                });
+
+                // Encode this batch's tile groups
+                let owned: AHashMap<(u32, u32, u32, u32), Vec<Fragment>> =
+                    groups.into_iter().collect();
+
+                if !owned.is_empty() {
+                    let (count, keys) = _encode_grouped_fragments(
+                        owned, tags_registry, out_dir,
+                        xmin, ymin, zmin, dx, dy, dz,
+                        max_zoom, base_cells, effective_compression,
+                    )?;
+                    zoom_count += count;
+                    zoom_keys.extend(keys);
+                }
+            }
+
+            eprintln!("[encode] zoom {} done: {} tiles", zoom, zoom_count);
+            Ok((zoom_count, zoom_keys))
+        }).collect();
+
+    // Aggregate results from all zoom levels
+    let mut total_count = 0u32;
+    let mut all_tile_keys = Vec::new();
+    for result in results {
+        let (count, keys) = result?;
+        total_count += count;
+        all_tile_keys.extend(keys);
+    }
+
+    Ok((total_count, all_tile_keys))
+}
+
+/// Encode all tiles from a bucket directory into GLB files.
+///
+/// The bucket_dir contains one or more `.mjf` shard files for this bucket.
+///
+/// Returns (tile_count, tile_keys).
+fn encode_bucket_to_3dtiles(
+    bucket_dir: &Path,
+    tags_registry: &HashMap<u32, Vec<(String, TagValue)>>,
+    out_dir: &Path,
+    xmin: f64, ymin: f64, zmin: f64,
+    dx: f64, dy: f64, dz: f64,
+    max_zoom: u32,
+    base_cells: u32,
+    effective_compression: &str,
+) -> io::Result<(u32, Vec<(u32, u32, u32, u32)>)> {
+    // Read all fragments from this bucket's shard files and group by tile key
+    let mut reader = FragmentReader::open_dir(bucket_dir)?;
+    let groups = reader.read_all_grouped()?;
+    _encode_grouped_fragments(groups, tags_registry, out_dir,
+        xmin, ymin, zmin, dx, dy, dz, max_zoom, base_cells, effective_compression)
+}
+
+/// Encode a single bucket file into GLB tiles.
+fn encode_bucket_file_to_3dtiles(
+    bucket_file: &Path,
+    tags_registry: &HashMap<u32, Vec<(String, TagValue)>>,
+    out_dir: &Path,
+    xmin: f64, ymin: f64, zmin: f64,
+    dx: f64, dy: f64, dz: f64,
+    max_zoom: u32,
+    base_cells: u32,
+    effective_compression: &str,
+) -> io::Result<(u32, Vec<(u32, u32, u32, u32)>)> {
+    let mut reader = FragmentReader::new(bucket_file)?;
+    let groups = reader.read_all_grouped()?;
+    _encode_grouped_fragments(groups, tags_registry, out_dir,
+        xmin, ymin, zmin, dx, dy, dz, max_zoom, base_cells, effective_compression)
+}
+
+/// Shared encoding logic for grouped fragments.
+fn _encode_grouped_fragments(
+    groups: AHashMap<(u32, u32, u32, u32), Vec<Fragment>>,
+    tags_registry: &HashMap<u32, Vec<(String, TagValue)>>,
+    out_dir: &Path,
+    xmin: f64, ymin: f64, zmin: f64,
+    dx: f64, dy: f64, dz: f64,
+    max_zoom: u32,
+    base_cells: u32,
+    effective_compression: &str,
+) -> io::Result<(u32, Vec<(u32, u32, u32, u32)>)> {
+
+    let mut tiles: Vec<((u32, u32, u32, u32), Vec<Fragment>)> = groups.into_iter().collect();
+    tiles.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+    let tile_keys: Vec<(u32, u32, u32, u32)> = tiles.iter().map(|(k, _)| *k).collect();
+
+    const INNER_PAR_THRESHOLD: usize = 16;
+
+    let count: u32 = tiles.par_iter()
+        .map(|((tz, tx, ty, td), frags)| {
+            // Simplification already done during redistribution — skip here
+            let do_simplify = false;
+
+            let features: Vec<GlbFeature> = if frags.len() >= INNER_PAR_THRESHOLD {
+                frags.par_iter().filter_map(|frag| {
+                    fragment_to_glb_feature(
+                        frag, tags_registry, xmin, ymin, zmin, dx, dy, dz,
+                        do_simplify, max_zoom, base_cells, *tz,
+                    )
+                }).collect()
+            } else {
+                frags.iter().filter_map(|frag| {
+                    fragment_to_glb_feature(
+                        frag, tags_registry, xmin, ymin, zmin, dx, dy, dz,
+                        do_simplify, max_zoom, base_cells, *tz,
+                    )
+                }).collect()
+            };
+
+            let data = match effective_compression {
+                "draco" => encoder_glb::encode_glb_draco(&features, 50),
+                "meshopt" => encoder_glb::encode_glb_meshopt(&features, 50),
+                _ => encoder_glb::encode_glb(&features),
+            };
+            let tile_path = out_dir
+                .join(tz.to_string())
+                .join(tx.to_string())
+                .join(ty.to_string())
+                .join(format!("{}.glb", td));
+            if let Some(parent) = tile_path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            std::fs::write(&tile_path, data).ok();
+            1u32
+        })
+        .sum();
+
+    Ok((count, tile_keys))
 }
 
 // ---------------------------------------------------------------------------
@@ -1523,9 +2248,9 @@ fn collect_parquet_rows(
                         let mut positions: Vec<f32> = Vec::with_capacity(n_verts * 3);
                         let mut indices: Vec<u32> = Vec::with_capacity(n_verts.saturating_sub(1) * 2);
                         for i in 0..n_verts {
-                            positions.push((xmin + frag.xy[i * 2] * dx) as f32);
-                            positions.push((ymin + frag.xy[i * 2 + 1] * dy) as f32);
-                            positions.push((zmin + frag.z[i] * dz) as f32);
+                            positions.push((xmin + frag.xy[i * 2] as f64 * dx) as f32);
+                            positions.push((ymin + frag.xy[i * 2 + 1] as f64 * dy) as f32);
+                            positions.push((zmin + frag.z[i] as f64 * dz) as f32);
                         }
                         for i in 0..n_verts.saturating_sub(1) {
                             indices.push(i as u32);
@@ -1537,9 +2262,9 @@ fn collect_parquet_rows(
                         // Point
                         let mut positions: Vec<f32> = Vec::with_capacity(n_verts * 3);
                         for i in 0..n_verts {
-                            positions.push((xmin + frag.xy[i * 2] * dx) as f32);
-                            positions.push((ymin + frag.xy[i * 2 + 1] * dy) as f32);
-                            positions.push((zmin + frag.z[i] * dz) as f32);
+                            positions.push((xmin + frag.xy[i * 2] as f64 * dx) as f32);
+                            positions.push((ymin + frag.xy[i * 2 + 1] as f64 * dy) as f32);
+                            positions.push((zmin + frag.z[i] as f64 * dz) as f32);
                         }
                         (positions, Vec::new())
                     }
@@ -1598,7 +2323,9 @@ fn parquet_tin_simplified(
         base_cells, zoom, max_zoom, indices.len(),
     );
     let target_tris = target_idx / 3;
-    simplify::simplify_mesh(&positions, &indices, target_tris)
+    let (sp, mut si) = simplify::simplify_mesh(&positions, &indices, target_tris);
+    filter_oversized_triangles(&sp, &mut si, tile_max_edge_sq_world(base_cells, zoom, dx, dy, dz));
+    (sp, si)
 }
 
 /// TIN mesh processing without simplification (max_zoom level).
@@ -1620,9 +2347,9 @@ fn parquet_tin_direct(
         if nv == 3 && offset + 2 < n_verts {
             for vi_off in 0..3 {
                 let vi = offset + vi_off;
-                let wx = (xmin + frag.xy[vi * 2] * dx) as f32;
-                let wy = (ymin + frag.xy[vi * 2 + 1] * dy) as f32;
-                let wz = (zmin + frag.z[vi] * dz) as f32;
+                let wx = (xmin + frag.xy[vi * 2] as f64 * dx) as f32;
+                let wy = (ymin + frag.xy[vi * 2 + 1] as f64 * dy) as f32;
+                let wz = (zmin + frag.z[vi] as f64 * dz) as f32;
                 let key = (wx.to_bits(), wy.to_bits(), wz.to_bits());
                 let idx = match vertex_map.get(&key) {
                     Some(&idx) => idx,
@@ -1733,6 +2460,7 @@ pub struct StreamingTileGenerator {
     fragment_writer: Option<FragmentWriter>,
     frag_dir: PathBuf,
     shard_counter: std::sync::atomic::AtomicUsize,
+    num_buckets: usize,
     tiles_written: u32,
     fragment_reader: Option<FragmentReader>,
     parquet_stream_active: bool,
@@ -1752,7 +2480,7 @@ impl StreamingTileGenerator {
     ///     Higher values preserve finer detail at lower zoom levels.
     ///     Solid regions: 10. Thin branching structures (neurons): 50-200.
     #[new]
-    #[pyo3(signature = (min_zoom=0, max_zoom=4, extent=4096, extent_z=4096, buffer=0.0, base_cells=10))]
+    #[pyo3(signature = (min_zoom=0, max_zoom=4, extent=4096, extent_z=4096, buffer=0.0, base_cells=10, temp_dir=None, num_buckets=256))]
     fn new(
         min_zoom: u32,
         max_zoom: u32,
@@ -1760,9 +2488,15 @@ impl StreamingTileGenerator {
         extent_z: u32,
         buffer: f64,
         base_cells: u32,
+        temp_dir: Option<&str>,
+        num_buckets: usize,
     ) -> PyResult<Self> {
         let gen_id = GENERATOR_ID.fetch_add(1, Ordering::Relaxed);
-        let frag_dir = std::env::temp_dir()
+        let base_tmp = match temp_dir {
+            Some(d) => PathBuf::from(d),
+            None => std::env::temp_dir(),
+        };
+        let frag_dir = base_tmp
             .join(format!("microjson_frags_{}_{}", std::process::id(), gen_id));
         std::fs::create_dir_all(&frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
@@ -1784,6 +2518,7 @@ impl StreamingTileGenerator {
             fragment_writer: Some(writer),
             frag_dir,
             shard_counter: std::sync::atomic::AtomicUsize::new(1), // shard 0 already created
+            num_buckets: if num_buckets == 0 { 256 } else { num_buckets },
             tiles_written: 0,
             fragment_reader: None,
             parquet_stream_active: false,
@@ -1823,8 +2558,8 @@ impl StreamingTileGenerator {
                 tile_y: ty,
                 tile_d: td,
                 geom_type: cf.geom_type,
-                xy: cf.xy,
-                z: cf.z,
+                xy: cf.xy.iter().map(|&v| v as f32).collect(),
+                z: cf.z.iter().map(|&v| v as f32).collect(),
                 ring_lengths: cf.ring_lengths,
             };
             writer.write(&frag)
@@ -1904,17 +2639,18 @@ impl StreamingTileGenerator {
 
     /// Generate .glb tiles for OGC 3D Tiles from accumulated fragments.
     ///
-    /// Reads all fragments from the temp file, groups by tile key,
-    /// unprojections to world coordinates, applies vertex-clustering
-    /// simplification for non-leaf tiles, encodes to GLB binary,
-    /// and writes tiles to ``output_dir/{z}/{x}/{y}/{d}.glb``.
+    /// Uses bucketed streaming: redistributes fragments into bucket files
+    /// grouped by tile-key hash, then encodes one bucket at a time.
+    /// Peak memory is O(fragments_per_bucket) instead of O(all_fragments),
+    /// enabling datasets that exceed available RAM.
     ///
-    /// Also writes ``tileset.json`` to ``output_dir/tileset.json``.
+    /// Writes tiles to ``output_dir/{z}/{x}/{y}/{d}.glb`` and
+    /// ``tileset.json`` to ``output_dir/tileset.json``.
     ///
-    /// Uses rayon for parallel tile encoding (GIL released).
+    /// Uses rayon for parallel tile encoding within each bucket (GIL released).
     ///
     /// Returns the number of tiles written.
-    #[pyo3(signature = (output_dir, world_bounds, layer_name="default", compression="none", use_draco=false))]
+    #[pyo3(signature = (output_dir, world_bounds, layer_name="default", compression="none", use_draco=false, max_concurrent_buckets=8, max_memory_gb=0))]
     fn generate_3dtiles(
         &mut self,
         py: Python<'_>,
@@ -1924,6 +2660,9 @@ impl StreamingTileGenerator {
         layer_name: &str,
         compression: &str,
         use_draco: bool,
+        #[allow(unused)]
+        max_concurrent_buckets: usize,
+        max_memory_gb: usize,
     ) -> PyResult<u32> {
         // Backward compat: use_draco=True with compression="none" → "draco"
         let effective_compression = if use_draco && compression == "none" {
@@ -1938,47 +2677,48 @@ impl StreamingTileGenerator {
                 .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         }
 
-        // Read all fragments grouped by tile key
-        let mut reader = FragmentReader::open_dir(&self.frag_dir)
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
-        let groups = reader.read_all_grouped()
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
-
-        // Collect for rayon
-        let tiles: Vec<((u32, u32, u32, u32), Vec<Fragment>)> = groups.into_iter().collect();
-        let tags_ref = &self.tags_registry;
         let wb = world_bounds;
+        let (xmin, ymin, zmin, xmax, ymax, zmax) = wb;
+        let dx = if xmax != xmin { xmax - xmin } else { 1.0 };
+        let dy = if ymax != ymin { ymax - ymin } else { 1.0 };
+        let dz = if zmax != zmin { zmax - zmin } else { 1.0 };
+        let out_dir = PathBuf::from(output_dir);
         let max_zoom = self.max_zoom;
         let base_cells = self.base_cells;
-        let out_dir = PathBuf::from(output_dir);
+        let tags_ref = &self.tags_registry;
+        let comp = effective_compression.to_string();
 
-        // Parallel GLB encoding (GIL released)
-        let count = py.allow_threads(|| {
-            tiles.par_iter()
-                .map(|((tz, tx, ty, td), frags)| {
-                    let data = encode_glb_tile_from_fragments(
-                        frags, tags_ref, &wb, *tz, max_zoom, base_cells,
-                        effective_compression,
-                    );
-                    let tile_path = out_dir
-                        .join(tz.to_string())
-                        .join(tx.to_string())
-                        .join(ty.to_string())
-                        .join(format!("{}.glb", td));
-                    if let Some(parent) = tile_path.parent() {
-                        std::fs::create_dir_all(parent).ok();
-                    }
-                    std::fs::write(&tile_path, data).ok();
-                    1u32
+        // Memory budget: if 0, auto-detect from system RAM (80% of total)
+        let max_memory_bytes = if max_memory_gb > 0 {
+            max_memory_gb * 1024 * 1024 * 1024
+        } else {
+            // Read /proc/meminfo for total RAM, use 80%
+            let total_ram = std::fs::read_to_string("/proc/meminfo")
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("MemTotal:"))
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .and_then(|v| v.parse::<usize>().ok())
                 })
-                .sum::<u32>()
-        });
+                .unwrap_or(8 * 1024 * 1024); // fallback: 8 GB in KB
+            (total_ram * 1024) * 4 / 5 // 80% of total, convert KB to bytes
+        };
+
+        // Per-zoom batched in-memory pipeline
+        let frag_dir = self.frag_dir.clone();
+        let (total_count, all_tile_keys) = py.allow_threads(|| {
+            read_group_simplify_encode(
+                &frag_dir, tags_ref, &out_dir,
+                xmin, ymin, zmin, dx, dy, dz,
+                max_zoom, base_cells, &comp,
+                max_memory_bytes,
+            )
+        }).map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
 
         // Write tileset.json
-        let tile_keys: Vec<(u32, u32, u32, u32)> =
-            tiles.iter().map(|(k, _)| *k).collect();
         let tileset = tileset_json::generate_tileset_json(
-            &tile_keys, &wb, self.min_zoom, self.max_zoom,
+            &all_tile_keys, &wb, self.min_zoom, self.max_zoom,
         );
         let tileset_path = out_dir.join("tileset.json");
         let tileset_str = serde_json::to_string_pretty(&tileset)
@@ -1986,8 +2726,8 @@ impl StreamingTileGenerator {
         std::fs::write(&tileset_path, tileset_str)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
 
-        self.tiles_written = count;
-        Ok(count)
+        self.tiles_written = total_count;
+        Ok(total_count)
     }
 
     /// Collect tile-centric Parquet data from all fragments.
@@ -2278,44 +3018,20 @@ impl StreamingTileGenerator {
         }
         self.tags_registry.insert(fid, tag_vec);
 
-        // Build TIN geometry: each triangle → 4 vertices (3 + closing)
-        // Project to [0,1]³ in the same pass
-        let n_faces = faces.len();
-        let n_verts_total = n_faces * 4;
-        let mut xy = Vec::with_capacity(n_verts_total * 2);
-        let mut z = Vec::with_capacity(n_verts_total);
-        let ring_lengths: Vec<u32> = vec![4; n_faces];
-
-        let mut bb = BBox3D::empty();
-
-        for face in &faces {
-            for &vi in &[face[0], face[1], face[2], face[0]] {
-                let v = &vertices[vi as usize];
-                let px = (v[0] - xmin) / dx;
-                let py = (v[1] - ymin) / dy;
-                let pz = (v[2] - zmin) / dz;
-                xy.push(px);
-                xy.push(py);
-                z.push(pz);
-                bb.expand(px, py, pz);
-            }
-        }
-
-        // vertices and faces are freed here (Rust ownership)
+        // Build indexed mesh in [0,1]³ normalized coords
+        let (positions, indices, bb) = build_indexed_mesh(
+            &vertices, &faces, xmin, ymin, zmin, dx, dy, dz,
+        );
         drop(vertices);
         drop(faces);
 
-        let clip_feat = ClipFeature {
-            xy,
-            z,
-            ring_lengths,
-            geom_type: TIN,
-            bbox: bb,
-        };
-
-        // Clip through octree
-        let fragments = octree_clip(&clip_feat, self.min_zoom, self.max_zoom, self.buffer);
-        drop(clip_feat);
+        // Pre-simplify per zoom level, then clip each LOD to its zoom
+        let fragments = simplify_and_clip_per_zoom(
+            &positions, &indices, bb,
+            self.min_zoom, self.max_zoom, self.base_cells, self.buffer,
+        );
+        drop(positions);
+        drop(indices);
 
         // Write fragments to disk
         let writer = self.fragment_writer.as_mut()
@@ -2330,8 +3046,8 @@ impl StreamingTileGenerator {
                 tile_y: ty,
                 tile_d: td,
                 geom_type: cf.geom_type,
-                xy: cf.xy,
-                z: cf.z,
+                xy: cf.xy.iter().map(|&v| v as f32).collect(),
+                z: cf.z.iter().map(|&v| v as f32).collect(),
                 ring_lengths: cf.ring_lengths,
             };
             writer.write(&frag)
@@ -2356,12 +3072,14 @@ impl StreamingTileGenerator {
     ///   tags_list: List of property dicts (one per file).
     ///
     /// Returns the list of assigned feature IDs.
+    #[pyo3(signature = (paths, bounds, tags_list, ingest_threads=0))]
     fn add_obj_files(
         &mut self,
         py: Python<'_>,
         paths: Vec<String>,
         bounds: (f64, f64, f64, f64, f64, f64),
         tags_list: &Bound<'_, PyList>,
+        ingest_threads: usize,
     ) -> PyResult<Vec<u32>> {
         let n_files = paths.len();
         if n_files != tags_list.len() {
@@ -2409,27 +3127,28 @@ impl StreamingTileGenerator {
         let min_zoom = self.min_zoom;
         let max_zoom = self.max_zoom;
         let buffer = self.buffer;
+        let base_cells = self.base_cells;
 
-        // Pre-create one FragmentWriter per rayon thread (+1 for calling thread).
-        // Each thread always maps to its own writer via current_thread_index() —
-        // the Mutex is uncontested since each index is unique per thread.
-        let n_writers = rayon::current_num_threads() + 1;
-        let writers: Vec<std::sync::Mutex<FragmentWriter>> = (0..n_writers)
-            .map(|_| {
-                let shard_id = self.shard_counter.fetch_add(1, Ordering::Relaxed);
-                let shard_path = self.frag_dir.join(format!("shard_{:03}.mjf", shard_id));
-                std::sync::Mutex::new(
-                    FragmentWriter::new(&shard_path)
-                        .expect("Failed to create fragment shard file")
-                )
-            })
-            .collect();
-        let writers_ref = &writers;
+        // Each file gets its own fragment output file — completely lock-free.
+        // Files are named per input index: frag_{index}.mjf
+        // Encoding phase reads all fragment files and groups by tile key.
+        let frag_dir = self.frag_dir.clone();
+
+        let mut indexed_paths: Vec<(usize, &String)> = paths.iter().enumerate().collect();
+        indexed_paths.sort_by(|a, b| {
+            let size_a = std::fs::metadata(a.1).map(|m| m.len()).unwrap_or(0);
+            let size_b = std::fs::metadata(b.1).map(|m| m.len()).unwrap_or(0);
+            size_b.cmp(&size_a)
+        });
 
         // Release GIL — parallel parse + project + clip + write
+        // with_min_len(1) forces rayon to steal one file at a time.
+        // No locks: each thread writes to its own file.
+        let n_threads = ingest_threads;
         py.allow_threads(|| {
-            paths.par_iter().enumerate().for_each(|(i, path)| {
-                let fid = base_fid + i as u32;
+            let do_ingest = |indexed_paths: &[(usize, &String)]| {
+            indexed_paths.par_iter().with_min_len(1).for_each(|(i, path)| {
+                let fid = base_fid + *i as u32;
 
                 // Parse OBJ in Rust
                 let (vertices, faces) = match obj_parser::parse_obj(path) {
@@ -2437,61 +3156,127 @@ impl StreamingTileGenerator {
                     Err(_) => return, // skip broken files
                 };
 
-                // Build TIN geometry: each triangle → 4 vertices (3 + closing)
-                // Project to [0,1]³ in the same pass
-                let n_faces = faces.len();
-                let mut xy = Vec::with_capacity(n_faces * 4 * 2);
-                let mut z_vec = Vec::with_capacity(n_faces * 4);
-                let ring_lengths: Vec<u32> = vec![4; n_faces];
-                let mut bb = BBox3D::empty();
-
-                for face in &faces {
-                    for &vi in &[face[0], face[1], face[2], face[0]] {
-                        let v = &vertices[vi as usize];
-                        let px = (v[0] - xmin) / dx;
-                        let py_val = (v[1] - ymin) / dy;
-                        let pz = (v[2] - zmin) / dz;
-                        xy.push(px);
-                        xy.push(py_val);
-                        z_vec.push(pz);
-                        bb.expand(px, py_val, pz);
-                    }
-                }
+                // Build indexed mesh in [0,1]³ normalized coords
+                let (positions, indices, bb) = build_indexed_mesh(
+                    &vertices, &faces, xmin, ymin, zmin, dx, dy, dz,
+                );
                 drop(vertices);
                 drop(faces);
 
-                let clip_feat = ClipFeature {
-                    xy, z: z_vec, ring_lengths,
-                    geom_type: TIN,
-                    bbox: bb,
+                let n_tris = indices.len() / 3;
+                const PARALLEL_CLIP_THRESHOLD: usize = 500_000;
+                const CLIP_CHUNK_SIZE: usize = 50_000;
+
+                // Write helper closure for fragment output
+                let write_clip_results = |clip_results: Vec<((u32,u32,u32,u32), ClipFeature)>,
+                                          frag_path: PathBuf,
+                                          fid: u32| {
+                    let mut writer = match FragmentWriter::new(&frag_path) {
+                        Ok(w) => w,
+                        Err(_) => return,
+                    };
+                    for ((tz, tx_coord, ty, td), cf) in clip_results {
+                        let frag = Fragment {
+                            feature_id: fid,
+                            tile_z: tz, tile_x: tx_coord, tile_y: ty, tile_d: td,
+                            geom_type: cf.geom_type,
+                            xy: cf.xy.iter().map(|&v| v as f32).collect(),
+                            z: cf.z.iter().map(|&v| v as f32).collect(),
+                            ring_lengths: cf.ring_lengths,
+                        };
+                        writer.write(&frag).ok();
+                    }
+                    writer.flush().ok();
                 };
 
-                // Clip through octree — produces all (tile_key, clipped) pairs
-                let clip_results = octree_clip(&clip_feat, min_zoom, max_zoom, buffer);
-                drop(clip_feat);
+                if n_tris >= PARALLEL_CLIP_THRESHOLD {
+                    // Large file: cascaded pre-simplify for coarse zooms, chunk only max_zoom
+                    let full_index_count = indices.len();
 
-                // Write to this thread's dedicated shard — uncontested lock
-                let writer_idx = rayon::current_thread_index()
-                    .unwrap_or(n_writers - 1); // last slot for calling thread
-                let mut w = writers_ref[writer_idx].lock().unwrap();
-                for ((tz, tx_coord, ty, td), cf) in clip_results {
-                    let frag = Fragment {
-                        feature_id: fid,
-                        tile_z: tz, tile_x: tx_coord, tile_y: ty, tile_d: td,
-                        geom_type: cf.geom_type,
-                        xy: cf.xy, z: cf.z,
-                        ring_lengths: cf.ring_lengths,
-                    };
-                    w.write(&frag).ok();
+                    // Coarse zooms: cascade simplify (each step from previous result)
+                    let mut cur_pos = positions.clone();
+                    let mut cur_idx = indices.clone();
+                    for zoom in (min_zoom..max_zoom).rev() {
+                        let target_idx = simplify::compute_target_index_count(
+                            base_cells, zoom, max_zoom, full_index_count,
+                        );
+                        let target_tris = target_idx / 3;
+                        if target_tris == 0 { continue; }
+                        let (sp, mut si) = simplify::simplify_mesh(&cur_pos, &cur_idx, target_tris);
+                        if si.is_empty() { continue; }
+                        filter_oversized_triangles(&sp, &mut si, tile_max_edge_sq_normalized(base_cells, zoom));
+                        if si.is_empty() { continue; }
+                        let cf = indexed_mesh_to_clip_feature(&sp, &si, bb);
+                        let clip_results = octree_clip(&cf, zoom, zoom, buffer);
+                        let frag_path = frag_dir.join(
+                            format!("frag_{:05}_z{}.mjf", i, zoom)
+                        );
+                        write_clip_results(clip_results, frag_path, fid);
+                        cur_pos = sp;
+                        cur_idx = si;
+                    }
+
+                    // Max zoom: chunk the full-resolution indexed mesh for parallel clipping
+                    let chunk_count = (n_tris + CLIP_CHUNK_SIZE - 1) / CLIP_CHUNK_SIZE;
+                    let indices_ref = &indices;
+                    let positions_ref = &positions;
+                    (0..chunk_count).into_par_iter().for_each(|chunk_idx| {
+                        let start = chunk_idx * CLIP_CHUNK_SIZE * 3;
+                        let end = (start + CLIP_CHUNK_SIZE * 3).min(indices_ref.len());
+                        let chunk_indices = &indices_ref[start..end];
+                        // Build ClipFeature directly from indexed chunk
+                        let cn = chunk_indices.len() / 3;
+                        let mut xy = Vec::with_capacity(cn * 4 * 2);
+                        let mut z_vec = Vec::with_capacity(cn * 4);
+                        let ring_lengths: Vec<u32> = vec![4; cn];
+                        let mut cbb = BBox3D::empty();
+                        for tri in 0..cn {
+                            let i0 = chunk_indices[tri * 3] as usize;
+                            let i1 = chunk_indices[tri * 3 + 1] as usize;
+                            let i2 = chunk_indices[tri * 3 + 2] as usize;
+                            for &vi in &[i0, i1, i2, i0] {
+                                let px = positions_ref[vi * 3] as f64;
+                                let py = positions_ref[vi * 3 + 1] as f64;
+                                let pz = positions_ref[vi * 3 + 2] as f64;
+                                xy.push(px);
+                                xy.push(py);
+                                z_vec.push(pz);
+                                cbb.expand(px, py, pz);
+                            }
+                        }
+                        let clip_feat = ClipFeature {
+                            xy, z: z_vec, ring_lengths,
+                            geom_type: TIN, bbox: cbb,
+                        };
+                        let clip_results = octree_clip(&clip_feat, max_zoom, max_zoom, buffer);
+                        let frag_path = frag_dir.join(
+                            format!("frag_{:05}_c{:04}.mjf", i, chunk_idx)
+                        );
+                        write_clip_results(clip_results, frag_path, fid);
+                    });
+                } else {
+                    // Small file: pre-simplify per zoom, clip each LOD
+                    let clip_results = simplify_and_clip_per_zoom(
+                        &positions, &indices, bb,
+                        min_zoom, max_zoom, base_cells, buffer,
+                    );
+
+                    let frag_path = frag_dir.join(format!("frag_{:05}.mjf", i));
+                    write_clip_results(clip_results, frag_path, fid);
                 }
             });
-        });
+            };
 
-        // Flush all shard writers
-        for w in &writers {
-            w.lock().unwrap().flush()
-                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
-        }
+            if n_threads > 0 {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(n_threads)
+                    .build()
+                    .expect("Failed to build ingest thread pool");
+                pool.install(|| do_ingest(&indexed_paths));
+            } else {
+                do_ingest(&indexed_paths);
+            }
+        });
 
         Ok(fids)
     }
@@ -2597,9 +3382,9 @@ impl StreamingTileGenerator {
                                     for vi_off in 0..3 {
                                         let vi = offset + vi_off;
                                         // Unproject to world coordinates
-                                        let wx = xmin + frag.xy[vi * 2] * dx;
-                                        let wy = ymin + frag.xy[vi * 2 + 1] * dy;
-                                        let wz = zmin + frag.z[vi] * dz;
+                                        let wx = xmin + frag.xy[vi * 2] as f64 * dx;
+                                        let wy = ymin + frag.xy[vi * 2 + 1] as f64 * dy;
+                                        let wz = zmin + frag.z[vi] as f64 * dz;
 
                                         // Quantize to float32 precision for dedup
                                         let wx_f32 = wx as f32;
@@ -2627,7 +3412,7 @@ impl StreamingTileGenerator {
                                     }
 
                                     // Skip degenerate triangles
-                                    if tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2] {
+                                    if is_valid_triangle(&positions, &tri, f32::MAX) {
                                         indices.extend_from_slice(&tri);
                                     }
 
@@ -3059,9 +3844,9 @@ impl StreamingTileGenerator {
                                     let mut tri = [0u32; 3];
                                     for vi_off in 0..3 {
                                         let vi = offset + vi_off;
-                                        let wx = xmin + frag.xy[vi * 2] * dx;
-                                        let wy = ymin + frag.xy[vi * 2 + 1] * dy;
-                                        let wz = zmin + frag.z[vi] * dz;
+                                        let wx = xmin + frag.xy[vi * 2] as f64 * dx;
+                                        let wy = ymin + frag.xy[vi * 2 + 1] as f64 * dy;
+                                        let wz = zmin + frag.z[vi] as f64 * dz;
 
                                         let wx_f32 = wx as f32;
                                         let wy_f32 = wy as f32;
@@ -3087,7 +3872,7 @@ impl StreamingTileGenerator {
                                         tri[vi_off] = idx;
                                     }
 
-                                    if tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2] {
+                                    if is_valid_triangle(&positions, &tri, f32::MAX) {
                                         indices.extend_from_slice(&tri);
                                     }
                                     offset += rl;
@@ -3266,12 +4051,18 @@ impl StreamingTileGenerator {
     ///   path: Output file path.
     ///   bounds: World bounds (xmin, ymin, zmin, xmax, ymax, zmax).
     ///   layer_name: Layer name (default "default").
-    #[pyo3(signature = (path, bounds, layer_name="default"))]
+    ///   encodings: Optional list of encoding dicts (format, compression, path, extension).
+    ///   zoom_counts: Optional dict of zoom level (str) -> tile count.
+    ///   id_fields: Optional list of identifier field names.
+    #[pyo3(signature = (path, bounds, layer_name="default", encodings=None, zoom_counts=None, id_fields=None))]
     fn write_tilejson3d(
         &self,
         path: &str,
         bounds: (f64, f64, f64, f64, f64, f64),
-    layer_name: &str,
+        layer_name: &str,
+        encodings: Option<Vec<std::collections::HashMap<String, String>>>,
+        zoom_counts: Option<std::collections::HashMap<String, u64>>,
+        id_fields: Option<Vec<String>>,
     ) -> PyResult<()> {
         let (xmin, ymin, zmin, xmax, ymax, zmax) = bounds;
         let center = [
@@ -3281,9 +4072,9 @@ impl StreamingTileGenerator {
             self.min_zoom as f64,
         ];
 
-        let json = serde_json::json!({
+        let mut json = serde_json::json!({
             "tilejson": "3.0.0",
-            "tiles": ["{z}/{x}/{y}/{d}.pbf3"],
+            "tiles": ["{z}/{x}/{y}/{d}"],
             "name": layer_name,
             "minzoom": self.min_zoom,
             "maxzoom": self.max_zoom,
@@ -3297,6 +4088,19 @@ impl StreamingTileGenerator {
                 "maxzoom": self.max_zoom,
             }],
         });
+
+        if let Some(enc) = encodings {
+            json["encodings"] = serde_json::to_value(enc)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        }
+        if let Some(zc) = zoom_counts {
+            json["zoom_counts"] = serde_json::to_value(zc)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        }
+        if let Some(ids) = id_fields {
+            json["id_fields"] = serde_json::to_value(ids)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        }
 
         let json_str = serde_json::to_string_pretty(&json)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
@@ -3333,7 +4137,7 @@ fn scan_bounds_parallel(paths: &[String]) -> Result<(f64, f64, f64, f64, f64, f6
     use std::io::BufRead;
 
     // Each file scanned independently in parallel
-    let per_file: Result<Vec<([f64; 3], [f64; 3])>, String> = paths.par_iter().map(|path| {
+    let per_file: Result<Vec<([f64; 3], [f64; 3])>, String> = paths.par_iter().with_min_len(1).map(|path| {
         let file = std::fs::File::open(path)
             .map_err(|e| format!("Cannot open {}: {}", path, e))?;
         let reader = std::io::BufReader::new(file);

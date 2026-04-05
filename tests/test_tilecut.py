@@ -46,7 +46,7 @@ def test_tilecut(tempfolder):
     )
 
     # Check that the feature collection was created
-    assert len(feature_collection) > 0
+    assert len(feature_collection.features) > 0
 
     # check that the file exists and is not empty
     assert os.path.exists(microjson_data_path)

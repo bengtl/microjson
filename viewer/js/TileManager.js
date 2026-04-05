@@ -99,6 +99,13 @@ export class TileManager {
         this.visibleCount = 0;
         this.gpuMB = '0.0';
         this.zoomDistribution = '';  // e.g. "z2:3 z3:12"
+
+        // Spatial filter (set by overview panel)
+        this._spatialFilter = null;  // { center: THREE.Vector3, ring: number } or null
+
+        // Color-by-attribute state
+        this.colorByAttribute = null;    // attribute key (e.g. 'cell_type') or null
+        this._colorPalette = new Map();  // attribute value → '#rrggbb'
     }
 
     async init() {
@@ -108,10 +115,46 @@ export class TileManager {
         this._indexNodes(this.root);
         this._precomputeGeoErrors();
 
+        // Load tilejson3d.json for pyramid metadata (optional)
+        try {
+            const tjResp = await fetch(this.baseUrl + 'tilejson3d.json');
+            if (tjResp.ok) {
+                const tjData = await tjResp.json();
+                this.maxZoom = tjData.maxzoom ?? this.maxZoom;
+                this.idFields = new Set(tjData.id_fields ?? []);
+                this._encodings = tjData.encodings ?? null;
+            }
+        } catch (_) {
+            // tilejson3d.json not available — fall back to features.json metadata
+        }
+
         const featResp = await fetch(this.baseUrl + 'features.json');
         const data = await featResp.json();
-        this.featureIndex = data.features;
-        this.maxZoom = data.max_zoom ?? 3;
+        // Fall back to features.json for maxZoom and idFields if tilejson3d not loaded
+        if (!this.idFields || this.idFields.size === 0) {
+            const collProps = data.properties ?? {};
+            this.maxZoom = collProps.max_zoom ?? data.max_zoom ?? this.maxZoom;
+            this.idFields = new Set(collProps.id_fields ?? data.id_fields ?? []);
+        }
+        if (Array.isArray(data.features)) {
+            // MicroJSON format: array of {type, id, geometry, properties}
+            this.featureIndex = {};
+            for (const feat of data.features) {
+                const name = feat.id ?? feat.properties?.name ?? '';
+                if (!name) continue;
+                // Build zoom-keyed tile dict from geometry.tiles (flat list)
+                const tiles = feat.geometry?.tiles ?? [];
+                const byZoom = {};
+                for (const t of tiles) {
+                    const z = t.split('/')[0];
+                    (byZoom[z] ??= []).push(t);
+                }
+                this.featureIndex[name] = { ...feat.properties, tiles: byZoom };
+            }
+        } else {
+            // Legacy format: dict keyed by name
+            this.featureIndex = data.features;
+        }
 
         console.log(
             `[TileManager] init: ${this.nodeByUri.size} tiles indexed, ` +
@@ -119,34 +162,6 @@ export class TileManager {
             `maxZoom=${this.maxZoom}, ` +
             `geoErrors=[${this._geoErrorByZoom.map(e => e.toFixed(0)).join(', ')}]`
         );
-    }
-
-    /**
-     * Switch to a different tile pyramid. Unloads everything and re-inits.
-     * @param {string} newBaseUrl - e.g. '/tiles/2020-11-26/'
-     */
-    async switchPyramid(newBaseUrl) {
-        // Unload all tiles
-        for (const node of this.nodeByUri.values()) {
-            if (node.loadState === LOADED) {
-                this._unloadNode(node);
-            }
-        }
-
-        // Clear all state
-        this.nodeByUri.clear();
-        this.featureIndex = {};
-        this.selectedFeatures = new Set();
-        this._featureState.clear();
-        this._protectedUris.clear();
-        this._loadQueue = [];
-        this._pendingLoads = 0;
-        this._frameNumber = 0;
-        this.root = null;
-
-        // Set new base URL and re-init
-        this.baseUrl = newBaseUrl.endsWith('/') ? newBaseUrl : newBaseUrl + '/';
-        await this.init();
     }
 
     /**
@@ -168,10 +183,13 @@ export class TileManager {
         this.selectedFeatures = new Set();
         this._featureState.clear();
         this._protectedUris.clear();
+        this._spatialFilter = null;
         this._loadQueue = [];
         this._pendingLoads = 0;
         this._frameNumber = 0;
         this._geoErrorByZoom = [];
+        this.colorByAttribute = null;
+        this._colorPalette = new Map();
 
         // Set new URL and re-init
         this.baseUrl = newBaseUrl.endsWith('/') ? newBaseUrl : newBaseUrl + '/';
@@ -179,7 +197,12 @@ export class TileManager {
     }
 
     _indexNodes(node) {
-        if (node.uri) this.nodeByUri.set(node.uri, node);
+        if (node.uri) {
+            this.nodeByUri.set(node.uri, node);
+            // Also index by bare tile ID (without extension) for new format
+            const bareId = node.uri.replace(/\.[^.]+$/, '');
+            this.nodeByUri.set(bareId, node);
+        }
         for (const child of node.children) this._indexNodes(child);
     }
 
@@ -204,6 +227,112 @@ export class TileManager {
         for (const name of this._featureState.keys()) {
             if (!this.selectedFeatures.has(name)) {
                 this._featureState.delete(name);
+            }
+        }
+    }
+
+    /**
+     * Set spatial filter for tile loading. When set, only tiles within
+     * the selection cube (center tile + ring neighbors) are loaded.
+     * @param {THREE.Vector3|null} worldCenter - crosshair world position, or null to clear
+     * @param {number} ring - neighbor ring count (0, 1, or 2)
+     */
+    setSpatialFilter(worldCenter, ring) {
+        const wasActive = !!this._spatialFilter;
+        this._spatialFilter = worldCenter ? { center: worldCenter, ring } : null;
+        const isActive = !!this._spatialFilter;
+
+        // When switching filter on/off, reset per-feature LOD state so
+        // stale activeZoom values from the previous mode don't persist.
+        if (wasActive !== isActive) {
+            for (const state of this._featureState.values()) {
+                state.activeZoom = null;
+                state.targetZoom = null;
+                state.stableCount = 0;
+            }
+        }
+    }
+
+    /**
+     * Parse tile coordinates from a URI like "3/2/1/5.glb".
+     * @returns {{z: number, x: number, y: number, d: number}|null}
+     */
+    _parseTileUri(uri) {
+        const match = uri.match(/^(\d+)\/(\d+)\/(\d+)\/(\d+)(?:\.glb)?$/);
+        if (!match) return null;
+        return { z: +match[1], x: +match[2], y: +match[3], d: +match[4] };
+    }
+
+    /**
+     * Check if a tile URI is within the spatial selection cube.
+     * Converts the world-space crosshair to tile coordinates at the tile's zoom level.
+     */
+    _isTileInSelection(uri) {
+        if (!this._spatialFilter || !this.root?.box3) return true;
+        const tile = this._parseTileUri(uri);
+        if (!tile) return true;
+
+        const bounds = this.root.box3;
+        const min = bounds.min;
+        const range = new THREE.Vector3();
+        bounds.getSize(range);
+        const n = Math.pow(2, tile.z);
+
+        const cx = Math.min(Math.floor((this._spatialFilter.center.x - min.x) / range.x * n), n - 1);
+        const cy = Math.min(Math.floor((this._spatialFilter.center.y - min.y) / range.y * n), n - 1);
+        const cd = Math.min(Math.floor((this._spatialFilter.center.z - min.z) / range.z * n), n - 1);
+
+        const r = this._spatialFilter.ring;
+        return Math.abs(tile.x - cx) <= r
+            && Math.abs(tile.y - cy) <= r
+            && Math.abs(tile.d - cd) <= r;
+    }
+
+    /**
+     * Set color-by-attribute mode. Pass null to restore original colors.
+     * @param {string|null} attribute - feature metadata key to color by
+     * @param {Map<string, string>|null} palette - value → hex color map
+     */
+    setColorBy(attribute, palette) {
+        this.colorByAttribute = attribute;
+        this._colorPalette = palette || new Map();
+        this._recolorAll();
+    }
+
+    /**
+     * Get the effective color for a feature, considering color-by-attribute.
+     * @returns {string|null} hex color or null if no color determined
+     */
+    _getFeatureColor(name) {
+        if (this.colorByAttribute) {
+            const feat = this.featureIndex[name];
+            if (feat) {
+                const val = String(feat[this.colorByAttribute] ?? '');
+                if (this._colorPalette.has(val)) {
+                    return this._colorPalette.get(val);
+                }
+            }
+            return '#555555'; // no value for this attribute
+        }
+        // Original color
+        const feat = this.featureIndex[name];
+        return feat?.color || null;
+    }
+
+    /**
+     * Recolor all loaded meshes based on current color-by setting.
+     */
+    _recolorAll() {
+        for (const node of this.nodeByUri.values()) {
+            if (node.loadState !== LOADED) continue;
+            for (const [name, meshes] of Object.entries(node.meshByFeature)) {
+                const color = this._getFeatureColor(name);
+                if (!color) continue;
+                for (const mesh of meshes) {
+                    if (mesh.material) {
+                        mesh.material.color.set(color);
+                    }
+                }
             }
         }
     }
@@ -275,10 +404,13 @@ export class TileManager {
             const desiredZoom = this._bestAvailableZoom(feat, committedZoom);
             if (desiredZoom === null) continue;
 
-            // Protect tiles at both active and desired zoom from eviction.
-            // This prevents the load→evict→reload loop for large features.
-            this._protectTiles(feat, state.activeZoom);
+            // Protect tiles at desired zoom from eviction.
+            // When spatial filter is active, don't protect coarser fallback
+            // zooms — they cover the entire dataset and defeat the filter.
             this._protectTiles(feat, desiredZoom);
+            if (!this._spatialFilter || state.activeZoom >= desiredZoom) {
+                this._protectTiles(feat, state.activeZoom);
+            }
 
             // Get in-frustum tiles at desired zoom
             const desiredUris = this._frustumFilter(
@@ -311,16 +443,21 @@ export class TileManager {
                     this._showTileFeature(uri, name);
                 }
 
-                // Also show fallback at current activeZoom for full coverage
-                if (state.activeZoom !== null) {
+                // Also show fallback at current activeZoom for full coverage.
+                // When spatial filter is active, skip coarser zoom fallbacks —
+                // they cover the entire dataset and would show content outside
+                // the selection region.
+                if (state.activeZoom !== null &&
+                    (!this._spatialFilter || state.activeZoom >= desiredZoom)) {
                     const fallbackUris = this._frustumFilter(
                         feat.tiles[String(state.activeZoom)] || [],
                     );
                     for (const uri of fallbackUris) {
                         this._showTileFeature(uri, name);
                     }
-                } else {
+                } else if (!this._spatialFilter) {
                     // No activeZoom yet — show any loaded zoom as initial fallback
+                    // (only without spatial filter, to avoid showing global tiles)
                     this._showAnyLoadedZoom(feat, name, state);
                 }
             }
@@ -357,24 +494,29 @@ export class TileManager {
     }
 
     /**
-     * Mark all tiles for a feature at a given zoom as protected from eviction.
+     * Mark tiles for a feature at a given zoom as protected from eviction.
+     * When a spatial filter is active, only tiles inside the selection are protected.
      */
     _protectTiles(feat, zoom) {
         if (zoom === null || zoom === undefined) return;
         const uris = feat.tiles[String(zoom)];
         if (!uris) return;
         for (const uri of uris) {
-            this._protectedUris.add(uri);
+            if (this._isTileInSelection(uri)) {
+                this._protectedUris.add(uri);
+            }
         }
     }
 
     /**
-     * Filter URIs to only those whose tile bounding box intersects the frustum.
+     * Filter URIs to only those whose tile bounding box intersects the frustum
+     * AND falls within the spatial selection (if active).
      */
     _frustumFilter(uris) {
         return uris.filter(uri => {
             const node = this.nodeByUri.get(uri);
-            return node?.box3 && this._frustum.intersectsBox(node.box3);
+            if (!node?.box3 || !this._frustum.intersectsBox(node.box3)) return false;
+            return this._isTileInSelection(uri);
         });
     }
 
@@ -533,10 +675,10 @@ export class TileManager {
 
                 if (!node.meshByFeature[name]) node.meshByFeature[name] = [];
                 node.meshByFeature[name].push(child);
+                child.userData._featureName = name;
 
-                // Color from feature index or glTF extras
-                const feat = this.featureIndex[name];
-                const color = feat?.color || props.color;
+                // Color: use palette if color-by is active, otherwise original
+                const color = this._getFeatureColor(name) || props.color;
                 if (color) {
                     child.material = child.material.clone();
                     child.material.color.set(color);
@@ -583,6 +725,18 @@ export class TileManager {
     // ----- Eviction -----------------------------------------------------------
 
     _evict() {
+        // Pass 0: when spatial filter is active, immediately unload tiles
+        // outside the selection to free GPU memory for large datasets.
+        if (this._spatialFilter) {
+            for (const node of this.nodeByUri.values()) {
+                if (node.loadState !== LOADED) continue;
+                if (this._protectedUris.has(node.uri)) continue;
+                if (!this._isTileInSelection(node.uri)) {
+                    this._unloadNode(node);
+                }
+            }
+        }
+
         // Pass 1: unload stale tiles NOT protected by active transitions
         for (const node of this.nodeByUri.values()) {
             if (node.loadState !== LOADED) continue;

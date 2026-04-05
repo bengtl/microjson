@@ -1,7 +1,7 @@
 """MicroJSON and GeoJSON models, defined manually using pydantic."""
 
 from typing import Any, List, Literal, Optional, Tuple, Union, Dict
-from pydantic import BaseModel, StrictInt, StrictStr, RootModel, field_validator
+from pydantic import BaseModel, StrictInt, StrictStr, RootModel, field_validator, model_validator
 from .provenance import Workflow
 from .provenance import WorkflowCollection
 from .provenance import Artifact
@@ -63,7 +63,16 @@ def _centroid3d(coords: list) -> Tuple[float, float, float]:
 # 3D Geometry Types
 # ---------------------------------------------------------------------------
 
-class PolyhedralSurface(BaseModel):
+class TiledGeometry(BaseModel):
+    """Base for geometry types that reference external tiled data.
+
+    When data is stored in external tiles, coordinates may be empty and
+    the tiles field lists the spatial tile identifiers.
+    """
+    tiles: Optional[List[str]] = None
+
+
+class PolyhedralSurface(TiledGeometry):
     """A closed surface mesh consisting of polygonal faces (ISO 19107).
 
     Each face has the same structure as a Polygon: a list of linear rings,
@@ -71,23 +80,31 @@ class PolyhedralSurface(BaseModel):
     """
 
     type: Literal["PolyhedralSurface"]
-    coordinates: List[PolygonCoords]
+    coordinates: List[PolygonCoords] = []
 
     @field_validator("coordinates")
     @classmethod
-    def _at_least_one_face(cls, v: List[PolygonCoords]) -> List[PolygonCoords]:
-        if len(v) == 0:
-            raise ValueError("PolyhedralSurface must have at least one face")
-        return v
+    def _validate_faces(cls, v: List[PolygonCoords]) -> List[PolygonCoords]:
+        return v  # allow empty when tiles present
 
-    def bbox3d(self) -> Tuple[float, float, float, float, float, float]:
+    @model_validator(mode="after")
+    def _require_data_source(self):
+        if not self.coordinates and not self.tiles:
+            raise ValueError("PolyhedralSurface requires either coordinates or tiles")
+        return self
+
+    def bbox3d(self) -> Optional[Tuple[float, float, float, float, float, float]]:
+        if not self.coordinates:
+            return None
         return _bbox3d(self.coordinates)
 
-    def centroid3d(self) -> Tuple[float, float, float]:
+    def centroid3d(self) -> Optional[Tuple[float, float, float]]:
+        if not self.coordinates:
+            return None
         return _centroid3d(self.coordinates)
 
 
-class TIN(BaseModel):
+class TIN(TiledGeometry):
     """A Triangulated Irregular Network — triangle mesh surface (ISO 19107).
 
     Each face must be a single closed ring of exactly 4 positions
@@ -95,13 +112,13 @@ class TIN(BaseModel):
     """
 
     type: Literal["TIN"]
-    coordinates: List[PolygonCoords]
+    coordinates: List[PolygonCoords] = []
 
     @field_validator("coordinates")
     @classmethod
     def _validate_triangles(cls, v: List[PolygonCoords]) -> List[PolygonCoords]:
         if len(v) == 0:
-            raise ValueError("TIN must have at least one face")
+            return v  # empty OK when tiles are present
         for i, face in enumerate(v):
             if len(face) != 1:
                 raise ValueError(
@@ -115,10 +132,20 @@ class TIN(BaseModel):
                 )
         return v
 
-    def bbox3d(self) -> Tuple[float, float, float, float, float, float]:
+    @model_validator(mode="after")
+    def _require_data_source(self):
+        if not self.coordinates and not self.tiles:
+            raise ValueError("TIN requires either coordinates or tiles")
+        return self
+
+    def bbox3d(self) -> Optional[Tuple[float, float, float, float, float, float]]:
+        if not self.coordinates:
+            return None
         return _bbox3d(self.coordinates)
 
-    def centroid3d(self) -> Tuple[float, float, float]:
+    def centroid3d(self) -> Optional[Tuple[float, float, float]]:
+        if not self.coordinates:
+            return None
         return _centroid3d(self.coordinates)
 
 

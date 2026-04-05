@@ -1,12 +1,13 @@
 from .model import MicroJSON, GeoJSON  # noqa: F401
 from .model import MicroFeature, MicroFeatureCollection  # noqa: F401
 from .model import (  # noqa: F401
+    TiledGeometry,
     PolyhedralSurface,
     TIN,
     OntologyTerm,
     Vocabulary,
 )
-from .tilemodel import TileJSON  # noqa: F401
+from .tilemodel import TileJSON, PyramidEntry, PyramidJSON  # noqa: F401
 from .transforms import (  # noqa: F401
     AffineTransform,
     VoxelCoordinateSystem,
@@ -29,6 +30,11 @@ from .tiling3d import (  # noqa: F401
     OctreeConfig,
     TileReader3D,
     TileModel3D,
+)
+from .tiling3d.tilejson3d import (  # noqa: F401
+    TileEncoding,
+    KnownTileFormat,
+    KnownCompression,
 )
 
 __version__ = "0.4.2"

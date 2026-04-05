@@ -540,7 +540,7 @@ fn update_tris(
     del_count
 }
 
-/// Compact the mesh: remove deleted triangles, remap vertex indices.
+/// Compact the mesh: remove deleted and degenerate triangles, remap vertex indices.
 fn compact_mesh(triangles: &[QemTriangle], vertices: &[QemVertex]) -> (Vec<f32>, Vec<u32>) {
     let n_verts = vertices.len();
     let mut remap = vec![u32::MAX; n_verts];
@@ -550,6 +550,24 @@ fn compact_mesh(triangles: &[QemTriangle], vertices: &[QemVertex]) -> (Vec<f32>,
 
     for t in triangles {
         if t.deleted { continue; }
+
+        // Filter degenerate triangles: skip if minimum altitude < 1% of longest edge.
+        // These render as visible line artifacts, especially at coarse zoom levels.
+        let p0 = vertices[t.v[0]].p;
+        let p1 = vertices[t.v[1]].p;
+        let p2 = vertices[t.v[2]].p;
+        let e0 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e1 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let cx = cross(&e0, &e1);
+        let area_sq = cx[0] * cx[0] + cx[1] * cx[1] + cx[2] * cx[2]; // = 4 * area²
+        let e2 = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+        let max_edge_sq = (e0[0] * e0[0] + e0[1] * e0[1] + e0[2] * e0[2])
+            .max(e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2])
+            .max(e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2]);
+        if max_edge_sq > 0.0 && area_sq < 1e-4 * max_edge_sq * max_edge_sq {
+            continue; // degenerate — altitude < 1% of longest edge
+        }
+
         for &vi in &t.v {
             if remap[vi] == u32::MAX {
                 remap[vi] = next_idx;

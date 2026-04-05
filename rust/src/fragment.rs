@@ -37,8 +37,8 @@ pub struct Fragment {
     pub tile_y: u32,
     pub tile_d: u32,
     pub geom_type: u8,
-    pub xy: Vec<f64>,
-    pub z: Vec<f64>,
+    pub xy: Vec<f32>,
+    pub z: Vec<f32>,
     pub ring_lengths: Vec<u32>,
 }
 
@@ -50,7 +50,7 @@ impl Fragment {
     pub fn estimate_bytes(&self) -> usize {
         // 5×u32 + 1×u8 + 3 Vec headers (ptr+len+cap = 24 bytes each)
         const FIXED: usize = 5 * 4 + 1 + 3 * 24;
-        FIXED + self.xy.len() * 8 + self.z.len() * 8 + self.ring_lengths.len() * 4
+        FIXED + self.xy.len() * 4 + self.z.len() * 4 + self.ring_lengths.len() * 4
     }
 }
 
@@ -89,14 +89,14 @@ impl FragmentWriter {
         w.write_u8(frag.geom_type)?;
         w.write_u32::<LittleEndian>(n_verts)?;
 
-        // XY: n_verts * 2 floats (f64 → f32)
+        // XY: n_verts * 2 floats (f32)
         for &v in &frag.xy {
-            w.write_f32::<LittleEndian>(v as f32)?;
+            w.write_f32::<LittleEndian>(v)?;
         }
 
-        // Z: n_verts floats (f64 → f32)
+        // Z: n_verts floats (f32)
         for &v in &frag.z {
-            w.write_f32::<LittleEndian>(v as f32)?;
+            w.write_f32::<LittleEndian>(v)?;
         }
 
         // Ring lengths
@@ -165,16 +165,16 @@ impl ShardReader {
         let geom_type = self.reader.read_u8()?;
         let n_verts = self.reader.read_u32::<LittleEndian>()? as usize;
 
-        // XY: read f32, widen to f64
+        // XY: read f32
         let mut xy = Vec::with_capacity(n_verts * 2);
         for _ in 0..n_verts * 2 {
-            xy.push(self.reader.read_f32::<LittleEndian>()? as f64);
+            xy.push(self.reader.read_f32::<LittleEndian>()?);
         }
 
-        // Z: read f32, widen to f64
+        // Z: read f32
         let mut z = Vec::with_capacity(n_verts);
         for _ in 0..n_verts {
-            z.push(self.reader.read_f32::<LittleEndian>()? as f64);
+            z.push(self.reader.read_f32::<LittleEndian>()?);
         }
 
         // Ring lengths
@@ -318,8 +318,8 @@ mod tests {
             tile_y: 3,
             tile_d: 0,
             geom_type: 5,
-            xy: vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
-            z: vec![0.7, 0.8, 0.9],
+            xy: vec![0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6],
+            z: vec![0.7f32, 0.8, 0.9],
             ring_lengths: vec![3],
         };
 
@@ -338,9 +338,8 @@ mod tests {
             assert_eq!(f1.tile_z, 2);
             assert_eq!(f1.xy.len(), 6);
             assert_eq!(f1.z.len(), 3);
-            // f32 roundtrip: check values are close (not exact due to f64→f32→f64)
-            assert!((f1.xy[0] - 0.1).abs() < 1e-6);
-            assert!((f1.z[0] - 0.7).abs() < 1e-6);
+            assert!((f1.xy[0] - 0.1f32).abs() < 1e-6);
+            assert!((f1.z[0] - 0.7f32).abs() < 1e-6);
 
             let f2 = reader.read_next().unwrap().unwrap();
             assert_eq!(f2.feature_id, 42);
@@ -375,16 +374,16 @@ mod tests {
             feature_id: 1,
             tile_z: 0, tile_x: 0, tile_y: 0, tile_d: 0,
             geom_type: 5,
-            xy: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
-            z: vec![0.0, 0.0, 0.0],
+            xy: vec![0.0f32, 0.0, 1.0, 0.0, 0.0, 1.0],
+            z: vec![0.0f32, 0.0, 0.0],
             ring_lengths: vec![3],
         };
         let frag_b = Fragment {
             feature_id: 2,
             tile_z: 1, tile_x: 0, tile_y: 0, tile_d: 0,
             geom_type: 5,
-            xy: vec![0.0, 0.0, 0.5, 0.0, 0.0, 0.5],
-            z: vec![0.0, 0.0, 0.0],
+            xy: vec![0.0f32, 0.0, 0.5, 0.0, 0.0, 0.5],
+            z: vec![0.0f32, 0.0, 0.0],
             ring_lengths: vec![3],
         };
 

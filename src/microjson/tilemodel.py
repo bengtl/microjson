@@ -201,3 +201,35 @@ class TileJSON(RootModel):
     """The root object of a TileJSON file."""
 
     root: TileModel
+
+
+class PyramidEntry(BaseModel):
+    """One pyramid in a PyramidJSON manifest.
+
+    Attributes:
+        id: Unique identifier for this pyramid (used as directory name).
+        label: Human-readable display label.
+        tilejson: Relative path to TileModel3D metadata file.
+        features: Relative path to MicroJSON FeatureCollection.
+        tiles: Total number of tile files.
+        feature_count: Number of unique features.
+        size_bytes: Total size on disk in bytes.
+    """
+    id: str
+    label: Optional[str] = None
+    tilejson: str = "tilejson3d.json"
+    features: Optional[str] = "features.json"
+    tiles: Optional[int] = None
+    feature_count: Optional[int] = None
+    size_bytes: Optional[int] = None
+
+
+class PyramidJSON(BaseModel):
+    """Root manifest listing all available pyramids.
+
+    Attributes:
+        version: Manifest format version.
+        pyramids: List of pyramid entries.
+    """
+    version: str = "1.0"
+    pyramids: List[PyramidEntry]

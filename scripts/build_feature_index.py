@@ -1,27 +1,33 @@
 #!/usr/bin/env python3
-"""Scan .glb tiles and build a feature index for the Three.js viewer.
+"""Scan .glb tiles and build a MicroJSON FeatureCollection index for the viewer.
 
 Reads the JSON chunk from each GLB file to extract feature names and
-properties from node extras, then writes a features.json manifest.
+properties from node extras, then writes a features.json manifest as a
+valid MicroJSON/muDM FeatureCollection.
 
-Output format:
+Output format (MicroJSON FeatureCollection):
 {
-  "features": {
-    "Caudoputamen": {
-      "color": "#98D9AA",
-      "acronym": "CP",
-      "ccf_id": 672,
-      "tiles": {
-        "0": ["0/0/0/0.glb"],
-        "2": ["2/0/0/0.glb", "2/0/0/1.glb"],
-        "3": ["3/0/0/0.glb", ...]
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "Caudoputamen",
+      "geometry": {
+        "type": "TIN",
+        "coordinates": [],
+        "tiles": ["0/0/0/0", "2/0/0/0", "2/0/0/1", "3/0/0/0", ...]
+      },
+      "properties": {
+        "color": "#98D9AA",
+        "acronym": "CP",
+        "ccf_id": 672
       }
     },
     ...
-  },
-  "zoom_counts": {"0": 1, "1": 8, "2": 64, "3": 414},
-  "max_zoom": 3
+  ]
 }
+
+A separate tilejson3d.json file contains encoding and zoom metadata.
 """
 
 import argparse
@@ -62,9 +68,22 @@ def extract_features(glb_json: dict) -> list[dict]:
     return features
 
 
-def build_index(tiles_dir: Path) -> dict:
-    """Build feature index from all .glb files, grouped by zoom level."""
-    # feature_name → {color, acronym, ccf_id, tiles: {zoom_str: [uri, ...]}}
+def build_index(tiles_dir: Path, id_fields: list[str] | None = None,
+                ) -> tuple[dict, dict[int, int], int]:
+    """Build feature index from all .glb files.
+
+    Args:
+        tiles_dir: Path to the 3D tiles directory.
+        id_fields: List of metadata keys that are identifiers (excluded from
+            filter/color-by in the viewer). Passed through to build_tilejson().
+
+    Returns:
+        A tuple of (collection_dict, zoom_counts, max_zoom) where:
+        - collection_dict is the MicroJSON FeatureCollection with TIN geometry
+        - zoom_counts maps zoom level to tile count
+        - max_zoom is the highest zoom level found
+    """
+    # feature_name → {color, acronym, ccf_id, tile_ids: set()}
     feature_map: dict[str, dict] = {}
     zoom_counts: dict[int, int] = defaultdict(int)
     max_zoom = 0
@@ -82,7 +101,9 @@ def build_index(tiles_dir: Path) -> dict:
         zoom_counts[z] += 1
         max_zoom = max(max_zoom, z)
 
-        uri = str(rel)
+        # Convert URI "2/0/0/0.glb" to bare tile ID "2/0/0/0"
+        tile_id = str(rel.with_suffix(""))
+
         glb_json = read_glb_json(glb_path)
         features = extract_features(glb_json)
 
@@ -97,30 +118,67 @@ def build_index(tiles_dir: Path) -> dict:
             if name not in feature_map:
                 entry: dict = {
                     "color": feat.get("color", "#888888"),
-                    "tiles": {},
+                    "tile_ids": set(),
                 }
                 # Include whichever metadata fields are present
-                for key in ("acronym", "ccf_id", "body_id", "cell_type", "instance"):
+                for key in ("acronym", "ccf_id", "body_id", "cell_type", "instance",
+                           "brain_regions", "status", "status_label", "pre", "post"):
                     if feat.get(key) is not None:
                         entry[key] = feat[key]
                 feature_map[name] = entry
 
-            zstr = str(z)
-            if zstr not in feature_map[name]["tiles"]:
-                feature_map[name]["tiles"][zstr] = []
-            tile_list = feature_map[name]["tiles"][zstr]
-            if uri not in tile_list:
-                tile_list.append(uri)
+            feature_map[name]["tile_ids"].add(tile_id)
 
     print(f"Found {len(feature_map)} unique features")
     for z in sorted(zoom_counts):
         print(f"  Zoom {z}: {zoom_counts[z]} tiles")
 
-    return {
-        "features": dict(sorted(feature_map.items())),
-        "zoom_counts": {str(k): v for k, v in sorted(zoom_counts.items())},
-        "max_zoom": max_zoom,
+    # Build MicroJSON FeatureCollection
+    features_list = []
+    for name in sorted(feature_map):
+        entry = feature_map[name]
+        tile_ids = entry.pop("tile_ids")
+        props = {}
+        for key, val in entry.items():
+            props[key] = val
+        features_list.append({
+            "type": "Feature",
+            "id": name,
+            "geometry": {
+                "type": "TIN",
+                "coordinates": [],
+                "tiles": sorted(tile_ids),
+            },
+            "properties": props,
+        })
+
+    result = {
+        "type": "FeatureCollection",
+        "features": features_list,
     }
+    return result, dict(sorted(zoom_counts.items())), max_zoom
+
+
+def build_tilejson(zoom_counts: dict[int, int], max_zoom: int,
+                   id_fields: list[str] | None = None,
+                   bounds3d: list[float] | None = None) -> dict:
+    """Build a tilejson3d.json dict with encodings and zoom metadata."""
+    tj: dict = {
+        "tilejson": "3.0.0",
+        "tiles": ["{z}/{x}/{y}/{d}"],
+        "minzoom": 0,
+        "maxzoom": max_zoom,
+        "vector_layers": [{"id": "default", "fields": {}}],
+        "zoom_counts": {str(k): v for k, v in sorted(zoom_counts.items())},
+        "encodings": [
+            {"format": "glb", "compression": "meshopt", "path": "3dtiles", "extension": ".glb"},
+        ],
+    }
+    if id_fields:
+        tj["id_fields"] = id_fields
+    if bounds3d:
+        tj["bounds3d"] = bounds3d
+    return tj
 
 
 def main():
@@ -133,16 +191,38 @@ def main():
     parser.add_argument(
         "--output", "-o",
         default=None,
-        help="Output path (default: <tiles-dir>/features.json)",
+        help="Output path for features.json (default: <tiles-dir>/features.json)",
+    )
+    parser.add_argument(
+        "--tilejson-output",
+        default=None,
+        help="Output path for tilejson3d.json (default: sibling of --output)",
+    )
+    parser.add_argument(
+        "--id-fields",
+        nargs="*",
+        default=None,
+        help="Metadata keys that are identifiers (excluded from filter/color-by)",
     )
     args = parser.parse_args()
 
     tiles_dir = Path(args.tiles_dir)
     output = Path(args.output) if args.output else tiles_dir / "features.json"
 
-    index = build_index(tiles_dir)
+    index, zoom_counts, max_zoom = build_index(tiles_dir, id_fields=args.id_fields)
+
+    # Write features.json
     output.write_text(json.dumps(index, indent=2))
     print(f"Wrote {output} ({output.stat().st_size / 1024:.1f} KB)")
+
+    # Write tilejson3d.json
+    tilejson_path = (
+        Path(args.tilejson_output) if args.tilejson_output
+        else output.parent / "tilejson3d.json"
+    )
+    tj = build_tilejson(zoom_counts, max_zoom, id_fields=args.id_fields)
+    tilejson_path.write_text(json.dumps(tj, indent=2))
+    print(f"Wrote {tilejson_path} ({tilejson_path.stat().st_size / 1024:.1f} KB)")
 
 
 if __name__ == "__main__":

@@ -357,14 +357,19 @@ impl StreamingTileGenerator2D {
     ///   max_zoom: Maximum zoom level (default 4).
     ///   buffer: Tile buffer in normalized space (fraction of tile size).
     #[new]
-    #[pyo3(signature = (min_zoom=0, max_zoom=4, buffer=0.0))]
+    #[pyo3(signature = (min_zoom=0, max_zoom=4, buffer=0.0, temp_dir=None))]
     fn new(
         min_zoom: u32,
         max_zoom: u32,
         buffer: f64,
+        temp_dir: Option<&str>,
     ) -> PyResult<Self> {
         let gen_id = GENERATOR_2D_ID.fetch_add(1, Ordering::Relaxed);
-        let frag_dir = std::env::temp_dir()
+        let base_tmp = match temp_dir {
+            Some(d) => PathBuf::from(d),
+            None => std::env::temp_dir(),
+        };
+        let frag_dir = base_tmp
             .join(format!("microjson_frags2d_{}_{}", std::process::id(), gen_id));
         std::fs::create_dir_all(&frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
@@ -521,6 +526,158 @@ impl StreamingTileGenerator2D {
         }
 
         Ok(fids)
+    }
+
+    /// Add point features directly from a Parquet file — no JSON intermediary.
+    ///
+    /// Reads x/y coordinate columns and an optional property column directly
+    /// from Parquet using arrow-rs. Each row becomes a Point feature.
+    /// Coordinates are scaled by coord_scale (e.g., 1/um_per_px for µm→px).
+    ///
+    /// Args:
+    ///   path: Path to the Parquet file.
+    ///   x_col: Column name for x coordinates.
+    ///   y_col: Column name for y coordinates.
+    ///   prop_col: Optional column name for a string property (e.g., "feature_name").
+    ///   prop_name: Property name in the output tags (e.g., "gene_name").
+    ///   layer_type: Value for the "layer_type" tag.
+    ///   bounds: World bounding box (xmin, ymin, xmax, ymax) AFTER scaling.
+    ///   coord_scale: Multiply raw coordinates by this (default 1.0).
+    ///
+    /// Returns number of features added.
+    #[pyo3(signature = (path, x_col, y_col, prop_col, prop_name, layer_type, bounds, coord_scale=1.0))]
+    fn add_parquet_points(
+        &mut self,
+        path: &str,
+        x_col: &str,
+        y_col: &str,
+        prop_col: &str,
+        prop_name: &str,
+        layer_type: &str,
+        bounds: (f64, f64, f64, f64),
+        coord_scale: f64,
+    ) -> PyResult<u32> {
+        use arrow::array::{Float32Array, Float64Array, Array};
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use std::fs::File;
+
+        let (xmin, ymin, xmax, ymax) = bounds;
+        let proj_dx = if xmax != xmin { xmax - xmin } else { 1.0 };
+        let proj_dy = if ymax != ymin { ymax - ymin } else { 1.0 };
+
+        let file = File::open(path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Cannot open {}: {}", path, e)))?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Parquet error: {}", e)))?;
+        let reader = builder.build()
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Parquet reader: {}", e)))?;
+
+        let writer = self.fragment_writer.as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
+                "Cannot add features after generate"))?;
+
+        let lt_str = layer_type.to_string();
+        let prop_name_str = prop_name.to_string();
+        let min_zoom = self.min_zoom;
+        let max_zoom = self.max_zoom;
+        let buffer = self.buffer;
+        let mut count: u32 = 0;
+
+        for batch_result in reader {
+            let batch = batch_result
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Batch read: {}", e)))?;
+
+            let x_col_idx = batch.schema().index_of(x_col)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Column '{}': {}", x_col, e)))?;
+            let y_col_idx = batch.schema().index_of(y_col)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Column '{}': {}", y_col, e)))?;
+
+            let x_arr = batch.column(x_col_idx);
+            let y_arr = batch.column(y_col_idx);
+
+            let prop_col_idx = batch.schema().index_of(prop_col).ok();
+            let prop_arr = prop_col_idx.map(|i| batch.column(i).clone());
+
+            let n = batch.num_rows();
+            for i in 0..n {
+                if x_arr.is_null(i) || y_arr.is_null(i) {
+                    continue;
+                }
+
+                let raw_x = if let Some(a) = x_arr.as_any().downcast_ref::<Float32Array>() {
+                    a.value(i) as f64
+                } else if let Some(a) = x_arr.as_any().downcast_ref::<Float64Array>() {
+                    a.value(i)
+                } else {
+                    continue;
+                };
+                let raw_y = if let Some(a) = y_arr.as_any().downcast_ref::<Float32Array>() {
+                    a.value(i) as f64
+                } else if let Some(a) = y_arr.as_any().downcast_ref::<Float64Array>() {
+                    a.value(i)
+                } else {
+                    continue;
+                };
+
+                let x = raw_x * coord_scale;
+                let y = raw_y * coord_scale;
+
+                // Project to [0,1]²
+                let nx = (x - xmin) / proj_dx;
+                let ny = (y - ymin) / proj_dy;
+
+                let fid = self.feature_count + count;
+                count += 1;
+
+                // Tags
+                let mut tags: Vec<(String, TagValue)> = Vec::with_capacity(2);
+                tags.push(("layer_type".to_string(), TagValue::Str(lt_str.clone())));
+
+                if let Some(ref arr) = prop_arr {
+                    if let Some(sa) = arr.as_any().downcast_ref::<arrow::array::StringArray>() {
+                        if !sa.is_null(i) {
+                            tags.push((prop_name_str.clone(), TagValue::Str(sa.value(i).to_string())));
+                        }
+                    } else if let Some(ba) = arr.as_any().downcast_ref::<arrow::array::BinaryArray>() {
+                        if !ba.is_null(i) {
+                            if let Ok(s) = std::str::from_utf8(ba.value(i)) {
+                                tags.push((prop_name_str.clone(), TagValue::Str(s.to_string())));
+                            }
+                        }
+                    } else if let Some(sa) = arr.as_any().downcast_ref::<arrow::array::LargeStringArray>() {
+                        if !sa.is_null(i) {
+                            tags.push((prop_name_str.clone(), TagValue::Str(sa.value(i).to_string())));
+                        }
+                    }
+                }
+
+                self.tags_registry.insert(fid, tags);
+
+                // Point clip
+                let cf = ClipFeature2D {
+                    xy: vec![nx, ny],
+                    ring_lengths: vec![],
+                    geom_type: 1,
+                    bbox: BBox2D { min_x: nx, min_y: ny, max_x: nx, max_y: ny },
+                };
+
+                let fragments = clip2d::quadtree_clip(&cf, min_zoom, max_zoom, buffer);
+                for ((tz, tx, ty), clipped) in fragments {
+                    let frag = Fragment2D {
+                        feature_id: fid,
+                        tile_z: tz, tile_x: tx, tile_y: ty,
+                        geom_type: clipped.geom_type,
+                        xy: clipped.xy,
+                        ring_lengths: clipped.ring_lengths,
+                    };
+                    writer.write(&frag)
+                        .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+                }
+            }
+        }
+
+        self.feature_count += count;
+        Ok(count)
     }
 
     /// Add multiple GeoJSON files in parallel using rayon.

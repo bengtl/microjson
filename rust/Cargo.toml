@@ -19,3 +19,6 @@ numpy = "0.23"
 draco-oxide = "0.1.0-alpha.4"
 meshopt = "0.6"
 zstd = "0.13"
+dashmap = "6"
+parquet = { version = "54", features = ["default"] }
+arrow = { version = "54", features = ["default"] }
