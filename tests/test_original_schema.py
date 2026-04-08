@@ -2,7 +2,7 @@ import json
 import jsonschema
 import pytest
 from jsonschema import validate
-from microjson.fileutils import gather_example_files
+from mudm.fileutils import gather_example_files
 
 # Load the original GeoJSON schema
 with open("external/GeoJSON.json") as f:

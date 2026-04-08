@@ -6,26 +6,26 @@ import numpy as np
 import pytest
 from pygltflib import LINES, POINTS, TRIANGLES
 
-from microjson.model import (
-    MicroFeature,
-    MicroFeatureCollection,
+from mudm.model import (
+    MuDMFeature,
+    MuDMFeatureCollection,
     PolyhedralSurface,
     TIN,
 )
-from microjson.gltf.gltf_assembler import (
+from mudm.gltf.gltf_assembler import (
     collection_to_gltf,
     feature_to_gltf,
 )
-from microjson.gltf.models import GltfConfig
+from mudm.gltf.models import GltfConfig
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 SAMPLE_SWC = FIXTURE_DIR / "sample_neuron.swc"
 
 
-def _tin_feature(**props) -> MicroFeature:
+def _tin_feature(**props) -> MuDMFeature:
     """A simple TIN feature (2 triangles)."""
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         geometry=TIN(
             type="TIN",
@@ -38,9 +38,9 @@ def _tin_feature(**props) -> MicroFeature:
     )
 
 
-def _tin_from_swc() -> MicroFeature:
+def _tin_from_swc() -> MuDMFeature:
     """A TIN feature derived from SWC conversion."""
-    from microjson.swc import swc_to_tin
+    from mudm.swc import swc_to_tin
     return swc_to_tin(str(SAMPLE_SWC))
 
 
@@ -53,7 +53,7 @@ class TestFeatureToGltf:
         assert len(gltf.meshes) == 1
         assert gltf.meshes[0].primitives[0].mode == TRIANGLES
         assert len(gltf.accessors) > 0
-        assert gltf.asset.generator == "microjson-gltf"
+        assert gltf.asset.generator == "mudm-gltf"
 
     def test_tin_geometry(self):
         feat = _tin_feature()
@@ -65,7 +65,7 @@ class TestFeatureToGltf:
     def test_point_geometry(self):
         from geojson_pydantic import Point
 
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=Point(type="Point", coordinates=[1.0, 2.0, 3.0]),
             properties=None,
@@ -78,7 +78,7 @@ class TestFeatureToGltf:
     def test_linestring_geometry(self):
         from geojson_pydantic import LineString
 
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=LineString(
                 type="LineString",
@@ -94,7 +94,7 @@ class TestFeatureToGltf:
     def test_polygon_geometry(self):
         from geojson_pydantic import Polygon
 
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=Polygon(
                 type="Polygon",
@@ -115,7 +115,7 @@ class TestFeatureToGltf:
                 [[[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1], [0, 0, 1]]],
             ],
         )
-        feat = MicroFeature(type="Feature", geometry=ps, properties=None)
+        feat = MuDMFeature(type="Feature", geometry=ps, properties=None)
         gltf = feature_to_gltf(feat)
 
         assert len(gltf.meshes) == 1
@@ -123,7 +123,7 @@ class TestFeatureToGltf:
     def test_multipoint(self):
         from geojson_pydantic import MultiPoint
 
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=MultiPoint(type="MultiPoint", coordinates=[[0, 0, 0], [1, 1, 1]]),
             properties=None,
@@ -134,7 +134,7 @@ class TestFeatureToGltf:
     def test_multilinestring(self):
         from geojson_pydantic import MultiLineString
 
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=MultiLineString(
                 type="MultiLineString",
@@ -146,7 +146,7 @@ class TestFeatureToGltf:
         assert gltf.meshes[0].primitives[0].mode == LINES
 
     def test_null_geometry(self):
-        feat = MicroFeature(type="Feature", geometry=None, properties=None)
+        feat = MuDMFeature(type="Feature", geometry=None, properties=None)
         gltf = feature_to_gltf(feat)
         assert len(gltf.meshes) == 0
         assert len(gltf.nodes) == 0
@@ -168,7 +168,7 @@ class TestMetadata:
 
     def test_collection_metadata(self):
         feat = _tin_feature()
-        collection = MicroFeatureCollection(
+        collection = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[feat],
             properties={"study": "test_study"},
@@ -182,7 +182,7 @@ class TestCoordinateTransform:
         """With y_up=True, Z values should become Y values."""
         from geojson_pydantic import Point
 
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=Point(type="Point", coordinates=[1.0, 2.0, 3.0]),
             properties=None,
@@ -201,7 +201,7 @@ class TestCoordinateTransform:
     def test_y_up_disabled(self):
         from geojson_pydantic import Point
 
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=Point(type="Point", coordinates=[1.0, 2.0, 3.0]),
             properties=None,
@@ -221,12 +221,12 @@ class TestCollectionToGltf:
         feat1 = _tin_feature()
         from geojson_pydantic import Point
 
-        feat2 = MicroFeature(
+        feat2 = MuDMFeature(
             type="Feature",
             geometry=Point(type="Point", coordinates=[5.0, 5.0, 5.0]),
             properties=None,
         )
-        collection = MicroFeatureCollection(
+        collection = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[feat1, feat2],
         )
@@ -237,7 +237,7 @@ class TestCollectionToGltf:
         assert len(gltf.nodes) == 2
 
     def test_empty_collection(self):
-        collection = MicroFeatureCollection(
+        collection = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[],
         )
@@ -272,11 +272,11 @@ class TestFeatureSpacing:
                 [[(0, 0, 0), (80, 0, 0), (40, 10, 5), (0, 0, 0)]],
             ],
         )
-        return MicroFeatureCollection(
+        return MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(type="Feature", geometry=t1, properties=None),
-                MicroFeature(type="Feature", geometry=t2, properties=None),
+                MuDMFeature(type="Feature", geometry=t1, properties=None),
+                MuDMFeature(type="Feature", geometry=t2, properties=None),
             ],
         )
 
@@ -308,7 +308,7 @@ class TestFeatureSpacing:
     def test_single_feature_no_offset(self):
         """A single-feature collection should not get translated."""
         feat = _tin_feature()
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[feat],
         )
@@ -339,14 +339,14 @@ class TestGridLayout:
 
     def _collection(self, n, **tin_kw):
         features = [
-            MicroFeature(
+            MuDMFeature(
                 type="Feature",
                 geometry=self._make_tin(**tin_kw),
                 properties=None,
             )
             for _ in range(n)
         ]
-        return MicroFeatureCollection(
+        return MuDMFeatureCollection(
             type="FeatureCollection",
             features=features,
         )
@@ -449,7 +449,7 @@ class TestColorBy:
     def _colored_collection(self):
         """Three TIN features with different 'kind' property values."""
         def _make(kind_value):
-            return MicroFeature(
+            return MuDMFeature(
                 type="Feature",
                 geometry=TIN(
                     type="TIN",
@@ -459,7 +459,7 @@ class TestColorBy:
                 ),
                 properties={"kind": kind_value},
             )
-        return MicroFeatureCollection(
+        return MuDMFeatureCollection(
             type="FeatureCollection",
             features=[_make("alpha"), _make("beta"), _make("alpha")],
         )
@@ -510,7 +510,7 @@ class TestColorBy:
 
     def test_missing_property_falls_back_to_default(self):
         """Feature without the color_by property gets material 0."""
-        feat_no_prop = MicroFeature(
+        feat_no_prop = MuDMFeature(
             type="Feature",
             geometry=TIN(
                 type="TIN",
@@ -520,7 +520,7 @@ class TestColorBy:
             ),
             properties={"other": "value"},
         )
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[feat_no_prop],
         )
@@ -533,7 +533,7 @@ class TestColorBy:
 
     def test_unmapped_value_falls_back_to_default(self):
         """Property value not in color_map falls back to material 0."""
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=TIN(
                 type="TIN",
@@ -543,7 +543,7 @@ class TestColorBy:
             ),
             properties={"kind": "gamma"},
         )
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[feat],
         )
@@ -563,7 +563,7 @@ class TestColorBy:
 
     def test_single_feature_with_color_by(self):
         """color_by works on feature_to_gltf too."""
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=TIN(
                 type="TIN",

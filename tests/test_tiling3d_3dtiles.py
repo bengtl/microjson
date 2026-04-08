@@ -13,13 +13,13 @@ from pathlib import Path
 import pytest
 from geojson_pydantic import LineString, Point, Polygon
 
-from microjson.model import MicroFeature, MicroFeatureCollection, TIN
-from microjson.tiling3d.generator3d import TileGenerator3D
-from microjson.tiling3d.octree import OctreeConfig
-from microjson.tiling3d.reader_3dtiles import TileReader3DTiles
-from microjson.tiling3d.projector3d import CartesianProjector3D
-from microjson.tiling3d.gltf_encoder3d import tile_to_glb, _unproject_coords
-from microjson.tiling3d.tileset_json import (
+from mudm.model import MuDMFeature, MuDMFeatureCollection, TIN
+from mudm.tiling3d.generator3d import TileGenerator3D
+from mudm.tiling3d.octree import OctreeConfig
+from mudm.tiling3d.reader_3dtiles import TileReader3DTiles
+from mudm.tiling3d.projector3d import CartesianProjector3D
+from mudm.tiling3d.gltf_encoder3d import tile_to_glb, _unproject_coords
+from mudm.tiling3d.tileset_json import (
     generate_tileset_json,
     _box_volume,
     _geometric_error,
@@ -30,23 +30,23 @@ from microjson.tiling3d.tileset_json import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _point_feature(x: float, y: float, z: float, **props) -> MicroFeature:
-    return MicroFeature(
+def _point_feature(x: float, y: float, z: float, **props) -> MuDMFeature:
+    return MuDMFeature(
         type="Feature",
         geometry=Point(type="Point", coordinates=[x, y, z]),
         properties=props if props else {},
     )
 
 
-def _line_feature(coords: list[list[float]], **props) -> MicroFeature:
-    return MicroFeature(
+def _line_feature(coords: list[list[float]], **props) -> MuDMFeature:
+    return MuDMFeature(
         type="Feature",
         geometry=LineString(type="LineString", coordinates=coords),
         properties=props if props else {},
     )
 
 
-def _tin_feature(**props) -> MicroFeature:
+def _tin_feature(**props) -> MuDMFeature:
     tin = TIN(
         type="TIN",
         coordinates=[
@@ -54,15 +54,15 @@ def _tin_feature(**props) -> MicroFeature:
             [[[5, 0, 1], [10, 0, 0], [7.5, 5, 3], [5, 0, 1]]],
         ],
     )
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         geometry=tin,
         properties=props if props else {},
     )
 
 
-def _collection(*features: MicroFeature) -> MicroFeatureCollection:
-    return MicroFeatureCollection(
+def _collection(*features: MuDMFeature) -> MuDMFeatureCollection:
+    return MuDMFeatureCollection(
         type="FeatureCollection",
         features=list(features),
     )

@@ -1,23 +1,23 @@
 # Using muDM
 
-This page covers common usage patterns for the muDM library (`microjson` Python package), from basic validation to high-performance tiling pipelines.
+This page covers common usage patterns for the muDM library (`mudm` Python package), from basic validation to high-performance tiling pipelines.
 
 ## Requirements
 
 - Python >= 3.11, < 3.14
-- Install: `uv add microjson` (or `pip install microjson`)
+- Install: `uv add mudm` (or `pip install mudm`)
 - For Rust acceleration (tiling pipelines): built automatically via maturin when installing from source
 
 ## Validating muDM and GeoJSON
 
 ```python
-import microjson.model as mj
+import mudm.model as mj
 import json
 
 # Validate a muDM file
 with open("annotations.json") as f:
     data = json.load(f)
-microjson_obj = mj.MicroJSON.model_validate(data)
+mudm_obj = mj.MuDM.model_validate(data)
 
 # Validate a GeoJSON file (any GeoJSON is valid muDM)
 with open("features.geojson") as f:
@@ -29,12 +29,12 @@ geojson_obj = mj.GeoJSON.model_validate(data)
 
 The `df_to_microjson` function converts a pandas DataFrame into a muDM FeatureCollection.
 
-::: microjson.examples.df_to_microjson.df_to_microjson
+::: mudm.examples.df_to_microjson.df_to_microjson
     :docstring:
 
 ```python
 import pandas as pd
-from microjson.examples.df_to_microjson import df_to_microjson
+from mudm.examples.df_to_microjson import df_to_microjson
 
 data = [
     {
@@ -67,8 +67,8 @@ Generate vector tiles from GeoJSON data using the Rust pipeline. See the [Tiling
 ### PBF (MVT) Output
 
 ```python
-from microjson._rs import StreamingTileGenerator2D
-from microjson.tiling2d import generate_pbf, read_pbf
+from mudm._rs import StreamingTileGenerator2D
+from mudm.tiling2d import generate_pbf, read_pbf
 
 gen = StreamingTileGenerator2D(min_zoom=0, max_zoom=7, buffer=64/4096)
 
@@ -86,8 +86,8 @@ features = read_pbf("tiles/", bounds, zoom=0)
 ### Tiled Parquet Output
 
 ```python
-from microjson._rs import StreamingTileGenerator2D
-from microjson.tiling2d import generate_parquet, read_parquet
+from mudm._rs import StreamingTileGenerator2D
+from mudm.tiling2d import generate_parquet, read_parquet
 
 gen = StreamingTileGenerator2D(min_zoom=0, max_zoom=7, buffer=64/4096)
 
@@ -102,14 +102,14 @@ n_rows = generate_parquet(gen, "output.parquet", bounds, simplify=True)
 rows = read_parquet("output.parquet", zoom=0)
 ```
 
-A complete example script is at `src/microjson/examples/tiling_rust.py`.
+A complete example script is at `src/mudm/examples/tiling_rust.py`.
 
 ### Rust-Native Parquet Ingestion
 
 For large datasets, bypass GeoJSON entirely and ingest directly from Parquet:
 
 ```python
-from microjson._rs import StreamingTileGenerator2D
+from mudm._rs import StreamingTileGenerator2D
 
 gen = StreamingTileGenerator2D(min_zoom=0, max_zoom=7, buffer=64/4096, temp_dir="/data/tmp")
 
@@ -140,7 +140,7 @@ Write Parquet entirely in Rust (parallel per-zoom part files):
 
 ```python
 # After adding features, generate both MVT and Parquet:
-from microjson.tiling2d import generate_pbf
+from mudm.tiling2d import generate_pbf
 
 n_tiles = generate_pbf(gen, "vectors/", bounds, simplify=True, layer_name="features")
 n_rows = gen.generate_parquet_native("features.parquet/", bounds, simplify=True)
@@ -153,7 +153,7 @@ The converter registry provides standardized entry points for common source form
 ### Python API
 
 ```python
-from microjson.converters import convert, list_formats
+from mudm.converters import convert, list_formats
 
 # List available formats
 print(list_formats())  # ['geojson', 'obj', 'xenium']
@@ -280,7 +280,7 @@ tiles/<dataset>/
 Generate 3D Tiles (GLB), tiled Parquet, or Neuroglancer output from OBJ mesh files using `StreamingTileGenerator`. Supports meshopt and Draco compression, bucketed redistribution for datasets exceeding RAM, and parallel ingestion/encoding.
 
 ```python
-from microjson._rs import StreamingTileGenerator
+from mudm._rs import StreamingTileGenerator
 
 gen = StreamingTileGenerator(min_zoom=0, max_zoom=5, extent=4096, extent_z=4096)
 gen.add_obj_files(["neuron_001.obj", "neuron_002.obj"], bounds)
@@ -292,7 +292,7 @@ For the full API reference, geometry types, compression options, viewer features
 ## GeoParquet Import/Export
 
 ```python
-from microjson import to_geoparquet, from_geoparquet, ArrowConfig
+from mudm import to_geoparquet, from_geoparquet, ArrowConfig
 
 # Export muDM to GeoParquet
 config = ArrowConfig()
@@ -305,7 +305,7 @@ fc = from_geoparquet("output.parquet")
 ## glTF/GLB Export
 
 ```python
-from microjson import to_glb, GltfConfig
+from mudm import to_glb, GltfConfig
 
 config = GltfConfig()
 to_glb(feature_collection, "output.glb", config)

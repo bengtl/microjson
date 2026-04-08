@@ -18,15 +18,15 @@ First, let's import the necessary libraries for tiling muDM data.
 
 
 ```python
-from microjson.tilewriter import (
+from mudm.tilewriter import (
     TileWriter,
     getbounds,
     extract_fields_ranges_enums
 )
 from pathlib import Path
-from microjson.tilemodel import TileJSON, TileModel, TileLayer
+from mudm.tilemodel import TileJSON, TileModel, TileLayer
 import os
-from microjson.polygen import generate_polygons
+from mudm.polygen import generate_polygons
 import json
 ```
 
@@ -51,7 +51,7 @@ meta_values_options = {
 }
 
 # Output file path
-microjson_data_path = "example_generated.json"
+mudm_data_path = "example_generated.json"
 
 # Generate polygons
 generate_polygons(
@@ -61,10 +61,10 @@ generate_polygons(
     MAX_VERTICES,
     meta_types,
     meta_values_options,
-    microjson_data_path
+    mudm_data_path
 )
 
-print(f"Generated polygon data saved to {microjson_data_path}")
+print(f"Generated polygon data saved to {mudm_data_path}")
 ```
 
     Generated polygon data saved to example_generated.json
@@ -76,8 +76,8 @@ Alternatively, you can use existing muDM data. Uncomment and modify the followin
 
 
 ```python
-# microjson_data_path = "path/to/your/data.json"
-# print(f"Using existing muDM data from {microjson_data_path}")
+# mudm_data_path = "path/to/your/data.json"
+# print(f"Using existing muDM data from {mudm_data_path}")
 ```
 
 ## Visualize the muDM Data
@@ -87,7 +87,7 @@ Let's take a look at the structure of our muDM data.
 
 ```python
 # Load and display the first few features of the muDM data
-with open(microjson_data_path, 'r') as f:
+with open(mudm_data_path, 'r') as f:
     data = json.load(f)
 
 # Display basic information about the data
@@ -140,7 +140,7 @@ For existing muDM data, we can extract field information, value ranges, and enum
 
 ```python
 # Extract fields, ranges, and enums from the muDM data
-field_names, field_ranges, field_enums = extract_fields_ranges_enums(microjson_data_path)
+field_names, field_ranges, field_enums = extract_fields_ranges_enums(mudm_data_path)
 
 print("Extracted field names:")
 print(field_names)
@@ -200,7 +200,7 @@ Next, we'll calculate the bounds of our data to properly configure the tile mode
 
 ```python
 # Get bounds of the data (square=True ensures the bounds form a square)
-maxbounds = getbounds(microjson_data_path, square=True)
+maxbounds = getbounds(mudm_data_path, square=True)
 print(f"Bounds: {maxbounds}")
 
 # Calculate the center of the bounds
@@ -331,7 +331,7 @@ Finally, let's generate the vector tiles from our muDM data.
 handler = TileWriter(tile_model, pbf=True)
 
 # Convert muDM to tiles
-handler.microjson2tiles(microjson_data_path, validate=False)
+handler.microjson2tiles(mudm_data_path, validate=False)
 
 print("Vector tiles generated successfully!")
 

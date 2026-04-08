@@ -131,7 +131,7 @@ def main():
         for neuron in raw.get("neurons", []):
             meta_lookup[str(neuron["bodyId"])] = neuron
 
-    from microjson._rs import StreamingTileGenerator, scan_obj_bounds
+    from mudm._rs import StreamingTileGenerator, scan_obj_bounds
 
     path_strs = [str(p) for p in selected]
     tags_list = [_build_tags(p, meta_lookup) for p in selected]

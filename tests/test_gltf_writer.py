@@ -7,17 +7,17 @@ import numpy as np
 import pytest
 from pygltflib import GLTF2
 
-from microjson.model import (
-    MicroFeature,
-    MicroFeatureCollection,
+from mudm.model import (
+    MuDMFeature,
+    MuDMFeatureCollection,
     TIN,
 )
-from microjson.gltf import GltfConfig, to_glb, to_gltf
+from mudm.gltf import GltfConfig, to_glb, to_gltf
 
 
-def _tin_feature(**props) -> MicroFeature:
+def _tin_feature(**props) -> MuDMFeature:
     """A simple TIN feature (2 triangles)."""
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         geometry=TIN(
             type="TIN",
@@ -104,12 +104,12 @@ class TestToGlb:
         from geojson_pydantic import Point
 
         feat1 = _tin_feature()
-        feat2 = MicroFeature(
+        feat2 = MuDMFeature(
             type="Feature",
             geometry=Point(type="Point", coordinates=[5.0, 5.0, 5.0]),
             properties=None,
         )
-        collection = MicroFeatureCollection(
+        collection = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[feat1, feat2],
         )

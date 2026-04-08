@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Scan .glb tiles and build a MicroJSON FeatureCollection index for the viewer.
+"""Scan .glb tiles and build a MuDM FeatureCollection index for the viewer.
 
 Reads the JSON chunk from each GLB file to extract feature names and
 properties from node extras, then writes a features.json manifest as a
-valid MicroJSON/muDM FeatureCollection.
+valid MuDM/muDM FeatureCollection.
 
-Output format (MicroJSON FeatureCollection):
+Output format (MuDM FeatureCollection):
 {
   "type": "FeatureCollection",
   "features": [
@@ -79,7 +79,7 @@ def build_index(tiles_dir: Path, id_fields: list[str] | None = None,
 
     Returns:
         A tuple of (collection_dict, zoom_counts, max_zoom) where:
-        - collection_dict is the MicroJSON FeatureCollection with TIN geometry
+        - collection_dict is the MuDM FeatureCollection with TIN geometry
         - zoom_counts maps zoom level to tile count
         - max_zoom is the highest zoom level found
     """
@@ -133,7 +133,7 @@ def build_index(tiles_dir: Path, id_fields: list[str] | None = None,
     for z in sorted(zoom_counts):
         print(f"  Zoom {z}: {zoom_counts[z]} tiles")
 
-    # Build MicroJSON FeatureCollection
+    # Build MuDM FeatureCollection
     features_list = []
     for name in sorted(feature_map):
         entry = feature_map[name]

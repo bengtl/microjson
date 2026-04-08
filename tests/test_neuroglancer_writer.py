@@ -1,7 +1,7 @@
 """Tests for Neuroglancer unified orchestrator.
 
 Note: to_neuroglancer() no longer dispatches skeletons. For skeleton export,
-call write_skeleton() directly with a NeuronMorphology from microjson.swc.
+call write_skeleton() directly with a NeuronMorphology from mudm.swc.
 """
 
 import json
@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from microjson.model import (
-    MicroFeature,
-    MicroFeatureCollection,
+from mudm.model import (
+    MuDMFeature,
+    MuDMFeatureCollection,
 )
-from microjson.neuroglancer.writer import to_neuroglancer
+from mudm.neuroglancer.writer import to_neuroglancer
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +22,7 @@ from microjson.neuroglancer.writer import to_neuroglancer
 
 @pytest.fixture
 def point_feature():
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         geometry={"type": "Point", "coordinates": [1, 2, 3]},
         properties={"label": "marker"},
@@ -31,7 +31,7 @@ def point_feature():
 
 @pytest.fixture
 def line_feature():
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         geometry={"type": "LineString", "coordinates": [[0, 0, 0], [10, 10, 10]]},
         properties={},
@@ -58,7 +58,7 @@ class TestToNeuroglancerLinesOnly:
 
 class TestToNeuroglancerMixedCollection:
     def test_mixed_point_and_line(self, point_feature, line_feature, tmp_path):
-        collection = MicroFeatureCollection(
+        collection = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[point_feature, line_feature],
         )

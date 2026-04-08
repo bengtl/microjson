@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from shapely.geometry import MultiPolygon, Polygon
 
-from microjson.gltf.triangulator import multipolygon_to_mesh, polygon_to_mesh
+from mudm.gltf.triangulator import multipolygon_to_mesh, polygon_to_mesh
 
 
 class TestPolygonToMesh:

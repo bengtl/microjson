@@ -9,18 +9,18 @@ DracoPy = pytest.importorskip("DracoPy")
 
 from pygltflib import LINES, POINTS, TRIANGLES, BufferFormat
 
-from microjson.model import (
-    MicroFeature,
-    MicroFeatureCollection,
+from mudm.model import (
+    MuDMFeature,
+    MuDMFeatureCollection,
     TIN,
 )
-from microjson.gltf.gltf_assembler import (
+from mudm.gltf.gltf_assembler import (
     collection_to_gltf,
     feature_to_gltf,
 )
-from microjson.gltf.models import GltfConfig
-from microjson.gltf.writer import to_glb
-from microjson.gltf._draco import (
+from mudm.gltf.models import GltfConfig
+from mudm.gltf.writer import to_glb
+from mudm.gltf._draco import (
     DRACO_EXTENSION,
     encode_draco,
     add_draco_triangle_mesh,
@@ -32,9 +32,9 @@ from microjson.gltf._draco import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _tin_feature(**props) -> MicroFeature:
+def _tin_feature(**props) -> MuDMFeature:
     """A TIN feature with several triangles for meaningful compression tests."""
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         geometry=TIN(
             type="TIN",
@@ -49,10 +49,10 @@ def _tin_feature(**props) -> MicroFeature:
     )
 
 
-def _line_feature() -> MicroFeature:
+def _line_feature() -> MuDMFeature:
     from geojson_pydantic import LineString
 
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         geometry=LineString(
             type="LineString",
@@ -62,20 +62,20 @@ def _line_feature() -> MicroFeature:
     )
 
 
-def _point_feature() -> MicroFeature:
+def _point_feature() -> MuDMFeature:
     from geojson_pydantic import Point
 
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         geometry=Point(type="Point", coordinates=[5.0, 5.0, 5.0]),
         properties=None,
     )
 
 
-def _polygon_feature() -> MicroFeature:
+def _polygon_feature() -> MuDMFeature:
     from geojson_pydantic import Polygon
 
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         geometry=Polygon(
             type="Polygon",
@@ -296,7 +296,7 @@ class TestDracoMixedGeometry:
         tin_feat = _tin_feature()
         line_feat = _line_feature()
 
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[tin_feat, line_feat],
         )
@@ -329,7 +329,7 @@ class TestDracoMixedGeometry:
         tin_feat = _tin_feature()
         point_feat = _point_feature()
 
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[tin_feat, point_feat],
         )

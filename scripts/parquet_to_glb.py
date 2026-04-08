@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import a GeoParquet file into MicroJSON and export as Draco-compressed GLB.
+"""Import a GeoParquet file into MuDM and export as Draco-compressed GLB.
 
 Usage:
     .venv/bin/python scripts/parquet_to_glb.py INPUT.parquet [OPTIONS]
@@ -30,8 +30,8 @@ Then drag the .glb file into https://gltf-viewer.donmccurdy.com/
 import sys
 from pathlib import Path
 
-from microjson.arrow import from_geoparquet
-from microjson.gltf import GltfConfig, to_glb
+from mudm.arrow import from_geoparquet
+from mudm.gltf import GltfConfig, to_glb
 
 
 def _pop_flag(args: list[str], flag: str) -> str | None:
@@ -87,7 +87,7 @@ def main() -> None:
         if len(parts) > 2:
             grid_z = parts[2]
 
-    # --- Read Parquet → MicroJSON ---
+    # --- Read Parquet → MuDM ---
     print(f"Reading {input_path} ...")
     fc = from_geoparquet(input_path)
     print(f"  {len(fc.features)} feature(s)")

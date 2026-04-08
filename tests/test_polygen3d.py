@@ -1,14 +1,14 @@
-"""Tests for microjson.polygen3d — random 3D geometry generator."""
+"""Tests for mudm.polygen3d — random 3D geometry generator."""
 
 import pytest
 
-from microjson.polygen3d import (
+from mudm.polygen3d import (
     generate_random_tins,
     generate_random_points_3d,
     generate_random_lines_3d,
     generate_3d_collection,
 )
-from microjson.model import TIN
+from mudm.model import TIN
 
 BOUNDS = (0.0, 0.0, 0.0, 100.0, 100.0, 100.0)
 

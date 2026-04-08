@@ -1,8 +1,8 @@
 import json
 import pytest
 from pydantic import ValidationError
-from microjson.tilemodel import TileJSON
-from microjson.fileutils import gather_example_files
+from mudm.tilemodel import TileJSON
+from mudm.fileutils import gather_example_files
 
 
 # Define the directories containing the example JSON files

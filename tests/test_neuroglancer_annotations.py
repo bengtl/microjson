@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from microjson.model import MicroFeature
-from microjson.neuroglancer.annotation_writer import (
+from mudm.model import MuDMFeature
+from mudm.neuroglancer.annotation_writer import (
     lines_to_annotation_binary,
     points_to_annotation_binary,
     write_annotations,
@@ -18,16 +18,16 @@ from microjson.neuroglancer.annotation_writer import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _point_feature(x, y, z) -> MicroFeature:
-    return MicroFeature(
+def _point_feature(x, y, z) -> MuDMFeature:
+    return MuDMFeature(
         type="Feature",
         geometry={"type": "Point", "coordinates": [x, y, z]},
         properties={},
     )
 
 
-def _line_feature(coords) -> MicroFeature:
-    return MicroFeature(
+def _line_feature(coords) -> MuDMFeature:
+    return MuDMFeature(
         type="Feature",
         geometry={"type": "LineString", "coordinates": coords},
         properties={},

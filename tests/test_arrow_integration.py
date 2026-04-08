@@ -12,10 +12,10 @@ import pyarrow.parquet as pq
 import pytest
 import shapely
 
-from microjson.arrow import ArrowConfig, to_arrow_table, to_geoparquet, from_arrow_table, from_geoparquet
-from microjson.model import (
-    MicroFeature,
-    MicroFeatureCollection,
+from mudm.arrow import ArrowConfig, to_arrow_table, to_geoparquet, from_arrow_table, from_geoparquet
+from mudm.model import (
+    MuDMFeature,
+    MuDMFeatureCollection,
     OntologyTerm,
     PolyhedralSurface,
     TIN,
@@ -35,7 +35,7 @@ from geojson_pydantic import (
 # ---- Helpers ----
 
 def _point_feat(fid="p1", x=1.0, y=2.0, z=3.0, props=None):
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id=fid,
         geometry=Point(type="Point", coordinates=(x, y, z)),
@@ -44,7 +44,7 @@ def _point_feat(fid="p1", x=1.0, y=2.0, z=3.0, props=None):
 
 
 def _polygon_feat(fid="pg1"):
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id=fid,
         geometry=Polygon(
@@ -56,7 +56,7 @@ def _polygon_feat(fid="pg1"):
 
 
 def _tin_feat():
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id="t1",
         geometry=TIN(
@@ -79,7 +79,7 @@ class TestToArrowTable:
         assert len(table) == 1
 
     def test_collection(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[_point_feat("a"), _point_feat("b")],
         )
@@ -104,7 +104,7 @@ class TestToArrowTable:
 class TestGeoParquetRoundTrip:
     def test_write_and_read(self, tmp_path):
         path = tmp_path / "test.parquet"
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
                 _point_feat("a", props={"val": 1}),
@@ -129,7 +129,7 @@ class TestGeoParquetRoundTrip:
     def test_geopandas_read(self, tmp_path):
         """Verify geopandas can read the GeoParquet file."""
         path = tmp_path / "geopandas_test.parquet"
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
                 _polygon_feat("p1"),
@@ -164,7 +164,7 @@ class TestGeoParquetRoundTrip:
 
 class TestMixedGeometry:
     def test_point_and_polygon(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[_point_feat(), _polygon_feat()],
         )
@@ -176,7 +176,7 @@ class TestMixedGeometry:
         assert "Polygon" in types
 
     def test_tin_and_point(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[_tin_feat(), _point_feat()],
         )
@@ -188,7 +188,7 @@ class TestMixedGeometry:
         assert "MultiPolygon Z" in types  # TIN stored as MultiPolygon
 
     def test_all_3d_types(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
                 _point_feat(),
@@ -205,7 +205,7 @@ class TestMixedGeometry:
     def test_mixed_geometry_geoparquet(self, tmp_path):
         """Write mixed geometry types to GeoParquet and verify metadata."""
         path = tmp_path / "mixed.parquet"
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[_point_feat(), _polygon_feat(), _tin_feat()],
         )
@@ -222,7 +222,7 @@ class TestMixedGeometry:
 
 class TestEdgeCases:
     def test_empty_collection(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[],
         )
@@ -230,7 +230,7 @@ class TestEdgeCases:
         assert len(table) == 0
 
     def test_no_properties(self):
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             id="noprops",
             geometry=Point(type="Point", coordinates=(0, 0)),
@@ -241,7 +241,7 @@ class TestEdgeCases:
         assert len(table.column_names) >= 3
 
     def test_null_geometry_feature(self):
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             id="nullgeo",
             geometry=None,
@@ -251,7 +251,7 @@ class TestEdgeCases:
         assert table["geometry"][0].as_py() is None
 
     def test_multipoint_3d(self):
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             id="mp1",
             geometry=MultiPoint(
@@ -267,7 +267,7 @@ class TestEdgeCases:
         assert shapely.get_coordinate_dimension(geom) == 3
 
     def test_multilinestring_geometry(self):
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             id="mls1",
             geometry=MultiLineString(
@@ -285,7 +285,7 @@ class TestEdgeCases:
         assert geom.geom_type == "MultiLineString"
 
     def test_multipolygon_geometry(self):
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             id="mpg1",
             geometry=MultiPolygon(
@@ -309,10 +309,10 @@ class TestEdgeCases:
 
 class TestVocabularyArrowRoundTrip:
     def _make_collection_with_vocab(self):
-        return MicroFeatureCollection(
+        return MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(
+                MuDMFeature(
                     type="Feature",
                     id="v1",
                     geometry=Point(type="Point", coordinates=(1.0, 2.0)),
@@ -335,7 +335,7 @@ class TestVocabularyArrowRoundTrip:
     def test_vocabulary_in_table_metadata(self):
         fc = self._make_collection_with_vocab()
         table = to_arrow_table(fc)
-        raw = table.schema.metadata.get(b"microjson:vocabularies")
+        raw = table.schema.metadata.get(b"mudm:vocabularies")
         assert raw is not None
         vocab = json.loads(raw)
         assert "cell_type" in vocab
@@ -360,10 +360,10 @@ class TestVocabularyArrowRoundTrip:
         assert fc2.vocabularies["cell_type"].namespace == "http://purl.obolibrary.org/obo/CL_"
 
     def test_uri_reference_roundtrip(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(
+                MuDMFeature(
                     type="Feature",
                     id="u1",
                     geometry=Point(type="Point", coordinates=(0.0, 0.0)),
@@ -377,11 +377,11 @@ class TestVocabularyArrowRoundTrip:
         assert fc2.vocabularies == "https://neuromorpho.org/vocab/neuroscience-v1.json"
 
     def test_no_vocabularies_metadata_absent(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[_point_feat()],
         )
         table = to_arrow_table(fc)
-        assert b"microjson:vocabularies" not in table.schema.metadata
+        assert b"mudm:vocabularies" not in table.schema.metadata
         fc2 = from_arrow_table(table)
         assert fc2.vocabularies is None

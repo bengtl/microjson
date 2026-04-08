@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from pygltflib import ARRAY_BUFFER, ELEMENT_ARRAY_BUFFER, FLOAT, UNSIGNED_INT, GLTF2
 
-from microjson.gltf._buffers import (
+from mudm.gltf._buffers import (
     create_accessor,
     pack_indices,
     pack_vertices,

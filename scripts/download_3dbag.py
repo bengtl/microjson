@@ -2,7 +2,7 @@
 """Download 3DBAG Amsterdam buildings for benchmarking.
 
 Downloads building meshes with attributes from the 3DBAG API (CityJSON format),
-converts to MicroJSON TIN features, tiles with TileGenerator3D, and benchmarks.
+converts to MuDM TIN features, tiles with TileGenerator3D, and benchmarks.
 
 Data source: https://3dbag.nl — Netherlands 3D building models.
 CRS: Amersfoort/RD New + NAP (EPSG:7415).
@@ -289,7 +289,7 @@ def cityjson_to_mesh(
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Convert to MicroJSON
+# Step 3: Convert to MuDM
 # ---------------------------------------------------------------------------
 
 def convert_to_microjson(
@@ -298,13 +298,13 @@ def convert_to_microjson(
     lod: str = "2.2",
     max_buildings: int | None = None,
 ):
-    """Convert downloaded 3DBAG buildings to MicroFeatureCollection."""
-    from microjson.model import (
-        MicroFeature,
-        MicroFeatureCollection,
+    """Convert downloaded 3DBAG buildings to MuDMFeatureCollection."""
+    from mudm.model import (
+        MuDMFeature,
+        MuDMFeatureCollection,
         Vocabulary,
     )
-    from microjson.swc import _mesh_to_tin
+    from mudm.swc import _mesh_to_tin
 
     raw_path = data_dir / "buildings_raw.json"
     if not raw_path.exists():
@@ -319,9 +319,9 @@ def convert_to_microjson(
     if max_buildings and max_buildings < len(buildings):
         buildings = buildings[:max_buildings]
 
-    print(f"Converting {len(buildings)} buildings to MicroJSON (LoD {lod})...")
+    print(f"Converting {len(buildings)} buildings to MuDM (LoD {lod})...")
     t0 = time.perf_counter()
-    features: list[MicroFeature] = []
+    features: list[MuDMFeature] = []
     total_verts = 0
     total_faces = 0
     roof_types: set[str] = set()
@@ -349,7 +349,7 @@ def convert_to_microjson(
 
         feature_class = rt if rt else "building"
 
-        features.append(MicroFeature(
+        features.append(MuDMFeature(
             type="Feature",
             geometry=tin,
             properties=props,
@@ -364,7 +364,7 @@ def convert_to_microjson(
     # Build vocabulary for roof types
     vocabs = None
     if roof_types:
-        from microjson.model import OntologyTerm
+        from mudm.model import OntologyTerm
         terms = {
             rt: OntologyTerm(
                 uri=f"https://3dbag.nl/schema/roof_type/{rt}",
@@ -380,7 +380,7 @@ def convert_to_microjson(
             ),
         }
 
-    collection = MicroFeatureCollection(
+    collection = MuDMFeatureCollection(
         type="FeatureCollection",
         features=features,
         properties={
@@ -495,7 +495,7 @@ def main() -> None:
         description="3DBAG Amsterdam download, conversion, tiling, and benchmark",
     )
     parser.add_argument("--download", action="store_true", help="Download from 3DBAG API")
-    parser.add_argument("--convert", action="store_true", help="Convert to MicroJSON")
+    parser.add_argument("--convert", action="store_true", help="Convert to MuDM")
     parser.add_argument("--tile", action="store_true", help="Generate tiles")
     parser.add_argument("--benchmark", action="store_true", help="Run benchmarks")
     parser.add_argument("--bbox", type=str, default=_DEFAULT_BBOX,

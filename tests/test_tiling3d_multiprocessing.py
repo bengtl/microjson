@@ -10,24 +10,24 @@ from pathlib import Path
 
 from geojson_pydantic import Point
 
-from microjson.model import MicroFeature, MicroFeatureCollection, TIN
-from microjson.tiling3d import TileGenerator3D, OctreeConfig
-from microjson.tiling3d.generator3d import _MIN_TILES_FOR_MP
+from mudm.model import MuDMFeature, MuDMFeatureCollection, TIN
+from mudm.tiling3d import TileGenerator3D, OctreeConfig
+from mudm.tiling3d.generator3d import _MIN_TILES_FOR_MP
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _point_feature(x: float, y: float, z: float, **props) -> MicroFeature:
-    return MicroFeature(
+def _point_feature(x: float, y: float, z: float, **props) -> MuDMFeature:
+    return MuDMFeature(
         type="Feature",
         geometry=Point(type="Point", coordinates=[x, y, z]),
         properties=props if props else {},
     )
 
 
-def _tin_feature(ox: float = 0.0, oy: float = 0.0, oz: float = 0.0, **props) -> MicroFeature:
+def _tin_feature(ox: float = 0.0, oy: float = 0.0, oz: float = 0.0, **props) -> MuDMFeature:
     """A simple TIN with two triangles, offset by (ox, oy, oz)."""
     tin = TIN(
         type="TIN",
@@ -36,21 +36,21 @@ def _tin_feature(ox: float = 0.0, oy: float = 0.0, oz: float = 0.0, **props) -> 
             [[[ox + 1, oy, oz], [ox + 2, oy, oz], [ox + 1.5, oy + 1, oz + 0.5], [ox + 1, oy, oz]]],
         ],
     )
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         geometry=tin,
         properties=props if props else {},
     )
 
 
-def _collection(*features: MicroFeature) -> MicroFeatureCollection:
-    return MicroFeatureCollection(
+def _collection(*features: MuDMFeature) -> MuDMFeatureCollection:
+    return MuDMFeatureCollection(
         type="FeatureCollection",
         features=list(features),
     )
 
 
-def _large_point_collection(n: int = 50) -> MicroFeatureCollection:
+def _large_point_collection(n: int = 50) -> MuDMFeatureCollection:
     """Create a collection with many spread-out points to generate enough tiles."""
     features = []
     for i in range(n):
@@ -61,7 +61,7 @@ def _large_point_collection(n: int = 50) -> MicroFeatureCollection:
     return _collection(*features)
 
 
-def _large_tin_collection(n: int = 30) -> MicroFeatureCollection:
+def _large_tin_collection(n: int = 30) -> MuDMFeatureCollection:
     """Create a collection with many TIN features spread out."""
     features = []
     for i in range(n):

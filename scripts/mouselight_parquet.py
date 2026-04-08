@@ -89,9 +89,9 @@ def process_brain(
 
     Returns summary dict with brain_id, rows, size, timing.
     """
-    from microjson._rs import StreamingTileGenerator, scan_obj_bounds
-    from microjson.tiling3d.parquet_writer import generate_parquet
-    from microjson.tiling3d.parquet_prime import prime_parquet
+    from mudm._rs import StreamingTileGenerator, scan_obj_bounds
+    from mudm.tiling3d.parquet_writer import generate_parquet
+    from mudm.tiling3d.parquet_prime import prime_parquet
 
     brain_id = brain_dir.name
     obj_paths = sorted(brain_dir.glob("*.obj"))

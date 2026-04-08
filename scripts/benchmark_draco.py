@@ -121,7 +121,7 @@ def load_obj_meshes(data_dir: Path, max_files: int = 0) -> list[tuple[np.ndarray
 
     Returns list of (vertices_Nx3_f64, faces_Mx3_u32).
     """
-    from microjson._rs import parse_obj
+    from mudm._rs import parse_obj
 
     obj_files = sorted(data_dir.glob("*.obj"))
     if max_files > 0:

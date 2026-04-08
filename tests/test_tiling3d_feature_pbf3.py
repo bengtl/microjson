@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 try:
-    from microjson._rs import StreamingTileGenerator
+    from mudm._rs import StreamingTileGenerator
     RUST_AVAILABLE = True
 except ImportError:
     RUST_AVAILABLE = False
@@ -167,7 +167,7 @@ class TestFeaturePbf3DecodeRoundtrip:
 
     def test_feature_pbf3_decode_roundtrip(self, tmp_path):
         """decode_tile() works on per-feature files, correct tags."""
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
 
         features = [
             _make_tin_feature(
@@ -220,7 +220,7 @@ class TestFeaturePbf3WorldCoordinates:
         gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
         data = (tmp_path / "features" / "0.pbf3").read_bytes()
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
         layers = decode_tile(data)
         feat = layers[0]["features"][0]
 
@@ -270,7 +270,7 @@ class TestFeaturePbf3VertexCountMatchesNeuroglancer:
         gen2.generate_neuroglancer(ng_dir, WORLD_BOUNDS)
 
         # Decode feature PBF3
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
         pbf3_data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(pbf3_data)
         pbf3_feat = layers[0]["features"][0]
@@ -306,7 +306,7 @@ class TestFeaturePbf3BboxCorrect:
         bbox = manifest["features"]["0"]["bbox"]
 
         # Extract actual positions from PBF3 file
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
         data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
         feat = layers[0]["features"][0]
@@ -333,7 +333,7 @@ class TestFeaturePbf3PointFeatures:
 
     def test_feature_pbf3_point_features(self, tmp_path):
         """Point features are encoded and decodable."""
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
 
         features = [
             _make_point_feature(0.5, 0.5, 0.5, tags={"label": "center"}),
@@ -351,7 +351,7 @@ class TestFeaturePbf3PointFeatures:
 
     def test_feature_pbf3_line_features(self, tmp_path):
         """LineString features are encoded and decodable."""
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
 
         features = [
             _make_line_feature(
@@ -401,7 +401,7 @@ class TestFeaturePbf3MultipleFeatures:
 
     def test_multiple_features_separate_files(self, tmp_path):
         """Each feature gets its own .pbf3 with correct tags."""
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
 
         features = [
             _make_tin_feature(
@@ -469,7 +469,7 @@ class TestMultilodLayerCount:
         out = str(tmp_path / "features")
         gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
         data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
         # Should have up to max_zoom + 1 layers (zoom 0, 1, 2)
@@ -487,7 +487,7 @@ class TestMultilodLayerNames:
         out = str(tmp_path / "features")
         gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
         data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
         names = [l["name"] for l in layers]
@@ -504,7 +504,7 @@ class TestMultilodVertexReduction:
         out = str(tmp_path / "features")
         gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
         data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
 
@@ -537,7 +537,7 @@ class TestMultilodWorldCoords:
         out = str(tmp_path / "features")
         gen.generate_feature_pbf3(out, WORLD_BOUNDS)
 
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
         data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
 
@@ -570,7 +570,7 @@ class TestMultilodFalseBackwardCompat:
         out = str(tmp_path / "features")
         gen.generate_feature_pbf3(out, WORLD_BOUNDS, multilod=False)
 
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
         data = (tmp_path / "features" / "0.pbf3").read_bytes()
         layers = decode_tile(data)
         assert len(layers) == 1

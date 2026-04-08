@@ -16,7 +16,7 @@ from shapely.geometry import (
     Polygon as ShapelyPolygon,
 )
 
-from microjson.arrow._geometry import (
+from mudm.arrow._geometry import (
     geometry_type_name,
     linestring_to_shapely,
     multilinestring_to_shapely,
@@ -29,11 +29,11 @@ from microjson.arrow._geometry import (
     to_shapely,
     to_wkb,
 )
-from microjson.arrow._table_builder import _infer_pa_type, build_table
-from microjson.arrow.models import ArrowConfig
-from microjson.model import (
-    MicroFeature,
-    MicroFeatureCollection,
+from mudm.arrow._table_builder import _infer_pa_type, build_table
+from mudm.arrow.models import ArrowConfig
+from mudm.model import (
+    MuDMFeature,
+    MuDMFeatureCollection,
     PolyhedralSurface,
     TIN,
 )
@@ -51,7 +51,7 @@ from geojson_pydantic import (
 # ---- Fixtures ----
 
 def _point_feature(x=1.0, y=2.0, z=3.0, fid="f1", props=None):
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id=fid,
         geometry=Point(type="Point", coordinates=(x, y, z)),
@@ -60,7 +60,7 @@ def _point_feature(x=1.0, y=2.0, z=3.0, fid="f1", props=None):
 
 
 def _linestring_feature():
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id="ls1",
         geometry=LineString(
@@ -72,7 +72,7 @@ def _linestring_feature():
 
 
 def _polygon_feature():
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id="pg1",
         geometry=Polygon(
@@ -84,7 +84,7 @@ def _polygon_feature():
 
 
 def _tin_feature():
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id="tin1",
         geometry=TIN(
@@ -99,7 +99,7 @@ def _tin_feature():
 
 
 def _polyhedral_feature():
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id="ph1",
         geometry=PolyhedralSurface(
@@ -288,7 +288,7 @@ class TestTableBuilder:
         assert table["count"][0].as_py() == 42
 
     def test_collection(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
                 _point_feature(fid="a", props={"x": 1}),
@@ -315,7 +315,7 @@ class TestTableBuilder:
         assert geom.geom_type == "MultiPolygon"
 
     def test_none_geometry(self):
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             id="null",
             geometry=None,
@@ -335,7 +335,7 @@ class TestTableBuilder:
 
     def test_mixed_property_types(self):
         """Properties with mixed types -> JSON-serialized strings."""
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
                 _point_feature(fid="a", props={"val": 1}),
@@ -347,7 +347,7 @@ class TestTableBuilder:
         assert table.schema.field("val").type == pa.string()
 
     def test_feature_class_column(self):
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             id="fc1",
             geometry=Point(type="Point", coordinates=(0, 0)),
@@ -358,7 +358,7 @@ class TestTableBuilder:
         assert table["featureClass"][0].as_py() == "neuron"
 
     def test_nullable_id(self):
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=Point(type="Point", coordinates=(0, 0)),
             properties={},

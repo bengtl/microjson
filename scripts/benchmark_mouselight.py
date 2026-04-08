@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end MouseLight HortaObj benchmark pipeline.
 
-Downloads OBJ brain region meshes, converts to MicroJSON TIN features with
+Downloads OBJ brain region meshes, converts to MuDM TIN features with
 Allen CCF metadata, generates pbf3 and 3D Tiles, and reports benchmarks.
 
 Usage::
@@ -52,12 +52,12 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_ROOT / "scripts"))
 
-from microjson.tiling3d import RUST_AVAILABLE
-from microjson.tiling3d.convert3d import compute_bounds_3d, convert_feature_3d
-from microjson.tiling3d.generator3d import TileGenerator3D
-from microjson.tiling3d.octree import OctreeConfig
-from microjson.tiling3d.projector3d import CartesianProjector3D
-from microjson.tiling3d.reader3d import decode_tile
+from mudm.tiling3d import RUST_AVAILABLE
+from mudm.tiling3d.convert3d import compute_bounds_3d, convert_feature_3d
+from mudm.tiling3d.generator3d import TileGenerator3D
+from mudm.tiling3d.octree import OctreeConfig
+from mudm.tiling3d.projector3d import CartesianProjector3D
+from mudm.tiling3d.reader3d import decode_tile
 
 # Import obj_to_microjson functions
 from obj_to_microjson import (
@@ -109,7 +109,7 @@ def _fmt_time(seconds: float) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Step 1: OBJ → MicroJSON
+# Step 1: OBJ → MuDM
 # ---------------------------------------------------------------------------
 
 def load_obj_collection(
@@ -118,7 +118,7 @@ def load_obj_collection(
     no_ontology: bool = False,
     max_files: int | None = None,
 ):
-    """Load OBJ files and convert to MicroFeatureCollection."""
+    """Load OBJ files and convert to MuDMFeatureCollection."""
     obj_paths = sorted(obj_dir.glob("*.obj"))
     if not obj_paths:
         print(f"ERROR: No .obj files found in {obj_dir}", file=sys.stderr)
@@ -137,8 +137,8 @@ def load_obj_collection(
         ontology = fetch_allen_ontology()
         print(f"  Loaded {len(ontology)} ontology entries ({_fmt_time(time.perf_counter() - t0)})")
 
-    # Convert OBJ → MicroFeature
-    print(f"Converting {len(obj_paths)} OBJ files to MicroJSON TIN features...")
+    # Convert OBJ → MuDMFeature
+    print(f"Converting {len(obj_paths)} OBJ files to MuDM TIN features...")
     t0 = time.perf_counter()
     features = []
     total_verts = 0
@@ -280,8 +280,8 @@ def generate_tiles_streaming(
     skip_3dtiles: bool = False,
     no_ontology: bool = False,
 ) -> tuple[dict[str, Any], float]:
-    """Generate tiles using parallel Rust OBJ ingest (no Python MicroFeatureCollection)."""
-    from microjson._rs import StreamingTileGenerator, scan_obj_bounds
+    """Generate tiles using parallel Rust OBJ ingest (no Python MuDMFeatureCollection)."""
+    from mudm._rs import StreamingTileGenerator, scan_obj_bounds
 
     results: dict[str, Any] = {}
 
@@ -440,7 +440,7 @@ def generate_tiles_streaming(
     print(f"  Size: {_fmt_bytes(ng_size)} raw")
 
     # --- parquet ---
-    from microjson.tiling3d.parquet_writer import generate_parquet as _gen_pq
+    from mudm.tiling3d.parquet_writer import generate_parquet as _gen_pq
 
     pq_path = output_dir / "tiles.parquet"
     gen_pq = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)
@@ -710,7 +710,7 @@ def print_report(
     print(f"\n  Backend: {backend}")
 
     # --- Conversion ---
-    print(f"\n  OBJ -> MicroJSON Conversion")
+    print(f"\n  OBJ -> MuDM Conversion")
     print(f"  {'─' * 50}")
     print(f"  {'Time':30s} {_fmt_time(convert_time):>15s}")
 
@@ -842,7 +842,7 @@ def generate_all_brains(
 ) -> None:
     """Generate 3D Tiles for all brain directories with pyramid manifest."""
     import json as _json
-    from microjson._rs import StreamingTileGenerator, scan_obj_bounds
+    from mudm._rs import StreamingTileGenerator, scan_obj_bounds
 
     # Import build_feature_index
     sys.path.insert(0, str(_ROOT / "scripts"))
@@ -946,7 +946,7 @@ def generate_all_brains(
         print(f"  Neuroglancer: {n_feat_ng} features in {_fmt_time(t_feat_ng)} ({_fmt_bytes(ng_size)})")
 
         # Parquet
-        from microjson.tiling3d.parquet_writer import generate_parquet as _gen_pq
+        from mudm.tiling3d.parquet_writer import generate_parquet as _gen_pq
 
         pq_path = output_dir / brain_id / "tiles.parquet"
         gen_pq = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom)

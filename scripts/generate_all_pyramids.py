@@ -2,7 +2,7 @@
 """Generate 3D tile pyramids for all MouseLight brains.
 
 Loops over date directories containing OBJ files, converts each to
-MicroJSON, generates 3D Tiles via TileGenerator3D, builds per-pyramid
+MuDM, generates 3D Tiles via TileGenerator3D, builds per-pyramid
 feature indexes, and writes a pyramids.json manifest.
 
 Usage::
@@ -36,8 +36,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_ROOT / "scripts"))
 
-from microjson.tiling3d.generator3d import TileGenerator3D
-from microjson.tiling3d.octree import OctreeConfig
+from mudm.tiling3d.generator3d import TileGenerator3D
+from mudm.tiling3d.octree import OctreeConfig
 
 from build_feature_index import build_index, build_tilejson
 from obj_to_microjson import (
@@ -92,7 +92,7 @@ def generate_pyramid(
     """
     tiles_dir = output_dir / brain_id / "3dtiles"
 
-    # Convert OBJ → MicroJSON
+    # Convert OBJ → MuDM
     obj_paths = sorted(obj_dir.glob("*.obj"))
     print(f"  Converting {len(obj_paths)} OBJ files...")
     t0 = time.perf_counter()

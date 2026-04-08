@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from microjson.tiling3d import RUST_AVAILABLE, TileGenerator3D, OctreeConfig
+from mudm.tiling3d import RUST_AVAILABLE, TileGenerator3D, OctreeConfig
 
 
 def _generate_collection(
@@ -34,12 +34,12 @@ def _generate_collection(
     triangles: int = 6,
     swc_path: str | None = None,
 ):
-    """Generate a MicroFeatureCollection for benchmarking."""
+    """Generate a MuDMFeatureCollection for benchmarking."""
     if swc_path:
-        from microjson.swc import swc_to_feature_collection
+        from mudm.swc import swc_to_feature_collection
         return swc_to_feature_collection(swc_path)
 
-    from microjson.polygen3d import generate_3d_collection
+    from mudm.polygen3d import generate_3d_collection
     return generate_3d_collection(
         n_tins=n_features,
         n_points=0,

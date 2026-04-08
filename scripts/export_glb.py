@@ -30,11 +30,11 @@ Then drag the .glb file into https://gltf-viewer.donmccurdy.com/
 import sys
 from pathlib import Path
 
-from microjson.model import MicroFeature, MicroFeatureCollection
-from microjson.swc import swc_to_microjson, swc_to_feature_collection
-from microjson.gltf import to_glb, GltfConfig
-from microjson.layout import compute_collection_offsets
-from microjson.transforms import translate_geometry
+from mudm.model import MuDMFeature, MuDMFeatureCollection
+from mudm.swc import swc_to_microjson, swc_to_feature_collection
+from mudm.gltf import to_glb, GltfConfig
+from mudm.layout import compute_collection_offsets
+from mudm.transforms import translate_geometry
 
 DEFAULT_SWC_DIR = "swcs"
 DEFAULT_OUT = "neuron.glb"
@@ -117,7 +117,7 @@ def main():
         )
 
         # 3. Generate colored compartments and translate by neuron offset
-        all_features: list[MicroFeature] = []
+        all_features: list[MuDMFeature] = []
         for swc_path, (dx, dy, dz) in zip(swc_paths, offsets):
             coll = swc_to_feature_collection(
                 str(swc_path), smooth_subdivisions=10, mesh_quality=0.3,
@@ -163,7 +163,7 @@ def main():
             all_features[0], config=config, output_path=out_path,
         )
     else:
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
             features=all_features,
             properties={"neuron_count": len(swc_paths)},

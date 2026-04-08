@@ -41,7 +41,7 @@ def _median(values: list[float]) -> float:
 
 def bench_pbf3(pbf3_dir: Path, *, n_warmup: int, n_iters: int):
     """Benchmark PBF3 protobuf decode (bytes pre-loaded to RAM)."""
-    from microjson.tiling3d.reader3d import decode_tile
+    from mudm.tiling3d.reader3d import decode_tile
 
     pbf3_files = sorted(pbf3_dir.rglob("*.pbf3"))
     if not pbf3_files:

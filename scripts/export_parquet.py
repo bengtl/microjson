@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export MicroJSON data to GeoParquet for ML/data-science pipelines.
+"""Export MuDM data to GeoParquet for ML/data-science pipelines.
 
 Demonstrates two scenarios:
   1. SWC neuron files → GeoParquet (TIN geometry)
@@ -28,10 +28,10 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from microjson.arrow import ArrowConfig, to_arrow_table, to_geoparquet
-from microjson.model import (
-    MicroFeature,
-    MicroFeatureCollection,
+from mudm.arrow import ArrowConfig, to_arrow_table, to_geoparquet
+from mudm.model import (
+    MuDMFeature,
+    MuDMFeatureCollection,
     PolyhedralSurface,
 )
 
@@ -51,9 +51,9 @@ def _pop_flag(args, flag):
 
 
 def _demo_collection():
-    """Build a mixed-geometry MicroFeatureCollection for demonstration."""
+    """Build a mixed-geometry MuDMFeatureCollection for demonstration."""
     # A 3D point
-    point_feat = MicroFeature(
+    point_feat = MuDMFeature(
         type="Feature",
         id="cell_001",
         geometry=Point(type="Point", coordinates=(100.5, 200.3, 15.0)),
@@ -62,7 +62,7 @@ def _demo_collection():
     )
 
     # A polygon (2D region)
-    region_feat = MicroFeature(
+    region_feat = MuDMFeature(
         type="Feature",
         id="region_001",
         geometry=Polygon(
@@ -77,7 +77,7 @@ def _demo_collection():
     )
 
     # A simple 3D neuron skeleton (MultiLineString — each edge is a segment)
-    neuron_feat = MicroFeature(
+    neuron_feat = MuDMFeature(
         type="Feature",
         id="neuron_001",
         geometry=MultiLineString(
@@ -96,7 +96,7 @@ def _demo_collection():
     )
 
     # A 3D polyhedral surface (closed mesh)
-    surface_feat = MicroFeature(
+    surface_feat = MuDMFeature(
         type="Feature",
         id="surface_001",
         geometry=PolyhedralSurface(
@@ -112,7 +112,7 @@ def _demo_collection():
         featureClass="surface",
     )
 
-    return MicroFeatureCollection(
+    return MuDMFeatureCollection(
         type="FeatureCollection",
         features=[point_feat, region_feat, neuron_feat, surface_feat],
     )
@@ -162,7 +162,7 @@ def main():
         return
 
     # SWC mode — one Feature per compartment, with "compartment" property
-    from microjson.swc import swc_to_feature_collection
+    from mudm.swc import swc_to_feature_collection
 
     if args:
         swc_paths = [Path(a) for a in args]
@@ -189,7 +189,7 @@ def main():
 
     print(f"Loaded {len(swc_paths)} SWC file(s) → {len(features)} feature(s)")
 
-    coll = MicroFeatureCollection(
+    coll = MuDMFeatureCollection(
         type="FeatureCollection",
         features=features,
     )

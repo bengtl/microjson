@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export SWC file(s) to MicroJSON JSON.
+"""Export SWC file(s) to MuDM JSON.
 
 Each neuron becomes a FeatureCollection with one Feature per compartment
 (soma, axon, basal_dendrite, apical_dendrite), each carrying a
@@ -25,8 +25,8 @@ Examples:
 import sys
 from pathlib import Path
 
-from microjson.swc import swc_to_feature_collection
-from microjson.model import MicroFeatureCollection
+from mudm.swc import swc_to_feature_collection
+from mudm.model import MuDMFeatureCollection
 
 
 def _pop_flag(args, flag):
@@ -75,7 +75,7 @@ def main():
                     feat.properties = {}
                 feat.properties["neuron"] = neuron_name
                 all_features.append(feat)
-        result = MicroFeatureCollection(
+        result = MuDMFeatureCollection(
             type="FeatureCollection",
             features=all_features,
             properties={"neuron_count": len(collections)},

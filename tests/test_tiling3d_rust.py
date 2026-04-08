@@ -11,7 +11,7 @@ import pytest
 import struct
 
 try:
-    from microjson._rs import (  # noqa: F401
+    from mudm._rs import (  # noqa: F401
         clip_surface,
         clip_line,
         clip_points,
@@ -26,13 +26,13 @@ try:
 except ImportError:
     RUST_AVAILABLE = False
 
-from microjson.tiling3d.clip3d import (
+from mudm.tiling3d.clip3d import (
     _clip_surface_py,
     _clip_line_py,
     clip_3d,
 )
-from microjson.tiling3d.encoder3d import _build_indexed_mesh_py, encode_tile_3d_py
-from microjson.tiling3d.tile3d import transform_tile_3d_py
+from mudm.tiling3d.encoder3d import _build_indexed_mesh_py, encode_tile_3d_py
+from mudm.tiling3d.tile3d import transform_tile_3d_py
 
 
 # --- Helpers to get Rust functions when available ---
@@ -40,35 +40,35 @@ from microjson.tiling3d.tile3d import transform_tile_3d_py
 def _get_rs_clip_surface():
     if not RUST_AVAILABLE:
         return None
-    from microjson._rs import clip_surface
+    from mudm._rs import clip_surface
     return clip_surface
 
 
 def _get_rs_clip_line():
     if not RUST_AVAILABLE:
         return None
-    from microjson._rs import clip_line
+    from mudm._rs import clip_line
     return clip_line
 
 
 def _get_rs_build_indexed_mesh():
     if not RUST_AVAILABLE:
         return None
-    from microjson._rs import build_indexed_mesh
+    from mudm._rs import build_indexed_mesh
     return build_indexed_mesh
 
 
 def _get_rs_encode_tile_3d():
     if not RUST_AVAILABLE:
         return None
-    from microjson._rs import encode_tile_3d
+    from mudm._rs import encode_tile_3d
     return encode_tile_3d
 
 
 def _get_rs_transform_tile_3d():
     if not RUST_AVAILABLE:
         return None
-    from microjson._rs import transform_tile_3d
+    from mudm._rs import transform_tile_3d
     return transform_tile_3d
 
 
@@ -366,12 +366,12 @@ class TestTransformTile3D:
 # --- Rust import test ---
 
 class TestRustImport:
-    """Verify that all expected symbols are importable from microjson._rs."""
+    """Verify that all expected symbols are importable from mudm._rs."""
 
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_all_symbols_importable(self):
-        """All expected functions/classes can be imported from microjson._rs."""
-        from microjson._rs import (
+        """All expected functions/classes can be imported from mudm._rs."""
+        from mudm._rs import (
             clip_surface,
             clip_line,
             clip_points,
@@ -462,7 +462,7 @@ class TestBitIdentical:
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_encode_tile_3d_identical_tin(self):
         """encode_tile_3d: Python == Rust for TIN features (decoded comparison)."""
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
 
         py_fn = encode_tile_3d_py
         rs_fn = _get_rs_encode_tile_3d()
@@ -498,7 +498,7 @@ class TestBitIdentical:
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_encode_tile_3d_identical_mixed(self):
         """encode_tile_3d: Python == Rust for mixed geometry (decoded comparison)."""
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm.tiling3d.reader3d import decode_tile
 
         py_fn = encode_tile_3d_py
         rs_fn = _get_rs_encode_tile_3d()
@@ -576,8 +576,8 @@ class TestStreamingTileGenerator:
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_basic_tin(self, tmp_path):
         """Single TIN feature: generates tiles and decodes correctly."""
-        from microjson._rs import StreamingTileGenerator
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm._rs import StreamingTileGenerator
+        from mudm.tiling3d.reader3d import decode_tile
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=1)
         feat = {
@@ -614,12 +614,12 @@ class TestStreamingTileGenerator:
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_matches_batch_generator(self, tmp_path):
         """Streaming produces the same tile set as the batch TileGenerator3D."""
-        from microjson._rs import StreamingTileGenerator
-        from microjson.tiling3d.generator3d import TileGenerator3D
-        from microjson.tiling3d.octree import OctreeConfig
-        from microjson.tiling3d.convert3d import convert_feature_3d, compute_bounds_3d
-        from microjson.tiling3d.projector3d import CartesianProjector3D
-        from microjson.model import MicroFeatureCollection, MicroFeature, TIN as TINGeom
+        from mudm._rs import StreamingTileGenerator
+        from mudm.tiling3d.generator3d import TileGenerator3D
+        from mudm.tiling3d.octree import OctreeConfig
+        from mudm.tiling3d.convert3d import convert_feature_3d, compute_bounds_3d
+        from mudm.tiling3d.projector3d import CartesianProjector3D
+        from mudm.model import MuDMFeatureCollection, MuDMFeature, TIN as TINGeom
         import os
 
         coords1 = [
@@ -629,17 +629,17 @@ class TestStreamingTileGenerator:
         coords2 = [
             [[[700, 800, 40], [900, 100, 50], [500, 300, 60], [700, 800, 40]]],
         ]
-        feat1 = MicroFeature(
+        feat1 = MuDMFeature(
             type="Feature",
             geometry=TINGeom(type="TIN", coordinates=coords1),
             properties={"name": "a", "color": "red"},
         )
-        feat2 = MicroFeature(
+        feat2 = MuDMFeature(
             type="Feature",
             geometry=TINGeom(type="TIN", coordinates=coords2),
             properties={"name": "b", "color": "blue"},
         )
-        collection = MicroFeatureCollection(
+        collection = MuDMFeatureCollection(
             type="FeatureCollection", features=[feat1, feat2],
         )
 
@@ -680,8 +680,8 @@ class TestStreamingTileGenerator:
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_linestring_feature(self, tmp_path):
         """LineString3D feature clips and encodes correctly."""
-        from microjson._rs import StreamingTileGenerator
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm._rs import StreamingTileGenerator
+        from mudm.tiling3d.reader3d import decode_tile
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=1)
         feat = {
@@ -705,8 +705,8 @@ class TestStreamingTileGenerator:
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_point_feature(self, tmp_path):
         """Point3D feature clips and encodes correctly."""
-        from microjson._rs import StreamingTileGenerator
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm._rs import StreamingTileGenerator
+        from mudm.tiling3d.reader3d import decode_tile
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=0)
         feat = {
@@ -725,7 +725,7 @@ class TestStreamingTileGenerator:
     def test_write_tilejson3d(self, tmp_path):
         """write_tilejson3d produces valid JSON metadata."""
         import json
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=3)
         path = str(tmp_path / "tilejson3d.json")
@@ -743,7 +743,7 @@ class TestStreamingTileGenerator:
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_empty_generator(self, tmp_path):
         """Generating with no features produces 0 tiles."""
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=2)
         count = gen.generate_pbf3(str(tmp_path / "tiles"))
@@ -752,8 +752,8 @@ class TestStreamingTileGenerator:
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_multiple_features(self, tmp_path):
         """Multiple features get unique IDs and all appear in tiles."""
-        from microjson._rs import StreamingTileGenerator
-        from microjson.tiling3d.reader3d import decode_tile
+        from mudm._rs import StreamingTileGenerator
+        from mudm.tiling3d.reader3d import decode_tile
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=0)
         for i in range(5):
@@ -784,7 +784,7 @@ class TestStreamingGlb:
     def test_basic_glb_output(self, tmp_path):
         """Single TIN feature generates valid GLB files and tileset.json."""
         import json
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=1)
         feat = {
@@ -822,7 +822,7 @@ class TestStreamingGlb:
     def test_glb_header_valid(self, tmp_path):
         """GLB files have valid glTF 2.0 headers."""
         import json
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=0)
         feat = {
@@ -857,13 +857,13 @@ class TestStreamingGlb:
         json_str = data[20:20 + json_len].decode("utf-8").strip()
         gltf = json.loads(json_str)
         assert gltf["asset"]["version"] == "2.0"
-        assert gltf["asset"]["generator"] == "microjson-rs"
+        assert gltf["asset"]["generator"] == "mudm-rs"
 
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_glb_node_extras(self, tmp_path):
         """Feature properties are stored in GLB node extras."""
         import json
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=0)
         feat = {
@@ -895,7 +895,7 @@ class TestStreamingGlb:
     def test_glb_world_coordinates(self, tmp_path):
         """GLB positions are in world coordinates (unprojected from [0,1]³)."""
         import json
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         bounds = (100.0, 200.0, 300.0, 400.0, 600.0, 900.0)
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=0)
@@ -932,7 +932,7 @@ class TestStreamingGlb:
     def test_glb_simplification(self, tmp_path):
         """Non-leaf tiles get simplified (fewer vertices than leaf tiles)."""
         import json
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=2)
         # Add a mesh with many triangles across the full extent
@@ -976,7 +976,7 @@ class TestStreamingGlb:
     def test_tileset_json_hierarchy(self, tmp_path):
         """Tileset.json has correct hierarchical structure."""
         import json
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=2)
         # Feature spanning the full extent
@@ -1016,7 +1016,7 @@ class TestStreamingGlb:
     def test_linestring_glb(self, tmp_path):
         """LineString3D features encode as GL_LINES in GLB."""
         import json
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=0)
         feat = {
@@ -1045,7 +1045,7 @@ class TestStreamingGlb:
     def test_point_glb(self, tmp_path):
         """Point3D features encode as GL_POINTS in GLB."""
         import json
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=0)
         feat = {
@@ -1121,7 +1121,7 @@ class TestStreamingDracoGlb:
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_draco_glb_has_extension(self, tmp_path):
         """Draco GLB files contain KHR_draco_mesh_compression in extensionsUsed."""
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=0)
         feat = _make_large_tin_feature(20)  # 60 verts, above min_vertices=50
@@ -1147,7 +1147,7 @@ class TestStreamingDracoGlb:
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_draco_glb_smaller_than_raw(self, tmp_path):
         """Draco-compressed GLB is smaller than raw GLB for large meshes."""
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         bounds = (0.0, 0.0, 0.0, 100.0, 100.0, 100.0)
         feat = _make_large_tin_feature(200)  # 600 verts — well past Draco break-even
@@ -1173,7 +1173,7 @@ class TestStreamingDracoGlb:
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_use_draco_false_regression(self, tmp_path):
         """use_draco=False produces output identical to the default (no draco args)."""
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         bounds = (0.0, 0.0, 0.0, 100.0, 100.0, 100.0)
         feat = _make_large_tin_feature(10)
@@ -1197,7 +1197,7 @@ class TestStreamingDracoGlb:
     @pytest.mark.skipif(not RUST_AVAILABLE, reason="Rust extensions not compiled")
     def test_small_mesh_stays_raw_with_draco(self, tmp_path):
         """Small meshes (< 50 verts) remain uncompressed even with use_draco=True."""
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=0)
         # Single triangle = 3 verts, well below min_vertices=50

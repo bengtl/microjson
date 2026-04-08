@@ -66,15 +66,15 @@ It may contain the following properties:
 
 ### TileJSON
 
-::: microjson.tilemodel.TileJSON
+::: mudm.tilemodel.TileJSON
 
 ### TileModel
 
-::: microjson.tilemodel.TileModel
+::: mudm.tilemodel.TileModel
 
 ### TileLayer
 
-::: microjson.tilemodel.TileLayer
+::: mudm.tilemodel.TileLayer
 
 ## General tiling requirements
 
@@ -94,8 +94,8 @@ The Rust 2D pipeline uses `StreamingTileGenerator2D` for quadtree-based spatial 
 - **Tiled Parquet**: Columnar format with ZSTD compression, ideal for ML training pipelines with zero-copy reads.
 
 ```python
-from microjson._rs import StreamingTileGenerator2D
-from microjson.tiling2d import generate_parquet, generate_pbf
+from mudm._rs import StreamingTileGenerator2D
+from mudm.tiling2d import generate_parquet, generate_pbf
 
 # Create the tile generator
 gen = StreamingTileGenerator2D(min_zoom=0, max_zoom=7, buffer=64/4096)
@@ -120,7 +120,7 @@ Key features:
 - **PBF reader**: `read_pbf(path, bounds, zoom, tile_x, tile_y)` decodes the `{z}/{x}/{y}.pbf` directory tree.
 - **Parquet reader**: `read_parquet(path, zoom, tile_x, tile_y)` reads tiled Parquet with optional filtering.
 
-An example script is located at `src/microjson/examples/tiling_rust.py`.
+An example script is located at `src/mudm/examples/tiling_rust.py`.
 
 ### Rust-Accelerated 3D Pipeline
 
@@ -132,34 +132,34 @@ For the full API reference, geometry types, compression comparison, bucketed red
 
 The original Python modules remain available for backwards compatibility:
 
-#### MicroJSON2vt
+#### MuDM2vt
 
-The MicroJSON2vt module converts muDM objects to vector tiles in an intermediate JSON format, which can then be transformed into protobuf using `vt2pbf`.
+The MuDM2vt module converts muDM objects to vector tiles in an intermediate JSON format, which can then be transformed into protobuf using `vt2pbf`.
 
 ```python
-from microjson import microjson2vt
+from mudm import mudm2vt
 ```
 
-::: microjson.microjson2vt.microjson2vt.MicroJsonVt
+::: mudm.mudm2vt.mudm2vt.MuDMVt
     :docstring:
 
 #### TileWriter
 
-The TileWriter module generates binary tiles from a large muDM file, utilizing both microjson2vt and vt2pbf.
+The TileWriter module generates binary tiles from a large muDM file, utilizing both mudm2vt and vt2pbf.
 
-::: microjson.tilewriter
+::: mudm.tilewriter
     :docstring:
 
-An example is located at `src/microjson/examples/tiling.py`.
+An example is located at `src/mudm/examples/tiling.py`.
 
 #### TileReader
 
 The TileReader module reads binary tiles and converts them back to muDM objects.
 
-::: microjson.tilereader
+::: mudm.tilereader
     :docstring:
 
-An example is located at `src/microjson/examples/readtiles.py`.
+An example is located at `src/mudm/examples/readtiles.py`.
 
 ## TileJSON for muDM example with Vector Layers
 
@@ -288,7 +288,7 @@ The examples folder contains an example of how to generate binary tiles from one
 
 ### Example of creating binary tiles from a large muDM file
 
-::: microjson.examples.tiling.main
+::: mudm.examples.tiling.main
     :docstring:
 
 ## Tiled muDM Example

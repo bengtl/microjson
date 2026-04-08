@@ -12,10 +12,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from microjson._rs import CartesianProjector2D, StreamingTileGenerator2D
-from microjson.tiling2d.parquet_writer import generate_parquet, _parquet_schema
-from microjson.tiling2d.parquet_reader import read_parquet
-from microjson.tiling2d.parquet_prime import prime_parquet, deprime_parquet, repartition_parquet
+from mudm._rs import CartesianProjector2D, StreamingTileGenerator2D
+from mudm.tiling2d.parquet_writer import generate_parquet, _parquet_schema
+from mudm.tiling2d.parquet_reader import read_parquet
+from mudm.tiling2d.parquet_prime import prime_parquet, deprime_parquet, repartition_parquet
 
 
 # ---------------------------------------------------------------------------
@@ -563,7 +563,7 @@ class TestProjector2D:
 class TestIntegration:
     @pytest.fixture
     def example_json_path(self):
-        p = Path(__file__).parent.parent / "src" / "microjson" / "examples" / "example.json"
+        p = Path(__file__).parent.parent / "src" / "mudm" / "examples" / "example.json"
         if not p.exists():
             pytest.skip("example.json not found")
         return p

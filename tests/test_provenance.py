@@ -1,8 +1,8 @@
 import json
 import pytest
 from pydantic import ValidationError
-from microjson.model import MicroJSON
-from microjson.fileutils import gather_example_files
+from mudm.model import MuDM
+from mudm.fileutils import gather_example_files
 
 
 # Define the directories containing the example JSON files
@@ -20,7 +20,7 @@ def test_valid_provenance(filename):
 
     # Try to parse the data as a GeoJSON object
     try:
-        _ = MicroJSON.model_validate(data)
+        _ = MuDM.model_validate(data)
     except ValidationError as e:
         pytest.fail(
             f"""ValidationError occurred
@@ -40,7 +40,7 @@ def test_invalid_geojson(filename):
 
     # This will raise a ValidationError if the data does not match the GeoJSON
     try:
-        _ = MicroJSON.model_validate(data)
+        _ = MuDM.model_validate(data)
         pytest.fail(
             f"""Parsing succeeded on {filename},
                     but it should not have."""

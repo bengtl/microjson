@@ -6,7 +6,7 @@ This document describes the Pydantic models used for GeoJSON and muDM objects. T
 
 ## Models
 
-::: microjson.model
+::: mudm.model
 
 ### Base Objects
 
@@ -56,24 +56,24 @@ Represents a GeoJSON feature collection, from [geojson-pydantic](https://develop
 
 The root object of a GeoJSON file.
 
-::: microjson.model.GeoJSON
+::: mudm.model.GeoJSON
 
 ### muDM Extended Models
 
-#### MicroFeature
+#### MuDMFeature
 
 A muDM feature, which is an extension of a GeoJSON feature.
 
-::: microjson.model.MicroFeature
+::: mudm.model.MuDMFeature
 
-#### MicroFeatureCollection
+#### MuDMFeatureCollection
 
 A muDM feature collection, which is an extension of a GeoJSON feature collection.
 
-::: microjson.model.MicroFeatureCollection
+::: mudm.model.MuDMFeatureCollection
 
-#### MicroJSON
+#### MuDM
 
 The root object of a muDM file.
 
-::: microjson.model.MicroJSON
+::: mudm.model.MuDM

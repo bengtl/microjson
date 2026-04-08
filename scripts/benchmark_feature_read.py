@@ -157,7 +157,7 @@ def _merge_feature_fragments(fragments):
 def bench_feature_pbf3(feat_pbf3_dir: Path, *, n_warmup: int, n_iters: int,
                       n_samples: int, seed: int):
     """Benchmark Feature PBF3 decode — per-feature .pbf3 files."""
-    from microjson.tiling3d.reader3d import decode_tile
+    from mudm.tiling3d.reader3d import decode_tile
 
     pbf3_files = sorted(feat_pbf3_dir.glob("*.pbf3"))
     if not pbf3_files:
@@ -598,7 +598,7 @@ def bench_neuroglancer(ng_dir: Path, *, n_warmup: int, n_iters: int,
 
 def generate_formats(brain_id: str, max_zoom: int = 3):
     """Re-ingest OBJs and generate Feature PBF3 v2 + Neuroglancer multilod."""
-    from microjson._rs import StreamingTileGenerator, scan_obj_bounds
+    from mudm._rs import StreamingTileGenerator, scan_obj_bounds
 
     sys.path.insert(0, str(_ROOT / "scripts"))
     from obj_to_microjson import fetch_allen_ontology, match_region

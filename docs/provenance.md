@@ -15,21 +15,21 @@ The design introduces a traceability model that integrates seamlessly with muDM,
 
 ## Model Structure
 
-The provenance model structure comprises `WorkflowCollection`, `Workflow`, `Artifact`, `ArtifactCollection`, `WorkflowProvenance`, and `MicroJSONLink` objects:
+The provenance model structure comprises `WorkflowCollection`, `Workflow`, `Artifact`, `ArtifactCollection`, `WorkflowProvenance`, and `MuDMLink` objects:
 
 - **Workflow Collection Object:** Includes multiple workflows, acknowledging that a single muDM object might result from various processes.
 - **Workflow Object:** Captures essential workflow details, including identifiers and descriptive metadata. This metadata links muDM objects to their respective workflows.
 - **Artifact and Artifact Collection Objects:** Represent single files or directories and collections of these, respectively, providing a link between the physical data and the workflows.
 - **Workflow Provenance Object:** Details specific instances of workflow runs, including run identifiers, duration, operator, and the input/output parameters.
 Of these, Workflow, WorkflowCollection, Artifact, and ArtifactCollection can function as the top object in the provenance part of a muDM file.
-- **MicroJSON Link Object:** Provides a link to a specific muDM object, specifying which parts of the object's properties are pertinent to the workflow run. While this object is required, and the id property is required, the specification of a field in the muDM object is optional. If no field is specified, the entire muDM object is considered to be pertinent to the workflow run or artifact.
+- **MuDM Link Object:** Provides a link to a specific muDM object, specifying which parts of the object's properties are pertinent to the workflow run. While this object is required, and the id property is required, the specification of a field in the muDM object is optional. If no field is specified, the entire muDM object is considered to be pertinent to the workflow run or artifact.
 
 ## Data Provenance and muDM Traceability Link
 
 Under each workflow, the `WorkflowProvenance` object includes:
 
 - **Properties** that describe the workflow run, in form of a dictionary, to enable flexible and scalable provenance tracking. Example of properties include run identifier, duration, operator, and input/output parameters.
-- **Output Artifacts:** These artifacts are the result of the workflow run. These in turn has the `microjsonLinks` field, which is a list of muDM objects that is pertinent to the workflow run:
+- **Output Artifacts:** These artifacts are the result of the workflow run. These in turn has the `mudmLinks` field, which is a list of muDM objects that is pertinent to the workflow run:
   - **muDM Traceability Links:** These links connect back to specific muDM objects, specifying which parts of the object's properties are pertinent to the workflow run.
 
 ## Rationale for Structure
@@ -139,10 +139,10 @@ This enhancement not only increases the utility of muDM in various scientific an
             "imageType": "TIFF",
             "analysisType": "Cell counting"
         },
-        "microjsonLinks": [
+        "mudmLinks": [
             {
-                "microjsonTd": "1",
-                "microjsonField": "string.well"
+                "mudmTd": "1",
+                "mudmField": "string.well"
             }
         ]
     }
@@ -256,10 +256,10 @@ This enhancement not only increases the utility of muDM in various scientific an
                             "imageType": "TIFF",
                             "analysisType": "Cell counting"
                         },
-                        "microjsonLinks": [
+                        "mudmLinks": [
                             {
-                                "microjsonId": "1",
-                                "microjsonField": "string.well"
+                                "mudmId": "1",
+                                "mudmField": "string.well"
                             }
                         ]
                     }

@@ -36,8 +36,8 @@ sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
 # Ensure src/ is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from microjson._rs import StreamingTileGenerator, scan_obj_bounds
-from microjson.tiling3d.reader3d import decode_tile
+from mudm._rs import StreamingTileGenerator, scan_obj_bounds
+from mudm.tiling3d.reader3d import decode_tile
 
 
 # ---------------------------------------------------------------------------

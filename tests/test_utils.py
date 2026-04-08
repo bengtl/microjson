@@ -81,8 +81,8 @@ def get_params(request: pytest.FixtureRequest) -> pytest.FixtureRequest:
         not HAS_BFIO,
         reason="Skipping test because 'bfio' extra is not installed.")
 def test_OmeMicrojsonModel(synthetic_images: Path, output_directory: Path, get_params) -> None:
-    from microjson.utils import OmeMicrojsonModel
-    """Testing of converting binary images to microjson of objects polygon
+    from mudm.utils import OmeMicrojsonModel
+    """Testing of converting binary images to mudm objects polygon
     coordinates."""
     
     inp_dir = synthetic_images
@@ -105,8 +105,8 @@ def test_OmeMicrojsonModel(synthetic_images: Path, output_directory: Path, get_p
 
 @pytest.mark.skipif(not HAS_BFIO, reason="Skipping test because 'bfio' extra is not installed.")
 def test_MicrojsonBinaryModel(synthetic_images: Path, output_directory: Path, get_params:list[str]) -> None:
-    from microjson.utils import OmeMicrojsonModel, MicrojsonBinaryModel
-    """Testing of converting microjson of polygon coordinates of objects back to binary images."""
+    from mudm.utils import OmeMicrojsonModel, MicrojsonBinaryModel
+    """Testing of converting mudm polygon coordinates of objects back to binary images."""
     
     inp_dir = synthetic_images
     for file in Path(inp_dir).iterdir():
@@ -133,7 +133,7 @@ def XOR(x, y):
 
 @pytest.mark.skipif(not HAS_BFIO, reason="Skipping test because 'bfio' extra is not installed.")
 def test_roundtrip(synthetic_images: Path, output_directory: Path) -> None:
-    from microjson.utils import OmeMicrojsonModel, MicrojsonBinaryModel
+    from mudm.utils import OmeMicrojsonModel, MicrojsonBinaryModel
     """Testing of reconstructed images from polygon coordinates with original images."""
     
     inp_dir = synthetic_images

@@ -6,13 +6,13 @@ from pathlib import Path
 import pytest
 from pygltflib import GLTF2
 
-from microjson.model import (
-    MicroFeature,
-    MicroFeatureCollection,
+from mudm.model import (
+    MuDMFeature,
+    MuDMFeatureCollection,
     TIN,
 )
-from microjson.swc import swc_to_tin
-from microjson.gltf import GltfConfig, to_glb, to_gltf
+from mudm.swc import swc_to_tin
+from mudm.gltf import GltfConfig, to_glb, to_gltf
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -39,7 +39,7 @@ class TestSWCToGLB:
         loaded = GLTF2.load(str(out))
         assert len(loaded.meshes) > 0
         assert loaded.asset.version == "2.0"
-        assert loaded.asset.generator == "microjson-gltf"
+        assert loaded.asset.generator == "mudm-gltf"
 
     def test_swc_to_gltf_roundtrip(self, tmp_path):
         feat = swc_to_tin(str(SWC_FILE))
@@ -51,7 +51,7 @@ class TestSWCToGLB:
 
     def test_swc_collection_to_glb(self, tmp_path):
         feat = swc_to_tin(str(SWC_FILE))
-        collection = MicroFeatureCollection(
+        collection = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[feat],
             properties={"source": "test"},
@@ -83,12 +83,12 @@ class TestMixedGeometryCollection:
         )
 
         features = [
-            MicroFeature(type="Feature", geometry=point, properties={"kind": "point"}),
-            MicroFeature(type="Feature", geometry=line, properties={"kind": "line"}),
-            MicroFeature(type="Feature", geometry=poly, properties={"kind": "polygon"}),
-            MicroFeature(type="Feature", geometry=tin, properties={"kind": "tin"}),
+            MuDMFeature(type="Feature", geometry=point, properties={"kind": "point"}),
+            MuDMFeature(type="Feature", geometry=line, properties={"kind": "line"}),
+            MuDMFeature(type="Feature", geometry=poly, properties={"kind": "polygon"}),
+            MuDMFeature(type="Feature", geometry=tin, properties={"kind": "tin"}),
         ]
-        collection = MicroFeatureCollection(
+        collection = MuDMFeatureCollection(
             type="FeatureCollection",
             features=features,
         )
@@ -106,14 +106,14 @@ class TestPublicAPIImports:
     """Verify the public API is importable from the top-level package."""
 
     def test_import_from_microjson(self):
-        from microjson import to_gltf, to_glb, GltfConfig
+        from mudm import to_gltf, to_glb, GltfConfig
 
         assert callable(to_gltf)
         assert callable(to_glb)
         assert GltfConfig is not None
 
     def test_import_from_gltf_subpackage(self):
-        from microjson.gltf import to_gltf, to_glb, GltfConfig
+        from mudm.gltf import to_gltf, to_glb, GltfConfig
 
         assert callable(to_gltf)
         assert callable(to_glb)

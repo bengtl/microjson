@@ -113,9 +113,9 @@ def _ingest(gen, obj_paths, bounds, meta_lookup):
 
 
 def main():
-    from microjson._rs import StreamingTileGenerator, scan_obj_bounds
-    from microjson.tiling3d.parquet_writer import generate_parquet
-    from microjson.tiling3d.parquet_reader import read_parquet
+    from mudm._rs import StreamingTileGenerator, scan_obj_bounds
+    from mudm.tiling3d.parquet_writer import generate_parquet
+    from mudm.tiling3d.parquet_reader import read_parquet
 
     obj_paths = sorted(_MESH_DIR.glob("*.obj"))
     if not obj_paths:

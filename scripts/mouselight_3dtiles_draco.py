@@ -113,7 +113,7 @@ def main():
     print(f"\nBrain: {args.brain}")
     print(f"  {len(obj_paths)} OBJ files ({total_mb:.0f} MB)")
 
-    from microjson._rs import StreamingTileGenerator, scan_obj_bounds
+    from mudm._rs import StreamingTileGenerator, scan_obj_bounds
 
     # Scan bounds
     t0 = time.perf_counter()

@@ -3,9 +3,9 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "microjson"
+name = "mudm"
 version = "0.4.2"
-description = "MicroJSON is a library for validating, parsing, and manipulating MicroJSON data."
+description = "muDM (micro Data Model) is a library for validating, parsing, and manipulating muDM spatial data."
 readme = "README_short.md"
 authors = [
     { name = "Bengt Ljungquist", email = "bengt.ljungquist@nextonicsolutions.com" },
@@ -18,7 +18,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Rust",
 ]
-keywords = ["json", "microscopy", "microjson"]
+keywords = ["json", "microscopy", "mudm", "spatial-data"]
 dependencies = [
     "pydantic>=2.3.0",
     "geojson-pydantic>=1.2.0",
@@ -53,7 +53,7 @@ Tracker = "https://github.com/polusai/microjson/issues"
 [tool.maturin]
 manifest-path = "rust/Cargo.toml"
 python-source = "src"
-module-name = "microjson._rs"
+module-name = "mudm._rs"
 features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
@@ -70,7 +70,7 @@ push            = false
 
 [tool.bumpver.file_patterns]
 "pyproject.toml" = ['current_version = "{version}"', 'version = "{version}"']
-"src/microjson/__init__.py" = ["{version}"]
+"src/mudm/__init__.py" = ["{version}"]
 ".bumpversion.cfg" = ["current_version = {version}"]
 
 [tool.codespell]

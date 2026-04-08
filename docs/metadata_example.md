@@ -33,7 +33,7 @@ Now, let's explore an example to understand how these fields can be populated in
 ## Python Example
 
 ```python
-from microjson.model import MicroFeature
+from mudm.model import MuDMFeature
 
 # Usage
 example_properties = {
@@ -43,7 +43,7 @@ example_properties = {
   "ratioInfectivity": [0.2, 0.5, 0.8]
 }
 
-example_feature = MicroFeature(
+example_feature = MuDMFeature(
     type="Feature",
     geometry={
         "type": "Polygon",
@@ -66,4 +66,4 @@ print(example_feature.model_dump_json(indent=2, exclude_unset=True))
 
 ---
 
-In this example, a muDM feature is defined with a rectangular polygon geometry, with metadata stored as flat key-value pairs in the `properties` dictionary. The JSON representation offers a clear formatting of the data, while the Python script showcases how to instantiate a `MicroFeature` with the same data.
+In this example, a muDM feature is defined with a rectangular polygon geometry, with metadata stored as flat key-value pairs in the `properties` dictionary. The JSON representation offers a clear formatting of the data, while the Python script showcases how to instantiate a `MuDMFeature` with the same data.

@@ -2,16 +2,16 @@
 
 For a comprehensive guide to validation and all other usage patterns, see the [Usage](usage.md) page.
 
-The core validation workflow uses Pydantic models from `microjson.model`:
+The core validation workflow uses Pydantic models from `mudm.model`:
 
 ```python
-import microjson.model as mj
+import mudm.model as mj
 import json
 
 # Validate a muDM file
 with open("annotations.json") as f:
     data = json.load(f)
-microjson_obj = mj.MicroJSON.model_validate(data)
+mudm_obj = mj.MuDM.model_validate(data)
 
 # Any GeoJSON is also valid muDM
 with open("features.geojson") as f:

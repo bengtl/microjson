@@ -1,11 +1,11 @@
-"""Tests for ontology vocabulary support on MicroJSON models."""
+"""Tests for ontology vocabulary support on MuDM models."""
 
 import pytest
 from geojson_pydantic import Point
 
-from microjson.model import (
-    MicroFeature,
-    MicroFeatureCollection,
+from mudm.model import (
+    MuDMFeature,
+    MuDMFeatureCollection,
     OntologyTerm,
     Vocabulary,
 )
@@ -85,10 +85,10 @@ class TestVocabulary:
 
 class TestCollectionVocabularies:
     def test_inline_vocabularies(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(
+                MuDMFeature(
                     type="Feature",
                     geometry=Point(type="Point", coordinates=(1.0, 2.0)),
                     properties={"cell_type": "pyramidal"},
@@ -110,10 +110,10 @@ class TestCollectionVocabularies:
         assert fc.vocabularies["cell_type"].terms["pyramidal"].label == "pyramidal neuron"
 
     def test_uri_reference(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(
+                MuDMFeature(
                     type="Feature",
                     geometry=Point(type="Point", coordinates=(1.0, 2.0)),
                     properties={},
@@ -124,10 +124,10 @@ class TestCollectionVocabularies:
         assert fc.vocabularies == "https://neuromorpho.org/vocab/neuroscience-v1.json"
 
     def test_backwards_compatible_none(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(
+                MuDMFeature(
                     type="Feature",
                     geometry=Point(type="Point", coordinates=(1.0, 2.0)),
                     properties={},
@@ -137,10 +137,10 @@ class TestCollectionVocabularies:
         assert fc.vocabularies is None
 
     def test_json_roundtrip(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(
+                MuDMFeature(
                     type="Feature",
                     geometry=Point(type="Point", coordinates=(1.0, 2.0)),
                     properties={"cell_type": "pyramidal"},
@@ -155,7 +155,7 @@ class TestCollectionVocabularies:
             },
         )
         data = fc.model_dump()
-        fc2 = MicroFeatureCollection(**data)
+        fc2 = MuDMFeatureCollection(**data)
         assert "cell_type" in fc2.vocabularies
         assert fc2.vocabularies["cell_type"].terms["pyramidal"].uri == "http://purl.obolibrary.org/obo/CL_0000598"
 
@@ -181,13 +181,13 @@ class TestFeatureVocabularies:
                 },
             ),
         }
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=Point(type="Point", coordinates=(1.0, 2.0)),
             properties={"cell_type": "pyramidal"},
             vocabularies=feature_vocab,
         )
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[feat],
             vocabularies=collection_vocab,
@@ -198,7 +198,7 @@ class TestFeatureVocabularies:
         assert resolved["cell_type"].terms["pyramidal"].uri == "http://example.org/FEATURE"
 
     def test_feature_uri_reference(self):
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=Point(type="Point", coordinates=(1.0, 2.0)),
             properties={},
@@ -207,7 +207,7 @@ class TestFeatureVocabularies:
         assert feat.vocabularies == "https://example.org/vocab.json"
 
     def test_feature_no_vocabularies(self):
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature",
             geometry=Point(type="Point", coordinates=(1.0, 2.0)),
             properties={},
@@ -221,10 +221,10 @@ class TestFeatureVocabularies:
 
 class TestMultipleVocabularies:
     def test_multiple_property_vocabularies(self):
-        fc = MicroFeatureCollection(
+        fc = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(
+                MuDMFeature(
                     type="Feature",
                     geometry=Point(type="Point", coordinates=(1.0, 2.0)),
                     properties={"cell_type": "pyramidal", "brain_region": "hippocampus_CA1"},

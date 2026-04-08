@@ -5,7 +5,7 @@ import urllib.parse
 
 import pytest
 
-from microjson.neuroglancer.state import (
+from mudm.neuroglancer.state import (
     build_annotation_layer,
     build_skeleton_layer,
     build_viewer_state,

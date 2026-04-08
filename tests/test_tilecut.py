@@ -1,12 +1,12 @@
-# Generate a MicroJSON file using the polygon generator
+# Generate a MuDM file using the polygon generator
 import os
 import random
 import shutil
 import string
-import microjson as mj
+import mudm as mj
 import pytest
-from microjson.tilewriter import getbounds, TileWriter
-from microjson.polygen import assign_meta_types_and_values, generate_polygons
+from mudm.tilewriter import getbounds, TileWriter
+from mudm.polygen import assign_meta_types_and_values, generate_polygons
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def tempfolder():
 
 
 def test_tilecut(tempfolder):
-    # Create a large temporary MicroJSON file using the polygon generator
+    # Create a large temporary MuDM file using the polygon generator
     # Create folder with random name, a string of 6 characters
     microjson_data_path = f"{tempfolder}/polygons.json"
     # Parameters
@@ -75,7 +75,7 @@ def test_tilecut(tempfolder):
         tilejson="3.0.0",
         tiles=[tempfolder + "/tiles/{z}/{x}/{y}.pbf"],
         name="Example Tile Layer",
-        description="A TileJSON example incorporating MicroJSON data",
+        description="A TileJSON example incorporating MuDM data",
         version="1.0.0",
         attribution="Polus AI",
         minzoom=0,
@@ -98,7 +98,7 @@ def test_tilecut(tempfolder):
     # Initialize the TileHandler
     handler = TileWriter(tileobj, pbf=True)
 
-    # Cut the MicroJSON file into tiles
+    # Cut the MuDM file into tiles
     tiles = handler.microjson2tiles(microjson_data_path)
 
     # Check that the tiles were created

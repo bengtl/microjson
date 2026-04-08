@@ -181,7 +181,7 @@ pub(crate) fn encode_glb(features: &[GlbFeature]) -> Vec<u8> {
 
     // Assemble JSON descriptor
     let gltf_json = json!({
-        "asset": {"version": "2.0", "generator": "microjson-rs"},
+        "asset": {"version": "2.0", "generator": "mudm-rs"},
         "scene": 0,
         "scenes": [{"nodes": scene_nodes}],
         "nodes": nodes,
@@ -398,7 +398,7 @@ pub(crate) fn encode_glb_draco(
     });
 
     let mut gltf_json = json!({
-        "asset": {"version": "2.0", "generator": "microjson-rs"},
+        "asset": {"version": "2.0", "generator": "mudm-rs"},
         "scene": 0,
         "scenes": [{"nodes": scene_nodes}],
         "nodes": nodes,
@@ -670,7 +670,7 @@ pub(crate) fn encode_glb_meshopt(
     });
 
     let mut gltf_json = json!({
-        "asset": {"version": "2.0", "generator": "microjson-rs"},
+        "asset": {"version": "2.0", "generator": "mudm-rs"},
         "scene": 0,
         "scenes": [{"nodes": scene_nodes}],
         "nodes": nodes,
@@ -697,7 +697,7 @@ pub(crate) fn encode_glb_meshopt(
 
 fn encode_empty_glb() -> Vec<u8> {
     let gltf_json = json!({
-        "asset": {"version": "2.0", "generator": "microjson-rs"},
+        "asset": {"version": "2.0", "generator": "mudm-rs"},
         "scene": 0,
         "scenes": [{"nodes": []}],
     });

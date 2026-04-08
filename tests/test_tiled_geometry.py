@@ -1,7 +1,7 @@
 """Tests for TiledGeometry base class and tiled mode on TIN/PolyhedralSurface."""
 import pytest
 from pydantic import ValidationError
-from microjson.model import TIN, PolyhedralSurface
+from mudm.model import TIN, PolyhedralSurface
 
 
 class TestTINTiledMode:
@@ -93,7 +93,7 @@ class TestPolyhedralSurfaceTiledMode:
         assert len(p.coordinates) == 1
 
 
-from microjson.tiling3d.tilejson3d import TileEncoding, TileModel3D
+from mudm.tiling3d.tilejson3d import TileEncoding, TileModel3D
 
 
 class TestTileEncoding:
@@ -194,7 +194,7 @@ class TestTileModel3DEncodings:
         assert loaded.id_fields == ["body_id", "instance"]
 
 
-from microjson.tilemodel import PyramidEntry, PyramidJSON
+from mudm.tilemodel import PyramidEntry, PyramidJSON
 
 
 class TestPyramidJSON:

@@ -5,16 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from microjson.model import MicroFeature
-from microjson.neuroglancer.properties_writer import (
+from mudm.model import MuDMFeature
+from mudm.neuroglancer.properties_writer import (
     features_to_segment_properties,
     write_segment_properties,
 )
 
 
-def _make_feature(**props) -> MicroFeature:
-    """Helper to create a MicroFeature with given properties."""
-    return MicroFeature(
+def _make_feature(**props) -> MuDMFeature:
+    """Helper to create a MuDMFeature with given properties."""
+    return MuDMFeature(
         type="Feature",
         geometry={"type": "Point", "coordinates": [0, 0, 0]},
         properties=props,

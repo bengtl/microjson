@@ -3,13 +3,13 @@
 import pytest
 from geojson_pydantic import Point, Polygon
 
-from microjson.model import (
-    MicroFeature,
-    MicroFeatureCollection,
+from mudm.model import (
+    MuDMFeature,
+    MuDMFeatureCollection,
     PolyhedralSurface,
     TIN,
 )
-from microjson.layout import (
+from mudm.layout import (
     Bounds,
     apply_layout,
     compute_collection_offsets,
@@ -79,7 +79,7 @@ def _tin_at(x_start=0.0, x_end=100.0):
 class TestRowLayout:
     def _features(self, *tins):
         return [
-            MicroFeature(type="Feature", geometry=t, properties=None)
+            MuDMFeature(type="Feature", geometry=t, properties=None)
             for t in tins
         ]
 
@@ -124,7 +124,7 @@ class TestGridLayout:
 
     def _features(self, n, width=100.0):
         return [
-            MicroFeature(
+            MuDMFeature(
                 type="Feature",
                 geometry=self._tin(width),
                 properties=None,
@@ -187,10 +187,10 @@ class TestGridLayout:
 
 class TestApplyLayout:
     def test_single_feature_unchanged(self):
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature", geometry=_tin_at(), properties=None,
         )
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection", features=[feat],
         )
         result = apply_layout(coll)
@@ -198,11 +198,11 @@ class TestApplyLayout:
         assert result.features[0].geometry.coordinates[0][0][0][0] == 0.0
 
     def test_two_features_coordinates_translated(self):
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
-                MicroFeature(type="Feature", geometry=_tin_at(0, 80), properties=None),
+                MuDMFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
+                MuDMFeature(type="Feature", geometry=_tin_at(0, 80), properties=None),
             ],
         )
         result = apply_layout(coll, spacing=50.0)
@@ -212,12 +212,12 @@ class TestApplyLayout:
         assert result.features[1].geometry.coordinates[0][0][0][0] == pytest.approx(150.0)
 
     def test_original_not_modified(self):
-        feat = MicroFeature(
+        feat = MuDMFeature(
             type="Feature", geometry=_tin_at(0, 100), properties=None,
         )
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
-            features=[feat, MicroFeature(
+            features=[feat, MuDMFeature(
                 type="Feature", geometry=_tin_at(0, 80), properties=None,
             )],
         )
@@ -229,13 +229,13 @@ class TestApplyLayout:
 
     def test_grid_layout_coordinates(self):
         """Grid layout modifies coordinates, not just offsets."""
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
-                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
-                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
-                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
+                MuDMFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
+                MuDMFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
+                MuDMFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
+                MuDMFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
             ],
         )
         result = apply_layout(coll, spacing=10.0, grid_max_x=2)
@@ -246,11 +246,11 @@ class TestApplyLayout:
         assert result.features[2].geometry.coordinates[0][0][0][1] > 0
 
     def test_null_geometry_feature_preserved(self):
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
-                MicroFeature(type="Feature", geometry=None, properties=None),
+                MuDMFeature(type="Feature", geometry=_tin_at(0, 100), properties=None),
+                MuDMFeature(type="Feature", geometry=None, properties=None),
             ],
         )
         # Should not raise
@@ -258,11 +258,11 @@ class TestApplyLayout:
         assert result.features[1].geometry is None
 
     def test_properties_preserved(self):
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(type="Feature", geometry=_tin_at(0, 100), properties={"a": 1}),
-                MicroFeature(type="Feature", geometry=_tin_at(0, 80), properties={"b": 2}),
+                MuDMFeature(type="Feature", geometry=_tin_at(0, 100), properties={"a": 1}),
+                MuDMFeature(type="Feature", geometry=_tin_at(0, 80), properties={"b": 2}),
             ],
         )
         result = apply_layout(coll, spacing=50.0)
@@ -270,15 +270,15 @@ class TestApplyLayout:
         assert result.features[1].properties == {"b": 2}
 
     def test_point_geometry_layout(self):
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
-                MicroFeature(
+                MuDMFeature(
                     type="Feature",
                     geometry=Point(type="Point", coordinates=(0, 0, 0)),
                     properties=None,
                 ),
-                MicroFeature(
+                MuDMFeature(
                     type="Feature",
                     geometry=Point(type="Point", coordinates=(0, 0, 0)),
                     properties=None,

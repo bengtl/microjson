@@ -2,7 +2,7 @@
 
 import pytest
 
-from microjson.neuroglancer.models import (
+from mudm.neuroglancer.models import (
     AnnotationDimension,
     AnnotationInfo,
     AnnotationSpatialEntry,

@@ -1,7 +1,7 @@
 """Tests for 3D coordinate transforms."""
 
 import pytest
-from microjson.transforms import (
+from mudm.transforms import (
     AffineTransform,
     VoxelCoordinateSystem,
     apply_transform,
@@ -9,7 +9,7 @@ from microjson.transforms import (
     voxel_to_physical,
     physical_to_voxel,
 )
-from microjson.model import (
+from mudm.model import (
     TIN,
     PolyhedralSurface,
 )
@@ -147,7 +147,7 @@ class TestApplyTransform:
 
 
 class TestApplyTransform3D:
-    """Tests for 3D MicroJSON type transforms."""
+    """Tests for 3D MuDM type transforms."""
 
     def _translation(self, dx=10, dy=20, dz=30):
         return AffineTransform(

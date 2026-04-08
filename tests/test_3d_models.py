@@ -1,5 +1,5 @@
 """Tests for 3D coordinate support on existing geojson_pydantic types
-and new MicroJSON 3D geometry types."""
+and new MuDM 3D geometry types."""
 
 import pytest
 from pydantic import ValidationError
@@ -11,10 +11,10 @@ from geojson_pydantic import (
     Polygon,
     MultiPolygon,
 )
-from microjson.model import (
-    MicroJSON,
-    MicroFeature,
-    MicroFeatureCollection,
+from mudm.model import (
+    MuDM,
+    MuDMFeature,
+    MuDMFeatureCollection,
     PolyhedralSurface,
     TIN,
 )
@@ -315,10 +315,10 @@ class TestTIN:
 
 
 # ---------------------------------------------------------------------------
-# Step 7: Integration -- MicroJSON with 3D geometry types
+# Step 7: Integration -- MuDM with 3D geometry types
 # ---------------------------------------------------------------------------
 
-# Full 3D MicroJSON document (adapted -- NeuronMorphology replaced with TIN)
+# Full 3D MuDM document (adapted -- NeuronMorphology replaced with TIN)
 FULL_3D_DOCUMENT = {
     "type": "FeatureCollection",
     "features": [
@@ -351,8 +351,8 @@ FULL_3D_DOCUMENT = {
 }
 
 
-class TestMicroJSON3DIntegration:
-    """Test MicroJSON root model with 3D geometry types."""
+class TestMuDM3DIntegration:
+    """Test MuDM root model with 3D geometry types."""
 
     def test_feature_with_polyhedral_surface(self):
         face = [[(0, 0, 0), (10, 0, 0), (5, 10, 0), (0, 0, 0)]]
@@ -364,7 +364,7 @@ class TestMicroJSON3DIntegration:
             },
             "properties": {},
         }
-        mj = MicroJSON.model_validate(data)
+        mj = MuDM.model_validate(data)
         assert mj.root.geometry.type == "PolyhedralSurface"
 
     def test_feature_with_tin(self):
@@ -374,19 +374,19 @@ class TestMicroJSON3DIntegration:
             "geometry": {"type": "TIN", "coordinates": [face]},
             "properties": {},
         }
-        mj = MicroJSON.model_validate(data)
+        mj = MuDM.model_validate(data)
         assert mj.root.geometry.type == "TIN"
 
     def test_full_3d_document_roundtrip(self):
-        """Parse the full 3D MicroJSON example from the spec."""
-        mfc = MicroFeatureCollection.model_validate(FULL_3D_DOCUMENT)
+        """Parse the full 3D MuDM example from the spec."""
+        mfc = MuDMFeatureCollection.model_validate(FULL_3D_DOCUMENT)
         assert len(mfc.features) == 2
         assert mfc.features[0].geometry.type == "TIN"
         assert mfc.features[1].geometry.type == "PolyhedralSurface"
 
         # Round-trip through JSON
         dumped = mfc.model_dump()
-        mfc2 = MicroFeatureCollection.model_validate(dumped)
+        mfc2 = MuDMFeatureCollection.model_validate(dumped)
         assert len(mfc2.features) == 2
 
     def test_standard_geojson_still_works(self):
@@ -399,5 +399,5 @@ class TestMicroJSON3DIntegration:
             },
             "properties": {"name": "test"},
         }
-        mj = MicroJSON.model_validate(data)
+        mj = MuDM.model_validate(data)
         assert mj.root.geometry.type == "Point"

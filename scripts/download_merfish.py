@@ -2,7 +2,7 @@
 """Download Allen Brain Cell Atlas MERFISH data for benchmarking.
 
 Downloads ~4M cell coordinates and metadata from the public S3 bucket,
-converts to MicroJSON Point features, tiles with TileGenerator3D, and benchmarks.
+converts to MuDM Point features, tiles with TileGenerator3D, and benchmarks.
 
 Data is in Parquet format — pyarrow (already a dependency) handles reading.
 
@@ -175,7 +175,7 @@ def load_cell_data(
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Convert to MicroJSON
+# Step 3: Convert to MuDM
 # ---------------------------------------------------------------------------
 
 def convert_to_microjson(
@@ -183,16 +183,16 @@ def convert_to_microjson(
     ccf_df,
     data_dir: Path,
 ):
-    """Convert MERFISH cell data to MicroFeatureCollection with Point geometry.
+    """Convert MERFISH cell data to MuDMFeatureCollection with Point geometry.
 
     Args:
         cell_df: pandas DataFrame with cell metadata (x, y, z, cluster_alias, etc.)
         ccf_df: pandas DataFrame with CCF coordinates, or None.
         data_dir: output directory for metadata.json.
     """
-    from microjson.model import (
-        MicroFeature,
-        MicroFeatureCollection,
+    from mudm.model import (
+        MuDMFeature,
+        MuDMFeatureCollection,
         OntologyTerm,
         Vocabulary,
     )
@@ -242,7 +242,7 @@ def convert_to_microjson(
         print(f"  Dropped {n_dropped:,} cells with missing coordinates")
 
     n_cells = len(cell_df)
-    print(f"Converting {n_cells:,} cells to MicroJSON Point features...")
+    print(f"Converting {n_cells:,} cells to MuDM Point features...")
     t0 = time.perf_counter()
 
     # Determine metadata columns
@@ -253,7 +253,7 @@ def convert_to_microjson(
             meta_cols.append(col)
 
     # Build features in batches for memory efficiency
-    features: list[MicroFeature] = []
+    features: list[MuDMFeature] = []
     cell_types = set()
 
     coords_x = cell_df[x_col].values
@@ -279,7 +279,7 @@ def convert_to_microjson(
             feature_class = str(ct)
             cell_types.add(feature_class)
 
-        features.append(MicroFeature(
+        features.append(MuDMFeature(
             type="Feature",
             geometry={
                 "type": "Point",
@@ -310,7 +310,7 @@ def convert_to_microjson(
             ),
         }
 
-    collection = MicroFeatureCollection(
+    collection = MuDMFeatureCollection(
         type="FeatureCollection",
         features=features,
         properties={
@@ -424,7 +424,7 @@ def main() -> None:
         description="Allen MERFISH download, conversion, tiling, and benchmark",
     )
     parser.add_argument("--download", action="store_true", help="Download from S3")
-    parser.add_argument("--convert", action="store_true", help="Convert to MicroJSON")
+    parser.add_argument("--convert", action="store_true", help="Convert to MuDM")
     parser.add_argument("--tile", action="store_true", help="Generate tiles")
     parser.add_argument("--benchmark", action="store_true", help="Run benchmarks")
     parser.add_argument("--max-cells", type=int, default=None, help="Limit number of cells")

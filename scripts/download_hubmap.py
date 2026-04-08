@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Download HuBMAP Human Reference Atlas (HRA) organ GLB files for benchmarking.
 
-Downloads 77 organ GLB files from the HuBMAP HRA API, converts to MicroJSON
+Downloads 77 organ GLB files from the HuBMAP HRA API, converts to MuDM
 TIN features with ASCT+B ontology metadata, tiles with TileGenerator3D,
 and benchmarks.
 
@@ -130,7 +130,7 @@ def download_glb_files(output_dir: Path, sex_filter: str | None = None) -> list[
 
 
 # ---------------------------------------------------------------------------
-# Step 2: Convert GLB → MicroJSON
+# Step 2: Convert GLB → MuDM
 # ---------------------------------------------------------------------------
 
 def glb_to_mesh(glb_path: Path) -> tuple | None:
@@ -223,16 +223,16 @@ def convert_to_microjson(
     *,
     max_files: int | None = None,
 ):
-    """Convert HuBMAP GLB files to MicroFeatureCollection."""
+    """Convert HuBMAP GLB files to MuDMFeatureCollection."""
     import numpy as np
 
-    from microjson.model import (
-        MicroFeature,
-        MicroFeatureCollection,
+    from mudm.model import (
+        MuDMFeature,
+        MuDMFeatureCollection,
         OntologyTerm,
         Vocabulary,
     )
-    from microjson.swc import _mesh_to_tin
+    from mudm.swc import _mesh_to_tin
 
     glb_paths = sorted(glb_dir.glob("*.glb"))
     if not glb_paths:
@@ -249,9 +249,9 @@ def convert_to_microjson(
         for m in raw:
             meta_lookup[m["file"]] = m
 
-    print(f"Converting {len(glb_paths)} GLB files to MicroJSON...")
+    print(f"Converting {len(glb_paths)} GLB files to MuDM...")
     t0 = time.perf_counter()
-    features: list[MicroFeature] = []
+    features: list[MuDMFeature] = []
     total_verts = 0
     total_faces = 0
     uberon_terms: dict[str, str] = {}  # uberon_id → label
@@ -292,7 +292,7 @@ def convert_to_microjson(
 
         feature_class = meta.get("label", stem)
 
-        features.append(MicroFeature(
+        features.append(MuDMFeature(
             type="Feature",
             geometry=tin,
             properties=props,
@@ -319,7 +319,7 @@ def convert_to_microjson(
             ),
         }
 
-    collection = MicroFeatureCollection(
+    collection = MuDMFeatureCollection(
         type="FeatureCollection",
         features=features,
         properties={
@@ -418,7 +418,7 @@ def main() -> None:
         description="HuBMAP HRA download, conversion, tiling, and benchmark",
     )
     parser.add_argument("--download", action="store_true", help="Download GLB files from HRA API")
-    parser.add_argument("--convert", action="store_true", help="Convert GLB to MicroJSON")
+    parser.add_argument("--convert", action="store_true", help="Convert GLB to MuDM")
     parser.add_argument("--tile", action="store_true", help="Generate tiles")
     parser.add_argument("--benchmark", action="store_true", help="Run benchmarks")
     parser.add_argument("--sex", type=str, default=None, help="Filter by sex (Female/Male)")

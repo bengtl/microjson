@@ -18,8 +18,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from microjson.neuroglancer.mesh_models import MeshInfo
-from microjson.neuroglancer.mesh_writer import (
+from mudm.neuroglancer.mesh_models import MeshInfo
+from mudm.neuroglancer.mesh_writer import (
     decode_mesh_binary,
     fragments_to_mesh,
     mesh_to_binary,
@@ -312,7 +312,7 @@ class TestEndToEnd:
 
     def test_single_feature_produces_segment(self, tmp_dir):
         """A single TIN feature should produce one segment file."""
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=1)
         feat = self._make_tin_feature(
@@ -346,7 +346,7 @@ class TestEndToEnd:
 
     def test_multiple_features_separate_segments(self, tmp_dir):
         """Multiple features should produce separate segment files."""
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=1)
 
@@ -371,7 +371,7 @@ class TestEndToEnd:
 
     def test_segment_properties_written(self, tmp_dir):
         """Tags should be written to segment_properties/info."""
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=1)
         feat = self._make_tin_feature(
@@ -394,7 +394,7 @@ class TestEndToEnd:
 
     def test_binary_format_correct(self, tmp_dir):
         """Verify the binary layout matches Neuroglancer spec."""
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=1)
         feat = self._make_tin_feature(
@@ -420,7 +420,7 @@ class TestEndToEnd:
 
     def test_degenerate_feature_skipped(self, tmp_dir):
         """A point-type feature should not produce a mesh segment."""
-        from microjson._rs import StreamingTileGenerator
+        from mudm._rs import StreamingTileGenerator
 
         gen = StreamingTileGenerator(min_zoom=0, max_zoom=1)
         # Add a point feature (geom_type=1)

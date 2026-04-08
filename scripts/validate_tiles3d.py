@@ -28,11 +28,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 
-# Ensure microjson is importable from repo root
+# Ensure mudm is importable from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from microjson.tiling3d import TileGenerator3D, TileReader3D, OctreeConfig
-from microjson.tiling3d.projector3d import CartesianProjector3D
+from mudm.tiling3d import TileGenerator3D, TileReader3D, OctreeConfig
+from mudm.tiling3d.projector3d import CartesianProjector3D
 
 
 # ---------- wireframe cube drawing ----------
@@ -280,7 +280,7 @@ def plot_tiles(
 
 def run_demo(zoom: int, save_path: str | None = None) -> None:
     """Generate random 3D data, tile it, then plot."""
-    from microjson.polygen3d import generate_3d_collection
+    from mudm.polygen3d import generate_3d_collection
 
     print("Generating random 3D collection …")
     coll = generate_3d_collection(

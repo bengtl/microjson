@@ -5,14 +5,14 @@ import math
 import numpy as np
 import pytest
 
-from microjson.swc import (
+from mudm.swc import (
     NeuronMorphology,
     SWCSample,
     _extract_paths,
     neuron_to_tube_mesh,
     neuron_to_typed_meshes,
 )
-from microjson.gltf.mesh_builder import (
+from mudm.gltf.mesh_builder import (
     _icosphere,
     _tube_along_path,
     smooth_path,

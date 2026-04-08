@@ -14,8 +14,8 @@ muDM (micro Data Model) is a data model, format, and Python library for represen
 
 The library has two layers:
 
-1. **Python layer** (`microjson`): Pydantic models, coordinate transforms, GeoParquet I/O, glTF assembly, and high-level pipeline orchestration.
-2. **Rust layer** (`microjson._rs`): Hot-path tile generation, geometry clipping, mesh simplification (QEM), protobuf/MVT encoding, and compression (meshopt, Draco, ZSTD). Built with [maturin](https://www.maturin.rs/) and [PyO3](https://pyo3.rs/).
+1. **Python layer** (`mudm`): Pydantic models, coordinate transforms, GeoParquet I/O, glTF assembly, and high-level pipeline orchestration.
+2. **Rust layer** (`mudm._rs`): Hot-path tile generation, geometry clipping, mesh simplification (QEM), protobuf/MVT encoding, and compression (meshopt, Draco, ZSTD). Built with [maturin](https://www.maturin.rs/) and [PyO3](https://pyo3.rs/).
 
 ## Requirements
 

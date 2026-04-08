@@ -1,4 +1,4 @@
-site_name: MicroJSON Documentation
+site_name: muDM Documentation
 site_author: Bengt Ljungquist
 copyright: (c) 2023 PolusAI
 extra_javascript:
@@ -45,11 +45,11 @@ nav:
     - Metadata example: 'metadata_example.md'
   - Core Pydantic model: 'pydantic.md'
   - Extensions:
-    - Provenance in MicroJSON: 'provenance.md'
-    - MicroJSON tiling: 'tiling.md'
+    - Provenance in muDM: 'provenance.md'
+    - muDM tiling: 'tiling.md'
     - Tiling Demo (Notebook): 'tiling_demo.md'
   - About:
-    - About MicroJSON: 'about.md'
+    - About muDM: 'about.md'
     - License: 'license.md'
     - Roadmap: 'roadmap.md'
     - Integration with OME: 'ome.md'

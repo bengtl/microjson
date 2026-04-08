@@ -3,7 +3,7 @@
 import pytest
 from pathlib import Path
 from pydantic import ValidationError
-from microjson.swc import (
+from mudm.swc import (
     SWCSample,
     NeuronMorphology,
     SWC_TYPE_NAMES,
@@ -105,7 +105,7 @@ class TestNeuronMorphology:
 
 class TestSWCConverters:
     def test_swc_to_microjson(self):
-        from microjson.swc import swc_to_microjson
+        from mudm.swc import swc_to_microjson
 
         feature = swc_to_microjson(str(SAMPLE_SWC))
         assert feature.type == "Feature"
@@ -137,7 +137,7 @@ class TestSWCConverters:
             assert len(parts) == 7
 
     def test_swc_to_linestring3d(self):
-        from microjson.swc import swc_to_linestring3d
+        from mudm.swc import swc_to_linestring3d
 
         mls = swc_to_linestring3d(str(SAMPLE_SWC))
         assert mls.type == "MultiLineString"
@@ -156,14 +156,14 @@ class TestSWCConverters:
 
 class TestSWCToTIN:
     def test_swc_to_tin_produces_tin(self):
-        from microjson.swc import swc_to_tin
+        from mudm.swc import swc_to_tin
 
         feature = swc_to_tin(str(SAMPLE_SWC))
         assert feature.type == "Feature"
         assert feature.geometry.type == "TIN"
 
     def test_swc_to_tin_valid_triangles(self):
-        from microjson.swc import swc_to_tin
+        from mudm.swc import swc_to_tin
 
         feature = swc_to_tin(str(SAMPLE_SWC))
         tin = feature.geometry
@@ -182,8 +182,8 @@ class TestSWCToTIN:
 
     def test_swc_to_tin_to_glb(self):
         """TIN from SWC goes through existing glTF TIN path."""
-        from microjson.swc import swc_to_tin
-        from microjson.gltf.writer import to_glb
+        from mudm.swc import swc_to_tin
+        from mudm.gltf.writer import to_glb
 
         feature = swc_to_tin(str(SAMPLE_SWC))
         glb_bytes = to_glb(feature)
@@ -193,7 +193,7 @@ class TestSWCToTIN:
 
     def test_swc_to_tin_smoothing(self):
         """Higher smooth_subdivisions increases face count."""
-        from microjson.swc import swc_to_tin
+        from mudm.swc import swc_to_tin
 
         f_no_smooth = swc_to_tin(str(SAMPLE_SWC), smooth_subdivisions=0)
         f_smooth = swc_to_tin(str(SAMPLE_SWC), smooth_subdivisions=3)
@@ -201,7 +201,7 @@ class TestSWCToTIN:
 
     def test_swc_to_tin_quality(self):
         """mesh_quality < 1 decreases face count."""
-        from microjson.swc import swc_to_tin
+        from mudm.swc import swc_to_tin
 
         f_full = swc_to_tin(str(SAMPLE_SWC), smooth_subdivisions=3, mesh_quality=1.0)
         f_reduced = swc_to_tin(str(SAMPLE_SWC), smooth_subdivisions=3, mesh_quality=0.5)
@@ -257,7 +257,7 @@ class TestSWCToFeatureCollection:
 
     def test_neuromorpho_name_strips_cng(self):
         """NeuroMorpho .CNG.swc suffix is stripped from the name."""
-        from microjson.swc import _neuron_name_from_path
+        from mudm.swc import _neuron_name_from_path
         assert _neuron_name_from_path("swcs/cnic_041.CNG.swc") == "cnic_041"
         assert _neuron_name_from_path("foo/bar.swc") == "bar"
 
@@ -268,7 +268,7 @@ class TestSWCToFeatureCollection:
 
     def test_to_glb_roundtrip(self):
         """Feature collection can be exported to GLB."""
-        from microjson.gltf.writer import to_glb
+        from mudm.gltf.writer import to_glb
 
         coll = swc_to_feature_collection(str(SAMPLE_SWC))
         glb_bytes = to_glb(coll)

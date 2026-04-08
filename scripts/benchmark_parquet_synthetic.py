@@ -19,8 +19,8 @@ import time
 import tracemalloc
 from pathlib import Path
 
-from microjson._rs import StreamingTileGenerator
-from microjson.tiling3d.parquet_writer import generate_parquet
+from mudm._rs import StreamingTileGenerator
+from mudm.tiling3d.parquet_writer import generate_parquet
 
 # ---------------------------------------------------------------------------
 # Config

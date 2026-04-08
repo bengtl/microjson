@@ -13,14 +13,14 @@ import pyarrow.parquet as pq
 import pytest
 
 try:
-    from microjson._rs import StreamingTileGenerator
+    from mudm._rs import StreamingTileGenerator
     RUST_AVAILABLE = True
 except ImportError:
     RUST_AVAILABLE = False
 
-from microjson.tiling3d.parquet_writer import generate_parquet
-from microjson.tiling3d.parquet_reader import read_parquet
-from microjson.tiling3d.parquet_prime import prime_parquet, deprime_parquet, repartition_parquet
+from mudm.tiling3d.parquet_writer import generate_parquet
+from mudm.tiling3d.parquet_reader import read_parquet
+from mudm.tiling3d.parquet_prime import prime_parquet, deprime_parquet, repartition_parquet
 
 pytestmark = pytest.mark.skipif(
     not RUST_AVAILABLE, reason="Rust extensions not compiled"
@@ -1143,7 +1143,7 @@ class TestRepartitionParquet:
         # Manually write a legacy data.parquet
         zoom_dir = out_dir / "zoom=0"
         zoom_dir.mkdir()
-        from microjson.tiling3d.parquet_writer import generate_parquet as gen_pq
+        from mudm.tiling3d.parquet_writer import generate_parquet as gen_pq
         gen2, _ = _build_generator_with_features([
             _make_tin_feature(
                 [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],

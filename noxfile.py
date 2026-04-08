@@ -1,5 +1,5 @@
 import nox
-from microjson.model import GeoJSON, MicroJSON
+from mudm.model import GeoJSON, MuDM
 import json
 
 
@@ -34,8 +34,8 @@ def generate_roundtrip_json_schema(session):
     with open("geojson_schema.json", "w") as f:
         f.write(json.dumps(GeoJSON.model_json_schema(), indent=4))
 
-    with open("microjson_schema.json", "w") as f:
-        f.write(json.dumps(MicroJSON.model_json_schema(), indent=4))
+    with open("mudm_schema.json", "w") as f:
+        f.write(json.dumps(MuDM.model_json_schema(), indent=4))
 
 
 @nox.session(python="3.9")
@@ -64,8 +64,8 @@ def typescript(session):
     session.run(
         "npx",
         "json-schema-to-typescript",
-        "microjson_schema.json",
+        "mudm_schema.json",
         "-o",
-        "microjson.d.ts",
+        "mudm.d.ts",
         external=True,
     )

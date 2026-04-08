@@ -4,7 +4,7 @@ import struct
 
 import pytest
 
-from microjson.neuroglancer._binary import (
+from mudm.neuroglancer._binary import (
     pack_float32,
     pack_float32_array,
     pack_uint32,

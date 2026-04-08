@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from microjson.swc import NeuronMorphology, SWCSample
-from microjson.transforms import AffineTransform
-from microjson.neuroglancer.skeleton_writer import (
+from mudm.swc import NeuronMorphology, SWCSample
+from mudm.transforms import AffineTransform
+from mudm.neuroglancer.skeleton_writer import (
     affine_to_ng_transform,
     build_skeleton_info,
     neuron_to_skeleton_binary,

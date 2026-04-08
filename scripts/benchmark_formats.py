@@ -39,11 +39,11 @@ sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
 # Ensure src/ is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from microjson.polygen3d import generate_3d_collection
-from microjson.tiling3d.generator3d import TileGenerator3D
-from microjson.tiling3d.octree import OctreeConfig
-from microjson.tiling3d.reader3d import TileReader3D, decode_tile
-from microjson.tiling3d.reader_3dtiles import TileReader3DTiles
+from mudm.polygen3d import generate_3d_collection
+from mudm.tiling3d.generator3d import TileGenerator3D
+from mudm.tiling3d.octree import OctreeConfig
+from mudm.tiling3d.reader3d import TileReader3D, decode_tile
+from mudm.tiling3d.reader_3dtiles import TileReader3DTiles
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +426,7 @@ def generate_swc_tiles(
     work_dir: Path,
 ) -> tuple[Path, Path]:
     """Load SWC file and tile in both formats."""
-    from microjson.swc import swc_to_feature_collection
+    from mudm.swc import swc_to_feature_collection
 
     collection = swc_to_feature_collection(swc_path)
 

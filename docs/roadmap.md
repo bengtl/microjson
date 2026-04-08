@@ -59,9 +59,9 @@ Below is the development roadmap for muDM, showing completed phases and current/
 ## Phase 4: Adoption and Long-Term Sustainability (In Progress)
 
 1. **Format Converter Registry**:
-    * Pluggable converter system (`microjson.converters`) with `convert()` and `list_formats()` API.
+    * Pluggable converter system (`mudm.converters`) with `convert()` and `list_formats()` API.
     * Built-in converters: GeoJSON, OBJ, Xenium.
-    * CLI interface: `python -m microjson.converters.cli convert --format <fmt> ...`.
+    * CLI interface: `python -m mudm.converters.cli convert --format <fmt> ...`.
 
 2. **Xenium 2D Spatial Transcriptomics Pipeline**:
     * End-to-end converter for 10x Genomics Xenium output (transcripts, cell boundaries, nuclei).

@@ -16,23 +16,23 @@ from pathlib import Path
 import pytest
 from geojson_pydantic import LineString, Point, Polygon
 
-from microjson.model import (
-    MicroFeature, MicroFeatureCollection, OntologyTerm, TIN, Vocabulary,
+from mudm.model import (
+    MuDMFeature, MuDMFeatureCollection, OntologyTerm, TIN, Vocabulary,
 )
 
 # --- Proto imports ---
-from microjson.tiling3d.proto import microjson_3d_tile_pb2 as pb
+from mudm.tiling3d.proto import mudm_3d_tile_pb2 as pb
 
 # --- Module imports ---
-from microjson.tiling3d.morton import (
+from mudm.tiling3d.morton import (
     morton_decode_3d,
     morton_encode_3d,
     tile_id_3d,
 )
-from microjson.tiling3d.projector3d import CartesianProjector3D
-from microjson.tiling3d.simplify3d import simplify_3d
-from microjson.tiling3d.clip3d import clip_3d
-from microjson.tiling3d.convert3d import (
+from mudm.tiling3d.projector3d import CartesianProjector3D
+from mudm.tiling3d.simplify3d import simplify_3d
+from mudm.tiling3d.clip3d import clip_3d
+from mudm.tiling3d.convert3d import (
     LINESTRING3D,
     POINT3D,
     POLYGON3D,
@@ -41,43 +41,43 @@ from microjson.tiling3d.convert3d import (
     convert_collection_3d,
     convert_feature_3d,
 )
-from microjson.tiling3d.tile3d import create_tile_3d, transform_tile_3d
-from microjson.tiling3d.encoder3d import encode_tile_3d, _build_indexed_mesh
-from microjson.tiling3d.reader3d import TileReader3D, decode_tile
-from microjson.tiling3d.octree import Octree, OctreeConfig
-from microjson.tiling3d.generator3d import TileGenerator3D
-from microjson.tiling3d.tilejson3d import TileModel3D
+from mudm.tiling3d.tile3d import create_tile_3d, transform_tile_3d
+from mudm.tiling3d.encoder3d import encode_tile_3d, _build_indexed_mesh
+from mudm.tiling3d.reader3d import TileReader3D, decode_tile
+from mudm.tiling3d.octree import Octree, OctreeConfig
+from mudm.tiling3d.generator3d import TileGenerator3D
+from mudm.tiling3d.tilejson3d import TileModel3D
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _point_feature(x: float, y: float, z: float, **props) -> MicroFeature:
-    return MicroFeature(
+def _point_feature(x: float, y: float, z: float, **props) -> MuDMFeature:
+    return MuDMFeature(
         type="Feature",
         geometry=Point(type="Point", coordinates=[x, y, z]),
         properties=props if props else {},
     )
 
 
-def _line_feature(coords: list[list[float]], **props) -> MicroFeature:
-    return MicroFeature(
+def _line_feature(coords: list[list[float]], **props) -> MuDMFeature:
+    return MuDMFeature(
         type="Feature",
         geometry=LineString(type="LineString", coordinates=coords),
         properties=props if props else {},
     )
 
 
-def _polygon_feature(ring: list[list[float]], **props) -> MicroFeature:
-    return MicroFeature(
+def _polygon_feature(ring: list[list[float]], **props) -> MuDMFeature:
+    return MuDMFeature(
         type="Feature",
         geometry=Polygon(type="Polygon", coordinates=[ring]),
         properties=props if props else {},
     )
 
 
-def _tin_feature(**props) -> MicroFeature:
+def _tin_feature(**props) -> MuDMFeature:
     """A simple TIN with two triangles."""
     tin = TIN(
         type="TIN",
@@ -86,15 +86,15 @@ def _tin_feature(**props) -> MicroFeature:
             [[[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.5, 1.0, 0.5], [1.0, 0.0, 0.0]]],
         ],
     )
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         geometry=tin,
         properties=props if props else {},
     )
 
 
-def _collection(*features: MicroFeature) -> MicroFeatureCollection:
-    return MicroFeatureCollection(
+def _collection(*features: MuDMFeature) -> MuDMFeatureCollection:
+    return MuDMFeatureCollection(
         type="FeatureCollection",
         features=list(features),
     )
@@ -975,7 +975,7 @@ class TestMetadataPipeline:
                 ),
             },
         )
-        coll = MicroFeatureCollection(
+        coll = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
                 _point_feature(0, 0, 0, compartment="soma"),
@@ -1119,7 +1119,7 @@ class TestIndexedMesh:
 
     def test_encode_decode_polyhedral_indexed(self):
         """PolyhedralSurface also uses indexed mesh encoding."""
-        from microjson.tiling3d.convert3d import POLYHEDRALSURFACE as PS_TYPE
+        from mudm.tiling3d.convert3d import POLYHEDRALSURFACE as PS_TYPE
         tile_data = {
             "features": [{
                 "geometry": [0, 0, 100, 0, 50, 100, 0, 0],
@@ -1276,7 +1276,7 @@ class TestLazyMeshXYZ:
 
     def test_lazy_not_materialized_on_decode(self):
         """xy/z should NOT be materialized until accessed."""
-        from microjson.tiling3d.reader3d import _LazyMeshXY, _LazyMeshZ
+        from mudm.tiling3d.reader3d import _LazyMeshXY, _LazyMeshZ
 
         feat = self._encode_tin()
         xy = feat["xy"]
@@ -1289,7 +1289,7 @@ class TestLazyMeshXYZ:
 
     def test_lazy_materializes_on_index(self):
         """Accessing an element should trigger materialization."""
-        from microjson.tiling3d.reader3d import _LazyMeshXY, _LazyMeshZ
+        from mudm.tiling3d.reader3d import _LazyMeshXY, _LazyMeshZ
 
         feat = self._encode_tin()
         xy = feat["xy"]
@@ -1302,7 +1302,7 @@ class TestLazyMeshXYZ:
 
     def test_lazy_len_without_materialize(self):
         """len() should work without materializing."""
-        from microjson.tiling3d.reader3d import _LazyMeshXY, _LazyMeshZ
+        from mudm.tiling3d.reader3d import _LazyMeshXY, _LazyMeshZ
 
         feat = self._encode_tin()
         xy = feat["xy"]
@@ -1315,7 +1315,7 @@ class TestLazyMeshXYZ:
 
     def test_lazy_bool_without_materialize(self):
         """bool() should work without materializing."""
-        from microjson.tiling3d.reader3d import _LazyMeshXY, _LazyMeshZ
+        from mudm.tiling3d.reader3d import _LazyMeshXY, _LazyMeshZ
 
         feat = self._encode_tin()
         assert bool(feat["xy"]) is True
@@ -1342,7 +1342,7 @@ class TestLazyMeshXYZ:
 
     def test_ring_based_features_not_lazy(self):
         """Point/Line features should return plain lists, not lazy objects."""
-        from microjson.tiling3d.reader3d import _LazyMeshXY
+        from mudm.tiling3d.reader3d import _LazyMeshXY
 
         tile_data = {
             "features": [{

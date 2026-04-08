@@ -44,8 +44,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_ROOT / "scripts"))
 
-from microjson.tiling3d import RUST_AVAILABLE
-from microjson.tiling3d.reader3d import decode_tile
+from mudm.tiling3d import RUST_AVAILABLE
+from mudm.tiling3d.reader3d import decode_tile
 
 
 # ---------------------------------------------------------------------------

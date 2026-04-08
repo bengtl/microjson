@@ -363,8 +363,8 @@ def process_mat_files(raw_dir: Path, geojson_dir: Path) -> dict:
 
 def tile_geojson(output_dir: Path, metadata: dict) -> None:
     """Tile all GeoJSON files using the muDM 2D pipeline."""
-    from microjson._rs import StreamingTileGenerator2D
-    from microjson.tiling2d import generate_parquet
+    from mudm._rs import StreamingTileGenerator2D
+    from mudm.tiling2d import generate_parquet
 
     geojson_dir = output_dir / "geojson"
     geojson_files = sorted(geojson_dir.glob("*.geojson"))

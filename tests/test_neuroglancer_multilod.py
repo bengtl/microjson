@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 try:
-    from microjson._rs import StreamingTileGenerator
+    from mudm._rs import StreamingTileGenerator
     RUST_AVAILABLE = True
 except ImportError:
     RUST_AVAILABLE = False

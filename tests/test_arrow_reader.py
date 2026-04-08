@@ -1,4 +1,4 @@
-"""Tests for Arrow/GeoParquet reader: Parquet -> MicroJSON round-trip."""
+"""Tests for Arrow/GeoParquet reader: Parquet -> MuDM round-trip."""
 
 from __future__ import annotations
 
@@ -15,19 +15,19 @@ from shapely.geometry import (
     Polygon as ShapelyPolygon,
 )
 
-from microjson.arrow import (
+from mudm.arrow import (
     ArrowConfig,
     from_arrow_table,
     from_geoparquet,
     to_arrow_table,
     to_geoparquet,
 )
-from microjson.arrow._from_geometry import (
+from mudm.arrow._from_geometry import (
     shapely_to_microjson,
 )
-from microjson.model import (
-    MicroFeature,
-    MicroFeatureCollection,
+from mudm.model import (
+    MuDMFeature,
+    MuDMFeatureCollection,
     PolyhedralSurface,
     TIN,
 )
@@ -47,7 +47,7 @@ from geojson_pydantic import (
 
 
 def _point_feat(fid="p1", x=1.0, y=2.0, z=3.0, props=None):
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id=fid,
         geometry=Point(type="Point", coordinates=(x, y, z)),
@@ -56,7 +56,7 @@ def _point_feat(fid="p1", x=1.0, y=2.0, z=3.0, props=None):
 
 
 def _polygon_feat(fid="pg1"):
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id=fid,
         geometry=Polygon(
@@ -68,7 +68,7 @@ def _polygon_feat(fid="pg1"):
 
 
 def _polygon_with_hole_feat():
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id="pwh1",
         geometry=Polygon(
@@ -83,7 +83,7 @@ def _polygon_with_hole_feat():
 
 
 def _linestring_feat():
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id="ls1",
         geometry=LineString(
@@ -95,7 +95,7 @@ def _linestring_feat():
 
 
 def _tin_feat():
-    return MicroFeature(
+    return MuDMFeature(
         type="Feature",
         id="t1",
         geometry=TIN(
@@ -109,10 +109,10 @@ def _tin_feat():
     )
 
 
-# ===== Shapely -> MicroJSON Tests =====
+# ===== Shapely -> MuDM Tests =====
 
 
-class TestShapelyToMicroJSON:
+class TestShapelyToMuDM:
     def test_point_2d(self):
         s = ShapelyPoint(1, 2)
         m = shapely_to_microjson(s)
@@ -205,7 +205,7 @@ class TestArrowRoundTrip:
         assert len(f.geometry.coordinates) == 3
 
     def test_collection(self):
-        fc_orig = MicroFeatureCollection(
+        fc_orig = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
                 _point_feat("a", props={"val": 1}),
@@ -219,7 +219,7 @@ class TestArrowRoundTrip:
         assert fc.features[1].id == "b"
 
     def test_null_geometry(self):
-        orig = MicroFeature(
+        orig = MuDMFeature(
             type="Feature", id="null", geometry=None, properties={"tag": "x"},
         )
         table = to_arrow_table(orig)
@@ -227,7 +227,7 @@ class TestArrowRoundTrip:
         assert fc.features[0].geometry is None
 
     def test_feature_class_preserved(self):
-        orig = MicroFeature(
+        orig = MuDMFeature(
             type="Feature",
             id="fc1",
             geometry=Point(type="Point", coordinates=(0, 0)),
@@ -255,7 +255,7 @@ class TestArrowRoundTrip:
 class TestGeoParquetRoundTrip:
     def test_write_read(self, tmp_path):
         path = tmp_path / "roundtrip.parquet"
-        fc_orig = MicroFeatureCollection(
+        fc_orig = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
                 _point_feat("a", props={"val": 1}),
@@ -278,7 +278,7 @@ class TestGeoParquetRoundTrip:
 
     def test_mixed_geometry_file_roundtrip(self, tmp_path):
         path = tmp_path / "mixed.parquet"
-        fc_orig = MicroFeatureCollection(
+        fc_orig = MuDMFeatureCollection(
             type="FeatureCollection",
             features=[
                 _point_feat("p"),
@@ -308,7 +308,7 @@ class TestGeoParquetRoundTrip:
 class TestParquetToGlb:
     def test_parquet_to_glb_pipeline(self, tmp_path):
         """Full pipeline: write Parquet, read back, export to GLB."""
-        from microjson.gltf import GltfConfig, to_glb
+        from mudm.gltf import GltfConfig, to_glb
 
         parquet_path = tmp_path / "tin.parquet"
 

@@ -3,7 +3,7 @@
 
 Downloads neuron meshes from the Janelia Hemibrain dataset via CloudVolume,
 queries neuPrint for cell type metadata, exports as OBJ files, converts to
-MicroJSON, tiles with TileGenerator3D, and benchmarks.
+MuDM, tiles with TileGenerator3D, and benchmarks.
 
 Prerequisites:
     uv pip install --python .venv/bin/python cloud-volume requests
@@ -320,7 +320,7 @@ def download_meshes(
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Convert OBJ → MicroJSON
+# Step 3: Convert OBJ → MuDM
 # ---------------------------------------------------------------------------
 
 def convert_to_microjson(
@@ -329,16 +329,16 @@ def convert_to_microjson(
     *,
     max_files: int | None = None,
 ):
-    """Convert Hemibrain OBJ meshes to MicroFeatureCollection."""
+    """Convert Hemibrain OBJ meshes to MuDMFeatureCollection."""
     import numpy as np
 
-    from microjson.model import (
-        MicroFeature,
-        MicroFeatureCollection,
+    from mudm.model import (
+        MuDMFeature,
+        MuDMFeatureCollection,
         OntologyTerm,
         Vocabulary,
     )
-    from microjson.swc import _mesh_to_tin
+    from mudm.swc import _mesh_to_tin
     from obj_to_microjson import parse_obj
 
     obj_paths = sorted(mesh_dir.glob("*.obj"))
@@ -356,9 +356,9 @@ def convert_to_microjson(
         for neuron in raw.get("neurons", []):
             meta_lookup[str(neuron["bodyId"])] = neuron
 
-    print(f"Converting {len(obj_paths)} OBJ files to MicroJSON...")
+    print(f"Converting {len(obj_paths)} OBJ files to MuDM...")
     t0 = time.perf_counter()
-    features: list[MicroFeature] = []
+    features: list[MuDMFeature] = []
     total_verts = 0
     total_faces = 0
 
@@ -401,7 +401,7 @@ def convert_to_microjson(
             if meta.get("cropped") is not None:
                 props["cropped"] = meta["cropped"]
 
-        features.append(MicroFeature(
+        features.append(MuDMFeature(
             type="Feature",
             geometry=tin,
             properties=props,
@@ -437,7 +437,7 @@ def convert_to_microjson(
             ),
         }
 
-    collection = MicroFeatureCollection(
+    collection = MuDMFeatureCollection(
         type="FeatureCollection",
         features=features,
         properties={
@@ -458,7 +458,7 @@ def convert_to_microjson(
 
 
 # ---------------------------------------------------------------------------
-# Step 3b: True streaming tiling (no MicroFeatureCollection in memory)
+# Step 3b: True streaming tiling (no MuDMFeatureCollection in memory)
 # ---------------------------------------------------------------------------
 
 def _build_tags(obj_path: Path, meta_lookup: dict[str, dict]) -> dict:
@@ -535,7 +535,7 @@ def tile_streaming(
     import shutil
     import subprocess
 
-    from microjson._rs import StreamingTileGenerator, scan_obj_bounds
+    from mudm._rs import StreamingTileGenerator, scan_obj_bounds
 
     # Size threshold for serial vs parallel ingest (500 MB)
     _GIANT_THRESHOLD = 500 * 1024 * 1024
@@ -749,7 +749,7 @@ def tile_streaming(
     print(f"  Size: {_fmt_bytes(ng_size)} raw")
 
     # --- parquet ---
-    from microjson.tiling3d.parquet_writer import generate_parquet as _gen_pq
+    from mudm.tiling3d.parquet_writer import generate_parquet as _gen_pq
 
     pq_path = pyramid_dir / "tiles.parquet"
     gen_pq = StreamingTileGenerator(min_zoom=0, max_zoom=max_zoom, base_cells=100)
@@ -869,7 +869,7 @@ def main() -> None:
     )
     parser.add_argument("--download", action="store_true", help="Download meshes from CloudVolume + metadata from neuPrint")
     parser.add_argument("--update-metadata", action="store_true", help="Re-query neuPrint for richer metadata on already-downloaded neurons")
-    parser.add_argument("--convert", action="store_true", help="Convert OBJ to MicroJSON")
+    parser.add_argument("--convert", action="store_true", help="Convert OBJ to MuDM")
     parser.add_argument("--tile", action="store_true", help="Generate tiles (pbf3 + 3dtiles)")
     parser.add_argument("--benchmark", action="store_true", help="Run decode/memory benchmarks")
     parser.add_argument("--max-neurons", type=int, default=1000, help="Max neurons to download (default: 1000)")
@@ -878,7 +878,7 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=None, help="Worker processes")
     parser.add_argument("--skip-3dtiles", action="store_true", help="Skip 3D Tiles generation")
     parser.add_argument("--skip-pbf3", action="store_true", help="Skip pbf3 generation (3D Tiles only)")
-    parser.add_argument("--streaming", action="store_true", help="True streaming mode: O(1 mesh) memory, skips MicroFeatureCollection")
+    parser.add_argument("--streaming", action="store_true", help="True streaming mode: O(1 mesh) memory, skips MuDMFeatureCollection")
     parser.add_argument("--data-dir", type=Path, default=_DATA_DIR, help="Data directory")
     parser.add_argument("--csv", type=Path, default=None, help="Export results to CSV")
     args = parser.parse_args()
@@ -948,7 +948,7 @@ def main() -> None:
             bounds_cache.unlink()
             print(f"  Invalidated bounds cache ({bounds_cache})")
 
-    # --- Streaming mode (bypass MicroFeatureCollection entirely) ---
+    # --- Streaming mode (bypass MuDMFeatureCollection entirely) ---
     if args.streaming and args.tile:
         print("Mode: True Streaming (O(1 mesh) memory)")
         tile_streaming(
@@ -974,7 +974,7 @@ def main() -> None:
     # --- Tile + Benchmark ---
     if args.tile or args.benchmark:
         if collection is None:
-            print("Loading MicroJSON collection (convert step)...")
+            print("Loading MuDM collection (convert step)...")
             collection, convert_time = convert_to_microjson(
                 mesh_dir, meta_path, max_files=args.max_neurons,
             )

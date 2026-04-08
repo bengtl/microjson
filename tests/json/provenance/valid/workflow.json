@@ -138,10 +138,10 @@
                     "imageType": "TIFF",
                     "analysisType": "Cell counting"
                 },
-                "microjsonLinks": [
+                "mudmLinks": [
                     {
-                        "microjsonId": "1",
-                        "microjsonField": "string.well"
+                        "mudmId": "1",
+                        "mudmField": "string.well"
                     }
                 ]
             }

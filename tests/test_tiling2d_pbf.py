@@ -10,9 +10,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from microjson._rs import StreamingTileGenerator2D
-from microjson.tiling2d.pbf_writer import generate_pbf
-from microjson.tiling2d.pbf_reader import read_pbf
+from mudm._rs import StreamingTileGenerator2D
+from mudm.tiling2d.pbf_writer import generate_pbf
+from mudm.tiling2d.pbf_reader import read_pbf
 
 
 # ---------------------------------------------------------------------------
