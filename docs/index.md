@@ -1,16 +1,16 @@
-# MicroJSON Specification
+# muDM Specification
 
 ## Introduction
 
-MicroJSON is a format, inspired by [GeoJSON](https://geojson.org), for encoding a variety of data structures related to microscopy images, including reference points, regions of interest, and other annotations. These data structures are represented using the widely adopted JSON format, making it easy to work with in various programming languages and applications. It is fully backwards compatible with the [GeoJSON Specification, RFC 7946](https://datatracker.ietf.org/doc/html/rfc7946), since any GeoJSON also is accepted as a MicroJSON. As GeoJSON supports foreign top level properties, a MicroJSON is also a valid GeoJSON. This specification describes briefly the objects that exist in GeoJSON, and then in more detail describes the additional objects that are part of MicroJSON. For a more detailed description of the GeoJSON objects, please see the [GeoJSON Specification, RFC 7946](https://datatracker.ietf.org/doc/html/rfc7946).
+muDM (micro Data Model) is a data model and format, inspired by [GeoJSON](https://geojson.org), for encoding a variety of data structures related to microscopy images, including reference points, regions of interest, and other annotations. These data structures are represented using the widely adopted JSON format, making it easy to work with in various programming languages and applications. It is fully backwards compatible with the [GeoJSON Specification, RFC 7946](https://datatracker.ietf.org/doc/html/rfc7946), since any GeoJSON also is accepted as muDM. As GeoJSON supports foreign top level properties, a muDM document is also a valid GeoJSON. This specification describes briefly the objects that exist in GeoJSON, and then in more detail describes the additional objects that are part of muDM. For a more detailed description of the GeoJSON objects, please see the [GeoJSON Specification, RFC 7946](https://datatracker.ietf.org/doc/html/rfc7946).
 
 ## Objects
 
-### MicroJSON Object
+### muDM Object
 
-A MicroJSON object is a JSON object that represents a geometry, feature, or collection of features, or more precisely, be either of type (having value of top level field `type` as) `"Geometry"`, `"Feature"`, or `"Featurecollection"`, that is, the same as for GeoJSON.
+A muDM object is a JSON object that represents a geometry, feature, or collection of features, or more precisely, be either of type (having value of top level field `type` as) `"Geometry"`, `"Feature"`, or `"Featurecollection"`, that is, the same as for GeoJSON.
 
-A MicroJSON object may have a `"bbox"` property":
+A muDM object may have a `"bbox"` property":
 
 - `"bbox"`: (Optional) Bounding Box of the feature represented as an array of length 4 (2D) or length 6 (3D).
 
@@ -30,7 +30,7 @@ Each geometry object MUST have a `"coordinates"` member with an array value. The
 
 #### 3D Geometry Types
 
-MicroJSON supports 3D mesh geometries based on ISO 19107, enabling representation of complex 3D structures such as neurons, organelles, and tissue surfaces.
+muDM supports 3D mesh geometries based on ISO 19107, enabling representation of complex 3D structures such as neurons, organelles, and tissue surfaces.
 
 - **PolyhedralSurface**: A closed surface mesh consisting of polygonal faces. The coordinates array must be an array of Polygon coordinate arrays, where each polygon represents a face of the surface. Each face follows the same structure as a Polygon (a list of linear rings of 3D positions). Must have at least one face.
 - **TIN** (Triangulated Irregular Network): A triangle mesh surface. Each face must be a single closed ring of exactly 4 positions (3 vertices + repeated first vertex to close the ring). Must have at least one face. This is the primary geometry type used for tiled 3D mesh data.
@@ -49,7 +49,7 @@ A feature object represents a spatially bounded entity associated with propertie
 - `"id"`: (Optional) A unique identifier for this feature.
 - `"ref"`: (Optional) A reference to an external resource, e.g. URI to a zarr structure, e.g. "s3://zarr-demo/store/my_array.zarr".
 - `"parentId"`: (Optional) A reference to the parent feature, e.g. the id of the feature that this feature is a part of.
-- `"feeatureClass"`: (Optional) A string indicating the class of the feature, e.g. "cell", "nucleus", "mitochondria", etc.
+- `"featureClass"`: (Optional) A string indicating the class of the feature, e.g. "cell", "nucleus", "mitochondria", etc.
 
 #### Special Feature Objects
 

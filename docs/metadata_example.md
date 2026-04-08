@@ -1,6 +1,6 @@
-# Metadata Usage in MicroJSON Example
+# Metadata Usage in muDM Example
 
-This guide demonstrates how to designate metadata in MicroJSON using the `properties` field in the `Feature` class. The `properties` field is used to store metadata related to a feature. This guide provides examples of how to populate these fields in both JSON and Python.
+This guide demonstrates how to designate metadata in muDM using the `properties` field in the `Feature` class. The `properties` field is used to store metadata related to a feature. This guide provides examples of how to populate these fields in both JSON and Python.
 
 Now, let's explore an example to understand how these fields can be populated in both JSON and Python.
 
@@ -22,16 +22,10 @@ Now, let's explore an example to understand how these fields can be populated in
     ]
   },
   "properties": {
-    "string": {
-      "name": "Sample Polygon",
-      "description": "This is a sample rectangular polygon."
-    },
-    "numeric": {
-      "cellCount": 5000
-    },
-    "multiNumeric": {
-      "ratioInfectivity": [0.2, 0.5, 0.8]
-    }
+    "name": "Sample Polygon",
+    "description": "This is a sample rectangular polygon.",
+    "cellCount": 5000,
+    "ratioInfectivity": [0.2, 0.5, 0.8]
   }
 }
 ```
@@ -39,7 +33,7 @@ Now, let's explore an example to understand how these fields can be populated in
 ## Python Example
 
 ```python
-from microjson.model import MicroFeature, Properties
+from microjson.model import MicroFeature
 
 # Usage
 example_properties = {
@@ -72,4 +66,4 @@ print(example_feature.model_dump_json(indent=2, exclude_unset=True))
 
 ---
 
-In this example, a MicroJSON feature is defined with a rectangular polygon geometry, and the `Properties` class from the `microjson.model` module is employed to encapsulate string, numeric, and multiNumeric metadata associated with the feature. The JSON representation offers a clear formatting of the data, while the Python script showcases how to instantiate the `Properties` and `MicroFeature` classes to encapsulate the same data.
+In this example, a muDM feature is defined with a rectangular polygon geometry, with metadata stored as flat key-value pairs in the `properties` dictionary. The JSON representation offers a clear formatting of the data, while the Python script showcases how to instantiate a `MicroFeature` with the same data.

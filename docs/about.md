@@ -1,10 +1,10 @@
-# About MicroJSON
+# About muDM
 
-MicroJSON is a format and Python library for representing microscopy annotations, regions of interest, and spatial metadata. Inspired by [GeoJSON](https://geojson.org), it extends the GeoJSON specification with microscopy-specific features while maintaining full backwards compatibility — any GeoJSON is valid MicroJSON, and any MicroJSON is valid GeoJSON.
+muDM (micro Data Model) is a data model, format, and Python library for representing microscopy annotations, regions of interest, and spatial metadata. Inspired by [GeoJSON](https://geojson.org), it extends the GeoJSON specification with microscopy-specific features while maintaining full backwards compatibility — any GeoJSON is valid muDM, and any muDM document is valid GeoJSON.
 
 ## Key Capabilities
 
-- **Format Specification**: A JSON-based format for 2D and 3D microscopy annotations, with support for coordinate systems, multiscale metadata, and provenance tracking.
+- **Format Specification**: A JSON-based data model for 2D and 3D microscopy annotations, with support for coordinate systems, multiscale metadata, and provenance tracking.
 - **Pydantic Validation**: Python models built on [Pydantic v2](https://docs.pydantic.dev/) and [geojson-pydantic](https://developmentseed.org/geojson-pydantic/) for strict schema validation.
 - **Rust-Accelerated Tiling**: High-performance 2D and 3D vector tile generation via PyO3, with parallel processing (rayon), quadtree/octree spatial indexing, and geometry simplification.
 - **Multiple Output Formats**: PBF (MVT) vector tiles, 3D Tiles (GLB) with meshopt or Draco compression, tiled Parquet (ZSTD) for ML training, and Neuroglancer precomputed format.

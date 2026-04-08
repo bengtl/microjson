@@ -568,16 +568,12 @@ def convert_xenium(
     tile_bounds = (0.0, 0.0, grid_size, grid_size)
     print(f"Tile grid: {int(grid_size)}×{int(grid_size)} px, vector zoom 0-{vector_max_zoom} (raster 0-{max_zoom})")
 
-    # Build GeoJSON per layer, feed to Rust via add_geojson() (one FFI call per layer)
+    # Single-pass pipeline: one generator per layer → clip once → emit both MVT and Parquet.
+    # Points use add_parquet_points() (Rust-native, no JSON). Polygons use add_geojson().
     import shutil
     import tempfile
-    import sys
 
-    # Per-layer zoom ranges:
-    # - Polygons (cells/nuclei): full range, few enough features to render at any zoom
-    # - Points (transcripts): only detailed zooms — millions of points are useless at low zoom
-    mvt_point_min_zoom = max(0, vector_max_zoom - 3)   # MVT: only render at detailed zooms
-    pq_point_min_zoom = max(0, vector_max_zoom - 5)    # Parquet: keep a few coarse levels for ML
+    point_min_zoom = max(0, vector_max_zoom - 3)  # points only at detailed zooms
 
     source_layers = [
         ("cells", cell_boundaries_path, "polygon", "cell_id"),
@@ -587,9 +583,9 @@ def convert_xenium(
 
     layer_counts = {}
     layer_types = {}
-    layer_tmp_dirs = []
     layer_fields = {}
-    layer_mvt_min_zooms = {}
+    layer_min_zooms = {}
+    layer_tmp_dirs = []   # (name, mvt_tmp, pq_tmp)
 
     for layer_name, parquet_path, geom_type, id_col in source_layers:
         if not parquet_path.exists():
@@ -597,57 +593,69 @@ def convert_xenium(
             continue
 
         layer_types[layer_name] = geom_type
-        layer_min_zoom = mvt_point_min_zoom if geom_type == "point" else 0
-        layer_mvt_min_zooms[layer_name] = layer_min_zoom
+        layer_min = point_min_zoom if geom_type == "point" else 0
+        layer_min_zooms[layer_name] = layer_min
 
-        # Build GeoJSON string
-        print(f"Building {layer_name} GeoJSON...", end=" ", flush=True)
-        t0 = time.time()
-        if geom_type == "polygon":
-            geojson_str = boundaries_to_geojson(parquet_path, id_column=id_col, coord_scale=coord_scale)
-            layer_fields[layer_name] = {"cell_id": "String"}
-        else:
-            geojson_str = transcripts_to_geojson(parquet_path, coord_scale=coord_scale)
-            layer_fields[layer_name] = {"gene_name": "String"}
-
-        # Inject layer_type property for viewer identification
-        fc = json.loads(geojson_str)
-        for feat in fc["features"]:
-            feat["properties"]["layer_type"] = layer_name
-        geojson_str = json.dumps(fc)
-        n_features = len(fc["features"])
-        del fc
-        print(f"{n_features} features, {len(geojson_str)/1e6:.0f} MB JSON ({time.time() - t0:.1f}s)", flush=True)
-
-        # Feed to Rust — use layer-specific zoom range
+        # One generator per layer — fragments serve both MVT and Parquet
         gen = StreamingTileGenerator2D(
-            min_zoom=layer_min_zoom, max_zoom=vector_max_zoom,
+            min_zoom=layer_min, max_zoom=vector_max_zoom,
             buffer=64 / 4096.0, temp_dir=temp_dir,
         )
-        print(f"  Tiling {layer_name} (zoom {layer_min_zoom}-{vector_max_zoom})...", end=" ", flush=True)
-        t0 = time.time()
-        fids = gen.add_geojson(geojson_str, tile_bounds)
-        del geojson_str
-        layer_counts[layer_name] = len(fids)
-        print(f"{len(fids)} features clipped ({time.time() - t0:.1f}s)", flush=True)
 
-        # Generate PBF into temp dir
+        # Ingest features
+        print(f"Ingesting {layer_name} (zoom {layer_min}-{vector_max_zoom})...", end=" ", flush=True)
+        t0 = time.time()
+
+        if geom_type == "point":
+            # Rust-native Parquet reader — no JSON intermediary
+            count = gen.add_parquet_points(
+                str(parquet_path),
+                "x_location", "y_location",
+                "feature_name", "gene_name",
+                layer_name,
+                tile_bounds,
+                coord_scale,
+            )
+            layer_fields[layer_name] = {"gene_name": "String"}
+        else:
+            # Rust-native Parquet polygon reader — groups by cell_id
+            count = gen.add_parquet_polygons(
+                str(parquet_path),
+                id_col, "vertex_x", "vertex_y",
+                layer_name,
+                tile_bounds,
+                coord_scale,
+            )
+            layer_fields[layer_name] = {"cell_id": "String"}
+
+        layer_counts[layer_name] = count
+        print(f"{count:,} features ({time.time() - t0:.1f}s)", flush=True)
+
+        # Encode PBF then Parquet (sequential — both read same fragments)
+        mvt_tmp = Path(tempfile.mkdtemp(dir=temp_dir, prefix=f"mvt_{layer_name}_"))
+        pq_tmp = Path(tempfile.mkdtemp(dir=temp_dir, prefix=f"pq_{layer_name}_"))
+
         print(f"  Encoding PBF...", end=" ", flush=True)
         t0 = time.time()
-        tmp_dir = Path(tempfile.mkdtemp(dir=temp_dir, prefix=f"mvt_{layer_name}_"))
-        generate_pbf(gen, str(tmp_dir), tile_bounds, simplify=True, layer_name=layer_name)
-        layer_tmp_dirs.append((layer_name, tmp_dir))
+        generate_pbf(gen, str(mvt_tmp), tile_bounds, simplify=True, layer_name=layer_name)
         print(f"done ({time.time() - t0:.1f}s)", flush=True)
 
-    # Merge PBF tiles from all layers
+        print(f"  Encoding Parquet...", end=" ", flush=True)
+        t0 = time.time()
+        pq_rows = gen.generate_parquet_native(str(pq_tmp), tile_bounds, simplify=True)
+        print(f"{pq_rows:,} rows ({time.time() - t0:.1f}s)", flush=True)
+
+        layer_tmp_dirs.append((layer_name, mvt_tmp, pq_tmp))
+
+    # Merge MVT tiles from all layers (protobuf concatenation)
     print("Merging MVT layers...", end=" ", flush=True)
     t0 = time.time()
     mvt_dir = output_dir / "vectors"
     mvt_dir.mkdir(parents=True, exist_ok=True)
     tile_files = {}
-    for layer_name, tmp_dir in layer_tmp_dirs:
-        for pbf_path in tmp_dir.rglob("*.pbf"):
-            key = str(pbf_path.relative_to(tmp_dir))
+    for layer_name, mvt_tmp, _ in layer_tmp_dirs:
+        for pbf_path in mvt_tmp.rglob("*.pbf"):
+            key = str(pbf_path.relative_to(mvt_tmp))
             if key not in tile_files:
                 tile_files[key] = []
             tile_files[key].append(pbf_path.read_bytes())
@@ -655,67 +663,26 @@ def convert_xenium(
         merged_path = mvt_dir / rel_path
         merged_path.parent.mkdir(parents=True, exist_ok=True)
         merged_path.write_bytes(b"".join(chunks))
-    for _, tmp_dir in layer_tmp_dirs:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
     print(f"{len(tile_files)} tiles ({time.time() - t0:.1f}s)", flush=True)
 
-    # Generate partitioned Parquet — separate generator per layer (different zoom ranges)
-    print("Generating partitioned Parquet...", flush=True)
-    t0_pq = time.time()
+    # Merge Parquet partitions from all layers
+    print("Merging Parquet partitions...", end=" ", flush=True)
+    t0 = time.time()
     parquet_dir = output_dir / "features.parquet"
-    # Use a single generator with the widest zoom range needed
-    # Points get pq_point_min_zoom; polygons get 0. We need separate generators
-    # and merge the parquet output, OR use one generator at the polygon range
-    # and a separate one for points. Simplest: one generator at min_zoom=0,
-    # but add points only at their restricted range via a second generator.
-    # Actually, the cleanest approach: generate per-layer parquet, then the
-    # partitioned structure naturally separates them. But generate_parquet
-    # writes one output. So let's use a single generator with min_zoom=0
-    # for polygons and accept that points start at pq_point_min_zoom by
-    # using a separate generator and merging.
-    #
-    # For simplicity: run one generator per layer, each writes to a temp parquet,
-    # then merge into the final partitioned directory.
-    import tempfile as _tempfile
-    pq_tmp_dirs = []
-    for layer_name, parquet_path, geom_type, id_col in source_layers:
-        if not parquet_path.exists():
-            continue
-        pq_min = pq_point_min_zoom if geom_type == "point" else 0
-        gen_pq = StreamingTileGenerator2D(
-            min_zoom=pq_min, max_zoom=vector_max_zoom,
-            buffer=64 / 4096.0, temp_dir=temp_dir,
-        )
-        print(f"  Parquet {layer_name} (zoom {pq_min}-{vector_max_zoom})...", end=" ", flush=True)
-        t0 = time.time()
-        if geom_type == "polygon":
-            geojson_str = boundaries_to_geojson(parquet_path, id_column=id_col, coord_scale=coord_scale)
-        else:
-            geojson_str = transcripts_to_geojson(parquet_path, coord_scale=coord_scale)
-        fc = json.loads(geojson_str)
-        for feat in fc["features"]:
-            feat["properties"]["layer_type"] = layer_name
-        gen_pq.add_geojson(json.dumps(fc), tile_bounds)
-        del fc, geojson_str
-
-        pq_tmp = Path(_tempfile.mkdtemp(dir=temp_dir, prefix=f"pq_{layer_name}_"))
-        generate_parquet(gen_pq, str(pq_tmp), tile_bounds, simplify=True, partitioned=True)
-        pq_tmp_dirs.append(pq_tmp)
-        print(f"done ({time.time() - t0:.1f}s)", flush=True)
-
-    # Merge partitioned parquet dirs: copy all zoom=N/part_*.parquet files
     parquet_dir.mkdir(parents=True, exist_ok=True)
-    for pq_tmp in pq_tmp_dirs:
+    for layer_name, _, pq_tmp in layer_tmp_dirs:
         for zoom_dir in sorted(pq_tmp.glob("zoom=*")):
             target = parquet_dir / zoom_dir.name
             target.mkdir(exist_ok=True)
             for pq_file in zoom_dir.glob("*.parquet"):
-                # Rename to avoid collisions across layers
-                layer_prefix = pq_tmp.name.split("_")[1]
-                dest = target / f"{layer_prefix}_{pq_file.name}"
+                dest = target / f"{layer_name}_{pq_file.name}"
                 shutil.move(str(pq_file), str(dest))
+    print(f"done ({time.time() - t0:.1f}s)", flush=True)
+
+    # Clean up temp dirs
+    for _, mvt_tmp, pq_tmp in layer_tmp_dirs:
+        shutil.rmtree(mvt_tmp, ignore_errors=True)
         shutil.rmtree(pq_tmp, ignore_errors=True)
-    print(f"  Parquet total ({time.time() - t0_pq:.1f}s)", flush=True)
 
     # Write TileJSON
     tj = {
@@ -728,7 +695,7 @@ def convert_xenium(
         "tile_count": len(tile_files),
         "vector_layers": [
             {"id": name, "fields": fields,
-             "minzoom": layer_mvt_min_zooms.get(name, 0), "maxzoom": vector_max_zoom,
+             "minzoom": layer_min_zooms.get(name, 0), "maxzoom": vector_max_zoom,
              "feature_count": layer_counts[name]}
             for name, fields in layer_fields.items()
         ],
@@ -742,7 +709,7 @@ def convert_xenium(
             "feature_count": count,
             "tile_count": len(tile_files),
             "type": layer_types[name],
-            "min_zoom": layer_mvt_min_zooms.get(name, 0),
+            "min_zoom": layer_min_zooms.get(name, 0),
         }
 
     # Write metadata

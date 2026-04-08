@@ -1,14 +1,14 @@
-# Integration of TileJSON with MicroJSON
+# Integration of TileJSON with muDM
 
 ## Purpose
 
-This specification outlines how to use TileJSON to integrate tiled MicroJSON data, both in json form as well as binary form. It provides examples of how TileJSON can be used to specify the tiling scheme and zoom levels for MicroJSON data and its binary equievalent. It is based on the [TileJSON 3.0.0 specification](https://github.com/mapbox/tilejson-spec/blob/master/3.0.0/README.md), but extends it by recommending additional properties to enable integration of MicroJSON data and fit purposes of microscopy imaging. The recommendations provided here are not intrinsic to the original TileJSON specification but have been tailored to suit the needs of microscopy metadata annotation and integration with MicroJSON. However, all suggestions are designed to maintain compatibility with the original TileJSON specification.
+This specification outlines how to use TileJSON to integrate tiled muDM data, both in json form as well as binary form. It provides examples of how TileJSON can be used to specify the tiling scheme and zoom levels for muDM data and its binary equivalent. It is based on the [TileJSON 3.0.0 specification](https://github.com/mapbox/tilejson-spec/blob/master/3.0.0/README.md), but extends it by recommending additional properties to enable integration of muDM data and fit purposes of microscopy imaging. The recommendations provided here are not intrinsic to the original TileJSON specification but have been tailored to suit the needs of microscopy metadata annotation and integration with muDM. However, all suggestions are designed to maintain compatibility with the original TileJSON specification.
 
 ## Background of TileJSON
 
 [TileJSON](https://github.com/mapbox/tilejson-spec/) is a widely-used format in mapping applications for specifying tilesets. Developed to streamline the integration of different map layers, TileJSON is essential for ensuring consistency across mapping platforms. It describes tilesets through a JSON object, detailing properties like tile URLs, zoom levels, and spatial coverage.
 
-## TileJSON for MicroJSON Object Structure
+## TileJSON for muDM Object Structure
 
 - **`tilejson`:** Specifies the version of the TileJSON spec being used. Required for all TileJSON objects.
 - **`name`:** The name of the tileset. Optional but recommended.
@@ -22,7 +22,7 @@ This specification outlines how to use TileJSON to integrate tiled MicroJSON dat
 - **`vector_layers`:**  Required. Describes each layer within the vector tiles, and has the following structure:
 
   - **`id`:** Required. A unique identifier for the layer. Required for each layer.
-  - **`fields`:** Required. A list of fields (attributes) and their data types. For MicroJSON, this can either be an empty list, or a simple datatype indicator, that is either of `String`, `Number`, or `Bool`. Complex data types, such as arrays or objects are not allowed.  Required for each layer.
+  - **`fields`:** Required. A list of fields (attributes) and their data types. For muDM, this can either be an empty list, or a simple datatype indicator, that is either of `String`, `Number`, or `Bool`. Complex data types, such as arrays or objects are not allowed.  Required for each layer.
   - **`fieldranges`:** Optional. A dictionary of field names and their ranges. For example, `{"label": [0,100], "channel": [0,10]}`. Optional.
   - **`fieldenums`:** Optional. A dictionary of field names and their possible values. For example, `{"plate": ["A1", "A2", "B1", "B2"], "image": ["image1.tif", "image2.tif", "image3.tif"]}`. Optional.
   - **`fielddescriptions`:** Optional. A dictionary of field names and their descriptions. For example, `{"plate": "Well plate identifier", "image": "Image filename", "label": "Label identifier", "channel": "Channel identifier"}`. Optional.
@@ -37,7 +37,7 @@ The following fields of TileJSON may be used if the use case requires it, and ar
 
 - **`scheme`:** The tiling scheme of the tileset.
 - **`grids`:** The URL pattern for accessing grid data.
-- **`data`:** Optional. The URL pattern for accessing data. Used for GeoJSON originally, which in this specification is replaced by MicroJSON and used in the `tiles` field.
+- **`data`:** Optional. The URL pattern for accessing data. Used for GeoJSON originally, which in this specification is replaced by muDM and used in the `tiles` field.
 - **`template`:** Optional. Contains a mustache template to be used to format data from grids for interaction.
 
 ### Multiscale Object
@@ -50,19 +50,19 @@ It may contain either of, but NOT both of the following properties:
 
 - `"coordinateTransformations"`: Representing the set of coordinate transformations that should be applied to the numerical data in order to arrive to the actual size of the object described. It MUST be an array of objects, each object representing a coordinate transformation. Each object MUST have properties as follows:
   - `"type"`: Representing the type of the coordinate transformation. Currently supported types are `"identity"`, `"scale"`, and `"translate"`. If the type is `"scale"`, the object MUST have the property `"scale"`, representing the scaling factor. It MUST be an array of numbers, with the number of elements equal to the number of axes in the coordinate system. If the type is `"translate"`, the object MUST have the property `"translate"`, representing the translation vector. It MUST be an array of numbers, with the number of elements equal to the number of axes in the coordinate system. If the type is `"identity"`, the object MUST NOT have any other properties.
-- `"transformationMatrix"`: Representing the transformation matrix from the coordinate system of the image to the coordinate system of the MicroJSON object. It MUST be an array of arrays of numbers, with the number of rows equal to the number of axes in the coordinate system, and the number of columns equal to the number of axes in the image coordinate system. The transformation matrix MUST be invertible.
+- `"transformationMatrix"`: Representing the transformation matrix from the coordinate system of the image to the coordinate system of the muDM object. It MUST be an array of arrays of numbers, with the number of rows equal to the number of axes in the coordinate system, and the number of columns equal to the number of axes in the image coordinate system. The transformation matrix MUST be invertible.
 
 ### Axis Object
 
-Together with the other axes in the axes array, an axis object represents the coordinate system of the MicroJSON object (2D-5D)
+Together with the other axes in the axes array, an axis object represents the coordinate system of the muDM object (2D-5D)
 It MUST have the following properties:
 
 - `"name"`: Representing the name of the axis. It MUST be a string.
 It may contain the following properties:
-- `"unit"`: Representing the units of the corresponding axis of the geometries in the MicroJSON object. It MUST be an array with the elements having any of the following values: `[“angstrom", "attometer", "centimeter", "decimeter", "exameter", "femtometer", "foot", "gigameter", "hectometer", "inch", "kilometer", "megameter", "meter", "micrometer", "mile", "millimeter", "nanometer", "parsec", "petameter", "picometer", "terameter", "yard", "yoctometer", "yottameter", "zeptometer", "zettameter“]`
+- `"unit"`: Representing the units of the corresponding axis of the geometries in the muDM object. It MUST be an array with the elements having any of the following values: `[“angstrom", "attometer", "centimeter", "decimeter", "exameter", "femtometer", "foot", "gigameter", "hectometer", "inch", "kilometer", "megameter", "meter", "micrometer", "mile", "millimeter", "nanometer", "parsec", "petameter", "picometer", "terameter", "yard", "yoctometer", "yottameter", "zeptometer", "zettameter“]`
 - `"description"`: A string describing the axis.
 
-## Pydantic Model for TileJSON for MicroJSON
+## Pydantic Model for TileJSON for muDM
 
 ### TileJSON
 
@@ -84,7 +84,7 @@ One difference is that we here recommend that the file ending for binary tiles i
 
 ## Tiling Pipelines
 
-MicroJSON provides two tiling pipeline generations. The **Rust-accelerated pipeline** is the recommended approach for new projects, offering significantly better performance through parallel processing and native code. The **legacy Python pipeline** remains available for backwards compatibility.
+muDM provides two tiling pipeline generations. The **Rust-accelerated pipeline** is the recommended approach for new projects, offering significantly better performance through parallel processing and native code. The **legacy Python pipeline** remains available for backwards compatibility.
 
 ### Rust-Accelerated 2D Pipeline
 
@@ -124,42 +124,9 @@ An example script is located at `src/microjson/examples/tiling_rust.py`.
 
 ### Rust-Accelerated 3D Pipeline
 
-The 3D pipeline uses `StreamingTileGenerator` for octree-based spatial indexing of 3D mesh data (OBJ files). It supports multiple output formats:
+The 3D pipeline uses `StreamingTileGenerator` for octree-based spatial indexing of 3D mesh data (OBJ files). It supports 3D Tiles (GLB) with meshopt/Draco compression, tiled Parquet for ML, PBF3, and Neuroglancer precomputed format.
 
-- **3D Tiles (GLB)**: OGC 3D Tiles with meshopt or Draco mesh compression, for Three.js / Cesium viewers.
-- **PBF3**: Custom protobuf format for compact 3D tile transfer.
-- **Tiled Parquet**: For ML training on 3D mesh data.
-- **Neuroglancer**: Precomputed mesh format for web-based 3D visualization.
-
-```python
-from microjson._rs import StreamingTileGenerator
-
-# Create the tile generator
-gen = StreamingTileGenerator(
-    min_zoom=0, max_zoom=5,
-    extent=4096, extent_z=4096,
-    buffer=0.0, base_cells=16,
-)
-
-# Ingest OBJ mesh files
-gen.add_obj_files(obj_paths, bounds)
-
-# Output as 3D Tiles with meshopt compression
-gen.generate_3dtiles("output/3dtiles", bounds, compression="meshopt")
-
-# Or output as tiled Parquet
-gen.generate_parquet("output.parquet", bounds)
-```
-
-Compression options for 3D Tiles:
-
-| Compression | Speed | Decode | Size | Lossless |
-|---|---|---|---|---|
-| `"meshopt"` (default) | Fast (~2 min/brain) | ~1 GB/s | 82 MB/brain | Yes |
-| `"draco"` | Slower (~6.5 min/brain) | ~50-100 MB/s | 47 MB/brain | No (quantizes) |
-| `"none"` | Fastest | N/A | 232 MB/brain | Yes |
-
-With Brotli HTTP transport compression, meshopt GLBs compress to ~57 MB/brain, approaching Draco sizes while decoding ~100x faster in the browser.
+For the full API reference, geometry types, compression comparison, bucketed redistribution for large datasets, and viewer documentation, see the [3D Data and Tiling](3d.md) page.
 
 ### Legacy Python Pipeline
 
@@ -167,7 +134,7 @@ The original Python modules remain available for backwards compatibility:
 
 #### MicroJSON2vt
 
-The MicroJSON2vt module converts MicroJSON objects to vector tiles in an intermediate JSON format, which can then be transformed into protobuf using `vt2pbf`.
+The MicroJSON2vt module converts muDM objects to vector tiles in an intermediate JSON format, which can then be transformed into protobuf using `vt2pbf`.
 
 ```python
 from microjson import microjson2vt
@@ -178,7 +145,7 @@ from microjson import microjson2vt
 
 #### TileWriter
 
-The TileWriter module generates binary tiles from a large MicroJSON file, utilizing both microjson2vt and vt2pbf.
+The TileWriter module generates binary tiles from a large muDM file, utilizing both microjson2vt and vt2pbf.
 
 ::: microjson.tilewriter
     :docstring:
@@ -187,22 +154,21 @@ An example is located at `src/microjson/examples/tiling.py`.
 
 #### TileReader
 
-The TileReader module reads binary tiles and converts them back to MicroJSON objects.
+The TileReader module reads binary tiles and converts them back to muDM objects.
 
 ::: microjson.tilereader
     :docstring:
 
 An example is located at `src/microjson/examples/readtiles.py`.
 
-## TileJSON for MicroJSON example with Vector Layers
+## TileJSON for muDM example with Vector Layers
 
-The below example illustrates a TileJSON for a MicroJSON tileset multiple layers of detail. The tileset has a single vector layer, `image_layer` id of `vector_layers`, which contains a single vector layer describing images. The `fields` property of the this layer specifies the attributes of the layer, including the data types of the attributes. The `tiles` property specifies the URL pattern for accessing the vector tiles, which in this case is a 2D data set (no channels, time or z-axis) with zoom level.
+The below example illustrates a TileJSON for a muDM tileset multiple layers of detail. The tileset has a single vector layer, `image_layer` id of `vector_layers`, which contains a single vector layer describing images. The `fields` property of the this layer specifies the attributes of the layer, including the data types of the attributes. The `tiles` property specifies the URL pattern for accessing the vector tiles, which in this case is a 2D data set (no channels, time or z-axis) with zoom level.
 
-This file is located in the `examples/tiles` directory of the repository, and is named `tiled_example.json`. It has a corresponding MicroJSON file for each tile, located in the `examples/tiles/tiled_example` directory of the repository. The MicroJSON files are organized according to the tiling scheme, with the directory structure `zlvl/x/y.json` where `zlvl` is the zoom level, `x` is the x coordinate, and `y` is the y coordinate. The MicroJSON files contain the MicroJSON objects for the corresponding tiles, and are named according to the tiling scheme. For example, the MicroJSON object for the tile at zoom level 1, tile at (0,1) in the tiling scheme is located at `examples/tiles/tiled_example/1/0/1.json`. Examples for MicroJSON objects at zoom levels 0, 1, and 2 are provided below.
+This file is located in the `examples/tiles` directory of the repository, and is named `tiled_example.json`. It has a corresponding muDM file for each tile, located in the `examples/tiles/tiled_example` directory of the repository. The muDM files are organized according to the tiling scheme, with the directory structure `zlvl/x/y.json` where `zlvl` is the zoom level, `x` is the x coordinate, and `y` is the y coordinate. The muDM files contain the muDM objects for the corresponding tiles, and are named according to the tiling scheme. For example, the muDM object for the tile at zoom level 1, tile at (0,1) in the tiling scheme is located at `examples/tiles/tiled_example/1/0/1.json`. Examples for muDM objects at zoom levels 0, 1, and 2 are provided below.
 
 ```json
 {
-    {
     "tilejson": "3.0.0",
     "name": "2D Data Example",
     "description": "A tileset showing 2D data with multiple layers of detail.",
@@ -294,7 +260,7 @@ In addition to json format, tiles may be encoded in a binary protobuf format. Be
               "plate": "String",
               "image": "String",
               "label": "Number",
-              "channel": "Number",
+              "channel": "Number"
             },
             "fieldranges": {
               "label": [0,100],
@@ -302,8 +268,8 @@ In addition to json format, tiles may be encoded in a binary protobuf format. Be
             },
             "fieldenums": {
               "plate": ["A1", "A2", "B1", "B2"],
-              "image": ["image1.tif", "image2.tif", "image3.tif"],
-            }
+              "image": ["image1.tif", "image2.tif", "image3.tif"]
+            },
             "fielddescriptions": {
               "plate": "Well plate identifier",
               "image": "Image filename",
@@ -318,18 +284,18 @@ In addition to json format, tiles may be encoded in a binary protobuf format. Be
 
 ## Tiled binary example
 
-The examples folder contains an example of how to generate binary tiles from one large MicroJSON file. It uses a helper module that generates a large random polygon grid, as could be expected in an imaging setting, using typical imaging coordinates. It is also included below for reference.
+The examples folder contains an example of how to generate binary tiles from one large muDM file. It uses a helper module that generates a large random polygon grid, as could be expected in an imaging setting, using typical imaging coordinates. It is also included below for reference.
 
-### Example of creating binary tiles from a large MicroJSON file
+### Example of creating binary tiles from a large muDM file
 
 ::: microjson.examples.tiling.main
     :docstring:
 
-## Tiled MicroJSON Example
+## Tiled muDM Example
 
 ### Level 0
 
-The following is an example of a MicroJSON object at zoom level 0, tile at (0,0) in the tiling scheme. Example URL: `http://example.com/tiles/0/0/0.json`
+The following is an example of a muDM object at zoom level 0, tile at (0,0) in the tiling scheme. Example URL: `http://example.com/tiles/0/0/0.json`
 
 ```json
 {
@@ -366,7 +332,7 @@ The following is an example of a MicroJSON object at zoom level 0, tile at (0,0)
 
 ### Level 1
 
-The following is an example of a MicroJSON object at zoom level 1, tile at (0,1) in the tiling scheme. Example URL: `http://example.com/tiles/1/0/1.json`
+The following is an example of a muDM object at zoom level 1, tile at (0,1) in the tiling scheme. Example URL: `http://example.com/tiles/1/0/1.json`
 
 ```json
 {
@@ -432,7 +398,7 @@ The following is an example of a MicroJSON object at zoom level 1, tile at (0,1)
 
 ### Level 2
 
-The following is an example of a MicroJSON object at zoom level 2, tile at (1,1) in the tiling scheme. Example URL: `http://example.com/tiles/2/1/3.json`
+The following is an example of a muDM object at zoom level 2, tile at (1,1) in the tiling scheme. Example URL: `http://example.com/tiles/2/1/3.json`
 
 ```json
 {

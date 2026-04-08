@@ -1,18 +1,20 @@
-# MicroJSON Tiling Demo
+# muDM Tiling Demo
 
-This notebook demonstrates how to use the MicroJSON tiling functionality to create vector tiles from MicroJSON data. Vector tiles are a way to efficiently store and serve geospatial data for web mapping applications.
+**Note:** This notebook demonstrates the **legacy Python tiling pipeline** (`TileWriter`). For production workloads, the [Rust-accelerated pipeline](usage.md#2d-tiling-rust-accelerated) offers significantly better performance through parallel processing and native code.
+
+This notebook shows how to use the legacy muDM tiling functionality to create vector tiles from muDM data. Vector tiles are a way to efficiently store and serve geospatial data for web mapping applications.
 
 ## Overview
 
 In this demo, we will:
-1. Generate sample polygon data (or use existing MicroJSON data)
+1. Generate sample polygon data (or use existing muDM data)
 2. Create a TileJSON specification
-3. Generate vector tiles from the MicroJSON data
+3. Generate vector tiles from the muDM data
 4. Save the tiles and metadata for use in web mapping applications
 
 ## Import Required Libraries
 
-First, let's import the necessary libraries for tiling MicroJSON data.
+First, let's import the necessary libraries for tiling muDM data.
 
 
 ```python
@@ -30,7 +32,7 @@ import json
 
 ## Option 1: Generate Sample Polygon Data
 
-If you don't have existing MicroJSON data, we can generate sample polygon data using the `generate_polygons` function.
+If you don't have existing muDM data, we can generate sample polygon data using the `generate_polygons` function.
 
 
 ```python
@@ -68,23 +70,23 @@ print(f"Generated polygon data saved to {microjson_data_path}")
     Generated polygon data saved to example_generated.json
 
 
-## Option 2: Use Existing MicroJSON Data
+## Option 2: Use Existing muDM Data
 
-Alternatively, you can use existing MicroJSON data. Uncomment and modify the following cell to use your own data.
+Alternatively, you can use existing muDM data. Uncomment and modify the following cell to use your own data.
 
 
 ```python
 # microjson_data_path = "path/to/your/data.json"
-# print(f"Using existing MicroJSON data from {microjson_data_path}")
+# print(f"Using existing muDM data from {microjson_data_path}")
 ```
 
-## Visualize the MicroJSON Data
+## Visualize the muDM Data
 
-Let's take a look at the structure of our MicroJSON data.
+Let's take a look at the structure of our muDM data.
 
 
 ```python
-# Load and display the first few features of the MicroJSON data
+# Load and display the first few features of the muDM data
 with open(microjson_data_path, 'r') as f:
     data = json.load(f)
 
@@ -133,11 +135,11 @@ if 'features' in data and len(data['features']) > 0:
 
 ## Extract Fields, Ranges, and Enums
 
-For existing MicroJSON data, we can extract field information, value ranges, and enumeration values.
+For existing muDM data, we can extract field information, value ranges, and enumeration values.
 
 
 ```python
-# Extract fields, ranges, and enums from the MicroJSON data
+# Extract fields, ranges, and enums from the muDM data
 field_names, field_ranges, field_enums = extract_fields_ranges_enums(microjson_data_path)
 
 print("Extracted field names:")
@@ -224,7 +226,7 @@ tile_model = TileModel(
     tilejson="3.0.0",
     tiles=[Path("tiles/{z}/{x}/{y}.pbf")],  # Local path or URL
     name="Example Tile Layer",
-    description="A TileJSON example incorporating MicroJSON data",
+    description="A TileJSON example incorporating muDM data",
     version="1.0.0",
     attribution="Polus AI",
     minzoom=0,
@@ -249,7 +251,7 @@ print(tileobj.model_dump_json(indent=2))
         "tiles/{z}/{x}/{y}.pbf"
       ],
       "name": "Example Tile Layer",
-      "description": "A TileJSON example incorporating MicroJSON data",
+      "description": "A TileJSON example incorporating muDM data",
       "version": "1.0.0",
       "attribution": "Polus AI",
       "template": null,
@@ -321,14 +323,14 @@ print("TileJSON metadata exported to tiles/metadata.json")
 
 ## Generate Vector Tiles
 
-Finally, let's generate the vector tiles from our MicroJSON data.
+Finally, let's generate the vector tiles from our muDM data.
 
 
 ```python
 # Initialize the TileWriter
 handler = TileWriter(tile_model, pbf=True)
 
-# Convert MicroJSON to tiles
+# Convert muDM to tiles
 handler.microjson2tiles(microjson_data_path, validate=False)
 
 print("Vector tiles generated successfully!")
@@ -346,11 +348,11 @@ print(f"Generated tile zoom levels: {tile_dirs}")
 
 In this notebook, we've demonstrated how to:
 
-1. Generate or use existing MicroJSON data
+1. Generate or use existing muDM data
 2. Extract field information from the data
 3. Define vector layers for our tiles
 4. Calculate bounds and center for our tile set
 5. Create a TileJSON specification
-6. Generate vector tiles from MicroJSON data
+6. Generate vector tiles from muDM data
 
 These vector tiles can now be used in web mapping applications like Mapbox GL JS, Leaflet, or OpenLayers to display the data interactively.

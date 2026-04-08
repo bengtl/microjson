@@ -30,7 +30,7 @@ const END_MAGIC: &[u8; 4] = b"FEND";
 
 /// A single tile fragment — the clipped portion of one feature in one tile.
 #[derive(Debug, Clone)]
-pub struct Fragment {
+pub struct Fragment3D {
     pub feature_id: u32,
     pub tile_z: u32,
     pub tile_x: u32,
@@ -42,7 +42,7 @@ pub struct Fragment {
     pub ring_lengths: Vec<u32>,
 }
 
-impl Fragment {
+impl Fragment3D {
     /// Estimate the in-memory byte footprint of this fragment.
     ///
     /// Used by `_next_parquet_batch` to enforce a byte budget so that
@@ -58,12 +58,12 @@ impl Fragment {
 ///
 /// Each writer owns one ZSTD-compressed file. For parallel ingestion,
 /// create one writer per thread (sharded writes).
-pub struct FragmentWriter {
+pub struct Fragment3DWriter {
     writer: Option<zstd::stream::write::Encoder<'static, BufWriter<File>>>,
     count: u64,
 }
 
-impl FragmentWriter {
+impl Fragment3DWriter {
     pub fn new(path: &Path) -> io::Result<Self> {
         let file = File::create(path)?;
         let buf = BufWriter::with_capacity(1 << 20, file); // 1 MB buffer
@@ -74,7 +74,7 @@ impl FragmentWriter {
         })
     }
 
-    pub fn write(&mut self, frag: &Fragment) -> io::Result<()> {
+    pub fn write(&mut self, frag: &Fragment3D) -> io::Result<()> {
         let w = self.writer.as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Writer already flushed"))?;
 
@@ -124,7 +124,7 @@ impl FragmentWriter {
 
 /// Finalize the ZSTD frame on drop so rayon thread-local writers
 /// are properly flushed when `for_each_init` drops them.
-impl Drop for FragmentWriter {
+impl Drop for Fragment3DWriter {
     fn drop(&mut self) {
         if let Some(encoder) = self.writer.take() {
             let _ = encoder.finish(); // best-effort; can't propagate errors in Drop
@@ -133,11 +133,11 @@ impl Drop for FragmentWriter {
 }
 
 /// Single-shard reader over one ZSTD-compressed fragment file.
-struct ShardReader {
+struct ShardReader3D {
     reader: BufReader<zstd::stream::read::Decoder<'static, BufReader<File>>>,
 }
 
-impl ShardReader {
+impl ShardReader3D {
     fn open(path: &Path) -> io::Result<Self> {
         let file = File::open(path)?;
         let decoder = zstd::stream::read::Decoder::new(file)?;
@@ -146,7 +146,7 @@ impl ShardReader {
         })
     }
 
-    fn read_next(&mut self) -> io::Result<Option<Fragment>> {
+    fn read_next(&mut self) -> io::Result<Option<Fragment3D>> {
         let mut magic = [0u8; 4];
         match self.reader.read_exact(&mut magic) {
             Ok(()) => {}
@@ -191,26 +191,26 @@ impl ShardReader {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Bad fragment end magic"));
         }
 
-        Ok(Some(Fragment {
+        Ok(Some(Fragment3D {
             feature_id, tile_z, tile_x, tile_y, tile_d,
             geom_type, xy, z, ring_lengths,
         }))
     }
 }
 
-/// Fragment reader — reads fragments from one or more ZSTD-compressed shard files.
+/// Fragment3D reader — reads 3D fragments from one or more ZSTD-compressed shard files.
 ///
 /// Transparently iterates through all shards in order.
-pub struct FragmentReader {
+pub struct Fragment3DReader {
     paths: Vec<PathBuf>,
-    current_shard: Option<ShardReader>,
+    current_shard: Option<ShardReader3D>,
     current_index: usize,
 }
 
-impl FragmentReader {
+impl Fragment3DReader {
     /// Open a reader over a single fragment file.
     pub fn new(path: &Path) -> io::Result<Self> {
-        let shard = ShardReader::open(path)?;
+        let shard = ShardReader3D::open(path)?;
         Ok(Self {
             paths: vec![path.to_path_buf()],
             current_shard: Some(shard),
@@ -235,7 +235,7 @@ impl FragmentReader {
             });
         }
 
-        let shard = ShardReader::open(&paths[0])?;
+        let shard = ShardReader3D::open(&paths[0])?;
         Ok(Self {
             paths,
             current_shard: Some(shard),
@@ -243,7 +243,7 @@ impl FragmentReader {
         })
     }
 
-    pub fn read_next(&mut self) -> io::Result<Option<Fragment>> {
+    pub fn read_next(&mut self) -> io::Result<Option<Fragment3D>> {
         loop {
             if let Some(ref mut shard) = self.current_shard {
                 if let Some(frag) = shard.read_next()? {
@@ -252,7 +252,7 @@ impl FragmentReader {
                 // Current shard exhausted — advance to next
                 self.current_index += 1;
                 if self.current_index < self.paths.len() {
-                    self.current_shard = Some(ShardReader::open(&self.paths[self.current_index])?);
+                    self.current_shard = Some(ShardReader3D::open(&self.paths[self.current_index])?);
                     continue;
                 } else {
                     self.current_shard = None;
@@ -265,9 +265,9 @@ impl FragmentReader {
     }
 
     /// Read all fragments, grouped by tile key.
-    pub fn read_all_grouped(&mut self) -> io::Result<ahash::AHashMap<(u32, u32, u32, u32), Vec<Fragment>>> {
+    pub fn read_all_grouped(&mut self) -> io::Result<ahash::AHashMap<(u32, u32, u32, u32), Vec<Fragment3D>>> {
         use ahash::AHashMap;
-        let mut groups: AHashMap<(u32, u32, u32, u32), Vec<Fragment>> = AHashMap::new();
+        let mut groups: AHashMap<(u32, u32, u32, u32), Vec<Fragment3D>> = AHashMap::new();
         while let Some(frag) = self.read_next()? {
             let key = (frag.tile_z, frag.tile_x, frag.tile_y, frag.tile_d);
             groups.entry(key).or_default().push(frag);
@@ -279,10 +279,10 @@ impl FragmentReader {
     ///
     /// Used by `generate_neuroglancer()` which needs segment-centric grouping
     /// (one mesh per feature) rather than tile-centric grouping.
-    pub fn read_all_grouped_by_feature(&mut self) -> io::Result<ahash::AHashMap<u32, Vec<Fragment>>> {
+    pub fn read_all_grouped_by_feature(&mut self) -> io::Result<ahash::AHashMap<u32, Vec<Fragment3D>>> {
         use ahash::AHashMap;
         self.reset()?;
-        let mut groups: AHashMap<u32, Vec<Fragment>> = AHashMap::new();
+        let mut groups: AHashMap<u32, Vec<Fragment3D>> = AHashMap::new();
         while let Some(frag) = self.read_next()? {
             groups.entry(frag.feature_id).or_default().push(frag);
         }
@@ -293,7 +293,7 @@ impl FragmentReader {
     pub fn reset(&mut self) -> io::Result<()> {
         self.current_index = 0;
         if !self.paths.is_empty() {
-            self.current_shard = Some(ShardReader::open(&self.paths[0])?);
+            self.current_shard = Some(ShardReader3D::open(&self.paths[0])?);
         } else {
             self.current_shard = None;
         }
@@ -311,7 +311,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("shard_0.mjf");
 
-        let frag = Fragment {
+        let frag = Fragment3D {
             feature_id: 42,
             tile_z: 2,
             tile_x: 1,
@@ -324,7 +324,7 @@ mod tests {
         };
 
         {
-            let mut writer = FragmentWriter::new(&path).unwrap();
+            let mut writer = Fragment3DWriter::new(&path).unwrap();
             writer.write(&frag).unwrap();
             writer.write(&frag).unwrap();
             writer.flush().unwrap();
@@ -332,7 +332,7 @@ mod tests {
         }
 
         {
-            let mut reader = FragmentReader::new(&path).unwrap();
+            let mut reader = Fragment3DReader::new(&path).unwrap();
             let f1 = reader.read_next().unwrap().unwrap();
             assert_eq!(f1.feature_id, 42);
             assert_eq!(f1.tile_z, 2);
@@ -349,7 +349,7 @@ mod tests {
 
         // Test reset
         {
-            let mut reader = FragmentReader::new(&path).unwrap();
+            let mut reader = Fragment3DReader::new(&path).unwrap();
             let _f1 = reader.read_next().unwrap().unwrap();
             reader.reset().unwrap();
             let f1_again = reader.read_next().unwrap().unwrap();
@@ -370,7 +370,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::create_dir_all(&dir);
 
-        let frag_a = Fragment {
+        let frag_a = Fragment3D {
             feature_id: 1,
             tile_z: 0, tile_x: 0, tile_y: 0, tile_d: 0,
             geom_type: 5,
@@ -378,7 +378,7 @@ mod tests {
             z: vec![0.0f32, 0.0, 0.0],
             ring_lengths: vec![3],
         };
-        let frag_b = Fragment {
+        let frag_b = Fragment3D {
             feature_id: 2,
             tile_z: 1, tile_x: 0, tile_y: 0, tile_d: 0,
             geom_type: 5,
@@ -389,20 +389,20 @@ mod tests {
 
         // Write to two separate shards
         {
-            let mut w0 = FragmentWriter::new(&dir.join("shard_000.mjf")).unwrap();
+            let mut w0 = Fragment3DWriter::new(&dir.join("shard_000.mjf")).unwrap();
             w0.write(&frag_a).unwrap();
             w0.write(&frag_a).unwrap();
             w0.flush().unwrap();
         }
         {
-            let mut w1 = FragmentWriter::new(&dir.join("shard_001.mjf")).unwrap();
+            let mut w1 = Fragment3DWriter::new(&dir.join("shard_001.mjf")).unwrap();
             w1.write(&frag_b).unwrap();
             w1.flush().unwrap();
         }
 
         // open_dir reads both shards
         {
-            let mut reader = FragmentReader::open_dir(&dir).unwrap();
+            let mut reader = Fragment3DReader::open_dir(&dir).unwrap();
             let groups = reader.read_all_grouped().unwrap();
             assert_eq!(groups.len(), 2);
             assert_eq!(groups[&(0, 0, 0, 0)].len(), 2);
@@ -411,7 +411,7 @@ mod tests {
 
         // grouped by feature
         {
-            let mut reader = FragmentReader::open_dir(&dir).unwrap();
+            let mut reader = Fragment3DReader::open_dir(&dir).unwrap();
             let by_feat = reader.read_all_grouped_by_feature().unwrap();
             assert_eq!(by_feat.len(), 2);
             assert_eq!(by_feat[&1].len(), 2);
@@ -420,7 +420,7 @@ mod tests {
 
         // reset works across shards
         {
-            let mut reader = FragmentReader::open_dir(&dir).unwrap();
+            let mut reader = Fragment3DReader::open_dir(&dir).unwrap();
             let f1 = reader.read_next().unwrap().unwrap();
             assert_eq!(f1.feature_id, 1);
             // read rest
@@ -435,11 +435,11 @@ mod tests {
         {
             let path = dir.join("shard_drop.mjf");
             {
-                let mut w = FragmentWriter::new(&path).unwrap();
+                let mut w = Fragment3DWriter::new(&path).unwrap();
                 w.write(&frag_a).unwrap();
                 // no flush — Drop should finalize ZSTD frame
             }
-            let mut reader = FragmentReader::new(&path).unwrap();
+            let mut reader = Fragment3DReader::new(&path).unwrap();
             let f = reader.read_next().unwrap().unwrap();
             assert_eq!(f.feature_id, 1);
         }

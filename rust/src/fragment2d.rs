@@ -30,7 +30,7 @@ pub struct Fragment2D {
     pub tile_y: u32,
     pub geom_type: u8,
     /// Flat x,y pairs in normalized [0,1]² space.
-    pub xy: Vec<f64>,
+    pub xy: Vec<f32>,
     /// Ring vertex counts for Polygon; empty for Point/LineString.
     pub ring_lengths: Vec<u32>,
 }
@@ -39,7 +39,7 @@ impl Fragment2D {
     /// Estimate the in-memory byte footprint of this fragment.
     pub fn estimate_bytes(&self) -> usize {
         const FIXED: usize = 4 * 4 + 1 + 2 * 24; // 4×u32 + 1×u8 + 2 Vec headers
-        FIXED + self.xy.len() * 8 + self.ring_lengths.len() * 4
+        FIXED + self.xy.len() * 4 + self.ring_lengths.len() * 4
     }
 }
 
@@ -74,9 +74,9 @@ impl Fragment2DWriter {
         w.write_u8(frag.geom_type)?;
         w.write_u32::<LittleEndian>(n_verts)?;
 
-        // XY: n_verts * 2 floats (f64 → f32)
+        // XY: n_verts * 2 floats (already f32)
         for &v in &frag.xy {
-            w.write_f32::<LittleEndian>(v as f32)?;
+            w.write_f32::<LittleEndian>(v)?;
         }
 
         // Ring lengths
@@ -142,10 +142,10 @@ impl ShardReader2D {
         let geom_type = self.reader.read_u8()?;
         let n_verts = self.reader.read_u32::<LittleEndian>()? as usize;
 
-        // XY: read f32, widen to f64
+        // XY: read f32 directly
         let mut xy = Vec::with_capacity(n_verts * 2);
         for _ in 0..n_verts * 2 {
-            xy.push(self.reader.read_f32::<LittleEndian>()? as f64);
+            xy.push(self.reader.read_f32::<LittleEndian>()?);
         }
 
         // Ring lengths
@@ -269,7 +269,7 @@ mod tests {
             tile_x: 1,
             tile_y: 3,
             geom_type: 3, // Polygon
-            xy: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+            xy: vec![0.0f32, 0.0f32, 1.0f32, 0.0f32, 1.0f32, 1.0f32, 0.0f32, 1.0f32],
             ring_lengths: vec![4],
         };
 
@@ -318,14 +318,14 @@ mod tests {
             feature_id: 1,
             tile_z: 0, tile_x: 0, tile_y: 0,
             geom_type: 1,
-            xy: vec![0.5, 0.5],
+            xy: vec![0.5f32, 0.5f32],
             ring_lengths: vec![],
         };
         let frag_b = Fragment2D {
             feature_id: 2,
             tile_z: 1, tile_x: 0, tile_y: 0,
             geom_type: 2,
-            xy: vec![0.0, 0.0, 1.0, 1.0],
+            xy: vec![0.0f32, 0.0f32, 1.0f32, 1.0f32],
             ring_lengths: vec![],
         };
 
@@ -362,7 +362,7 @@ mod tests {
             feature_id: 7,
             tile_z: 0, tile_x: 0, tile_y: 0,
             geom_type: 1,
-            xy: vec![0.3, 0.7],
+            xy: vec![0.3f32, 0.7f32],
             ring_lengths: vec![],
         };
 

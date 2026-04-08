@@ -8,6 +8,7 @@ let vectorGridLayer;
 let rasterLayer;
 let hiddenLayers = new Set();
 let hoveredFeatureId = null;
+let geneColorMap = null;  // { gene_name → hex color }
 
 const BASE_URL = "";
 
@@ -36,6 +37,23 @@ async function loadDataset(datasetId) {
     if (vectorGridLayer) { map.removeLayer(vectorGridLayer); }
     hiddenLayers.clear();
     hoveredFeatureId = null;
+
+    // Load gene colormap if available
+    geneColorMap = null;
+    try {
+        const cmResp = await fetch(`${BASE_URL}/tiles2d/${datasetId}/gene_colormap.json`);
+        if (cmResp.ok) {
+            const cm = await cmResp.json();
+            geneColorMap = {};
+            for (const [catName, catDef] of Object.entries(cm.categories)) {
+                for (const gene of catDef.genes) {
+                    geneColorMap[gene] = catDef.color;
+                }
+            }
+            geneColorMap._default = cm.default_color || "#888888";
+            geneColorMap._categories = cm.categories;
+        }
+    } catch (_) {}
 
     const umPerPx = metadata.um_per_px;
     const [imgW, imgH] = metadata.raster.image_size_px;
@@ -68,7 +86,7 @@ async function loadDataset(datasetId) {
     map.setMaxBounds(dataBounds.pad(0.2));
 
     setupVectorLayer(datasetId, imageBounds, vectorMaxZoom);
-    LayerPanel.init(metadata, rasterLayer, vectorGridLayer, hiddenLayers);
+    LayerPanel.init(metadata, rasterLayer, vectorGridLayer, hiddenLayers, datasetId);
 }
 
 function setupVectorLayer(datasetId, imageBounds, maxZoom) {
@@ -78,10 +96,34 @@ function setupVectorLayer(datasetId, imageBounds, maxZoom) {
     }
 
     const styles = {};
+    const geneSelect = document.getElementById("gene-filter");
     for (const layerDef of metadata.vectors.layers) {
-        styles[layerDef.id] = function () {
+        styles[layerDef.id] = function (properties) {
             if (hiddenLayers.has(layerDef.id)) {
                 return { opacity: 0, fillOpacity: 0, radius: 0, weight: 0 };
+            }
+            // Gene filter: hide non-matching transcripts
+            if (layerDef.type === "point" && geneSelect.value) {
+                if (properties.gene_name !== geneSelect.value) {
+                    return { opacity: 0, fillOpacity: 0, radius: 0, weight: 0 };
+                }
+            }
+            // Color-by-gene for transcripts
+            if (layerDef.type === "point" && geneColorMap && properties.gene_name) {
+                // Check category filter
+                if (window._hiddenGeneCategories && window._hiddenGeneCategories.size > 0) {
+                    const cat = (window._geneCategoryMap && window._geneCategoryMap[properties.gene_name]) || "Other";
+                    if (window._hiddenGeneCategories.has(cat)) {
+                        return { opacity: 0, fillOpacity: 0, radius: 0, weight: 0 };
+                    }
+                }
+                const color = geneColorMap[properties.gene_name] || geneColorMap._default;
+                return {
+                    radius: 5, weight: 1,
+                    color: color, fillColor: color,
+                    fillOpacity: 0.7, fill: true,
+                    interactive: true,
+                };
             }
             return getLayerStyle(layerDef);
         };
@@ -95,13 +137,18 @@ function setupVectorLayer(datasetId, imageBounds, maxZoom) {
             maxZoom: maxZoom,
             minZoom: 0,
             bounds: imageBounds,
-            // Prefix layer_type to cell_id so cells and nuclei don't collide
-            getFeatureId: (f) => {
-                if (f.properties.cell_id) {
-                    return f.properties.layer_type + "_" + f.properties.cell_id;
-                }
-                return null;
-            },
+            // Every feature needs an ID for restyleAll() to work.
+            // Polygons use layer_type + cell_id (cross-tile highlight).
+            // Points get a unique counter ID.
+            getFeatureId: (() => {
+                let counter = 0;
+                return (f) => {
+                    if (f.properties.cell_id) {
+                        return f.properties.layer_type + "_" + f.properties.cell_id;
+                    }
+                    return "_pt_" + (counter++);
+                };
+            })(),
         }
     );
 

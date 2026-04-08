@@ -1,8 +1,8 @@
-# Pydantic Models for MicroJSON and GeoJSON
+# Pydantic Models for muDM and GeoJSON
 
 ## Introduction
 
-This document describes the Pydantic models used for GeoJSON and MicroJSON objects. These models leverage Python's type hinting and Pydantic's validation mechanisms, making it robust and efficient to work with complex GeoJSON and MicroJSON objects.
+This document describes the Pydantic models used for GeoJSON and muDM objects. These models leverage Python's type hinting and Pydantic's validation mechanisms, making it robust and efficient to work with complex GeoJSON and muDM objects.
 
 ## Models
 
@@ -58,22 +58,22 @@ The root object of a GeoJSON file.
 
 ::: microjson.model.GeoJSON
 
-### MicroJSON Extended Models
+### muDM Extended Models
 
 #### MicroFeature
 
-A MicroJSON feature, which is an extension of a GeoJSON feature.
+A muDM feature, which is an extension of a GeoJSON feature.
 
 ::: microjson.model.MicroFeature
 
 #### MicroFeatureCollection
 
-A MicroJSON feature collection, which is an extension of a GeoJSON feature collection.
+A muDM feature collection, which is an extension of a GeoJSON feature collection.
 
 ::: microjson.model.MicroFeatureCollection
 
 #### MicroJSON
 
-The root object of a MicroJSON file.
+The root object of a muDM file.
 
 ::: microjson.model.MicroJSON

@@ -2107,6 +2107,24 @@ L.VectorGrid = L.GridLayer.extend({
 		return this;
 	},
 
+	// 🍂method restyleAll(): this
+	// Re-evaluates vectorTileLayerStyles for all features in all loaded tiles
+	// without re-fetching tile data from the server.
+	restyleAll: function() {
+		for (var tileKey in this._vectorTiles) {
+			var tile = this._vectorTiles[tileKey];
+			var features = tile._features;
+			for (var id in features) {
+				var data = features[id];
+				var feat = data.feature;
+				var styleOptions = this.options.vectorTileLayerStyles[data.layerName] ||
+					L.Path.prototype.options;
+				this._updateStyles(feat, tile, styleOptions);
+			}
+		}
+		return this;
+	},
+
 	// 🍂method getDataLayerNames(): Array
 	// Returns an array of strings, with all the known names of data layers in
 	// the vector tiles displayed. Useful for introspection.

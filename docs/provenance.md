@@ -1,15 +1,15 @@
-# Provenance and Traceability in MicroJSON
+# Provenance and Traceability in muDM
 
 ## Background
 
-For geospatial data, particularly with GeoJSON, there are no standardized methods for tracing data provenance. While GeoJSON offers a robust format for geographical features representation, it lacks mechanisms for tracking the workflows and processes that generate or modify these features. This document outlines an addition to MicroJSON, integrating a provenance model to bridge this gap.
+For geospatial data, particularly with GeoJSON, there are no standardized methods for tracing data provenance. While GeoJSON offers a robust format for geographical features representation, it lacks mechanisms for tracking the workflows and processes that generate or modify these features. This document outlines an addition to muDM, integrating a provenance model to bridge this gap.
 
 ## Design Motivations
 
-The design introduces a traceability model that integrates seamlessly with MicroJSON, enhancing GeoJSON capabilities while maintaining full backward compatibility. Key motivations include:
+The design introduces a traceability model that integrates seamlessly with muDM, enhancing GeoJSON capabilities while maintaining full backward compatibility. Key motivations include:
 
-- **Supporting Workflow Integration:** Linking MicroJSON objects to specific analytical workflows, thereby enabling reproducibility and transparency.
-- **Enabling Flexible Provenance Tracking:** Providing detailed information about workflow steps, including input and output parameters, that led to the creation or modification of MicroJSON objects.
+- **Supporting Workflow Integration:** Linking muDM objects to specific analytical workflows, thereby enabling reproducibility and transparency.
+- **Enabling Flexible Provenance Tracking:** Providing detailed information about workflow steps, including input and output parameters, that led to the creation or modification of muDM objects.
 - **Facilitating Workflow and Artifact Linking:** Allowing references to specific workflows and artifacts, providing a comprehensive view of data processing and provenance tracking.
 - **Adapting to Varied Use Cases:** Accommodating both structured and ad-hoc processes.
 
@@ -17,34 +17,34 @@ The design introduces a traceability model that integrates seamlessly with Micro
 
 The provenance model structure comprises `WorkflowCollection`, `Workflow`, `Artifact`, `ArtifactCollection`, `WorkflowProvenance`, and `MicroJSONLink` objects:
 
-- **Workflow Collection Object:** Includes multiple workflows, acknowledging that a single MicroJSON object might result from various processes.
-- **Workflow Object:** Captures essential workflow details, including identifiers and descriptive metadata. This metadata links MicroJSON objects to their respective workflows.
+- **Workflow Collection Object:** Includes multiple workflows, acknowledging that a single muDM object might result from various processes.
+- **Workflow Object:** Captures essential workflow details, including identifiers and descriptive metadata. This metadata links muDM objects to their respective workflows.
 - **Artifact and Artifact Collection Objects:** Represent single files or directories and collections of these, respectively, providing a link between the physical data and the workflows.
 - **Workflow Provenance Object:** Details specific instances of workflow runs, including run identifiers, duration, operator, and the input/output parameters.
-Of these, Workflow, WorkflowCollection, Artifact, and ArtifactCollection can function as the top object in the provenance part of a MicroJSON file.
-- **MicroJSON Link Object:** Provides a link to a specific MicroJSON object, specifying which parts of the object's properties are pertinent to the workflow run. While this object is required, and the id property is required, the specification of a field in the MicroJSON object is optional. If no field is specified, the entire MicroJSON object is considered to be pertinent to the workflow run or artifact.
+Of these, Workflow, WorkflowCollection, Artifact, and ArtifactCollection can function as the top object in the provenance part of a muDM file.
+- **MicroJSON Link Object:** Provides a link to a specific muDM object, specifying which parts of the object's properties are pertinent to the workflow run. While this object is required, and the id property is required, the specification of a field in the muDM object is optional. If no field is specified, the entire muDM object is considered to be pertinent to the workflow run or artifact.
 
-## Data Provenance and MicroJSON Traceability Link
+## Data Provenance and muDM Traceability Link
 
 Under each workflow, the `WorkflowProvenance` object includes:
 
 - **Properties** that describe the workflow run, in form of a dictionary, to enable flexible and scalable provenance tracking. Example of properties include run identifier, duration, operator, and input/output parameters.
-- **Output Artifacts:** These artifacts are the result of the workflow run. These in turn has the `microjsonLinks` field, which is a list of MicroJSON objects that is pertinent to the workflow run:
-  - **MicroJSON Traceability Links:** These links connect back to specific MicroJSON objects, specifying which parts of the object's properties are pertinent to the workflow run.
+- **Output Artifacts:** These artifacts are the result of the workflow run. These in turn has the `microjsonLinks` field, which is a list of muDM objects that is pertinent to the workflow run:
+  - **muDM Traceability Links:** These links connect back to specific muDM objects, specifying which parts of the object's properties are pertinent to the workflow run.
 
 ## Rationale for Structure
 
 This structure is designed to:
 
-- **Reflect Complex Data Relationships:** Multiple workflows can contribute to a single MicroJSON object.
+- **Reflect Complex Data Relationships:** Multiple workflows can contribute to a single muDM object.
 - **Provide Comprehensive Traceability:** Offering a complete journey of the data from origin through processing steps.
 - **Ensure Flexibility and Scalability:** Suitable for a wide range of scenarios and scalable in applications.
 - **Capture Simple Provenance:** Allowing for simple provenance tracking, such as a single standalone workflow or even only an artifact or artifact collection.
-This enhancement not only increases the utility of MicroJSON in various scientific and geospatial contexts but also fosters an environment of transparency and reproducibility.
+This enhancement not only increases the utility of muDM in various scientific and geospatial contexts but also fosters an environment of transparency and reproducibility.
 
-## Examples MicroJSON Provenance and Traceability
+## Examples muDM Provenance and Traceability
 
-***Example 1: MicroJSON with single Artifact only***
+***Example 1: muDM with single Artifact only***
 
 ```json
 {
@@ -82,30 +82,12 @@ This enhancement not only increases the utility of MicroJSON in various scientif
                 ]
             },
             "properties": {
-                "string": {
-                    "well": "A1"
-                },
-                "numeric": {
-                    "cellCount": 5
-                },
-                "multiNumeric": {
-                    "ratioInfectivity": [
-                        [
-                            0.1,
-                            0.2,
-                            0.3,
-                            0.4,
-                            0.5
-                        ],
-                        [
-                            0.2,
-                            0.3,
-                            0.4,
-                            0.5,
-                            0.6
-                        ]
-                    ]
-                }
+                "well": "A1",
+                "cellCount": 5,
+                "ratioInfectivity": [
+                    [0.1, 0.2, 0.3, 0.4, 0.5],
+                    [0.2, 0.3, 0.4, 0.5, 0.6]
+                ]
             }
         },
         {
@@ -140,30 +122,12 @@ This enhancement not only increases the utility of MicroJSON in various scientif
                 ]
             },
             "properties": {
-                "string": {
-                    "well": "A2"
-                },
-                "numeric": {
-                    "cellCount": 10
-                },
-                "multiNumeric": {
-                    "ratioInfectivity": [
-                        [
-                            0.1,
-                            0.2,
-                            0.3,
-                            0.4,
-                            0.5
-                        ],
-                        [
-                            0.2,
-                            0.3,
-                            0.4,
-                            0.5,
-                            0.6
-                        ]
-                    ]
-                }
+                "well": "A2",
+                "cellCount": 10,
+                "ratioInfectivity": [
+                    [0.1, 0.2, 0.3, 0.4, 0.5],
+                    [0.2, 0.3, 0.4, 0.5, 0.6]
+                ]
             }
         }
     ],
@@ -185,7 +149,7 @@ This enhancement not only increases the utility of MicroJSON in various scientif
 }
 ```
 
-***Example 2: MicroJSON with Workflow Collection***
+***Example 2: muDM with Workflow Collection***
 
 ```json
 {
@@ -223,30 +187,12 @@ This enhancement not only increases the utility of MicroJSON in various scientif
                 ]
             },
             "properties": {
-                "string": {
-                    "well": "A1"
-                },
-                "numeric": {
-                    "cellCount": 5
-                },
-                "multiNumeric": {
-                    "ratioInfectivity": [
-                        [
-                            0.1,
-                            0.2,
-                            0.3,
-                            0.4,
-                            0.5
-                        ],
-                        [
-                            0.2,
-                            0.3,
-                            0.4,
-                            0.5,
-                            0.6
-                        ]
-                    ]
-                }
+                "well": "A1",
+                "cellCount": 5,
+                "ratioInfectivity": [
+                    [0.1, 0.2, 0.3, 0.4, 0.5],
+                    [0.2, 0.3, 0.4, 0.5, 0.6]
+                ]
             }
         },
         {
@@ -281,30 +227,12 @@ This enhancement not only increases the utility of MicroJSON in various scientif
                 ]
             },
             "properties": {
-                "string": {
-                    "well": "A2"
-                },
-                "numeric": {
-                    "cellCount": 10
-                },
-                "multiNumeric": {
-                    "ratioInfectivity": [
-                        [
-                            0.1,
-                            0.2,
-                            0.3,
-                            0.4,
-                            0.5
-                        ],
-                        [
-                            0.2,
-                            0.3,
-                            0.4,
-                            0.5,
-                            0.6
-                        ]
-                    ]
-                }
+                "well": "A2",
+                "cellCount": 10,
+                "ratioInfectivity": [
+                    [0.1, 0.2, 0.3, 0.4, 0.5],
+                    [0.2, 0.3, 0.4, 0.5, 0.6]
+                ]
             }
         }
     ],

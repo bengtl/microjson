@@ -7,6 +7,18 @@
 /// Architecture:
 ///   For each feature: clip through octree → write binary fragments to temp file
 ///   For each tile (rayon parallel): read fragments → transform → encode → write .pbf3
+///
+/// # API differences from StreamingTileGenerator2D (streaming2d.rs)
+///
+/// **Constructor**: 3D has additional params: `extent`, `extent_z`, `base_cells`, `num_buckets`.
+/// Both share: `min_zoom`, `max_zoom`, `buffer`, `temp_dir`.
+///
+/// **generate_pbf3 vs generate_mvt**: 3D encodes PBF3/GLB/Neuroglancer formats with Z
+/// coordinates and 3D geometry types (TIN, PolyhedralSurface). 2D encodes MVT (Mapbox
+/// Vector Tiles) with XY-only geometry. Unifying signatures would require breaking changes.
+///
+/// **Precision**: 3D uses `extent` (default 4096) and `extent_z` for quantization.
+/// 2D uses `extent` only. A future `precision` parameter could unify these.
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use std::collections::HashMap;
@@ -17,7 +29,7 @@ use rayon::prelude::*;
 use ahash::AHashMap;
 
 use crate::types::BBox3D;
-use crate::fragment::{Fragment, FragmentWriter, FragmentReader};
+use crate::fragment::{Fragment3D, Fragment3DWriter, Fragment3DReader};
 use crate::encoder_pbf3;
 use crate::encoder_glb::{self, GlbFeature};
 use crate::tileset_json;
@@ -634,7 +646,7 @@ fn encode_tag_value(val: &TagValue) -> Vec<u8> {
 
 /// Transform fragment geometry to tile-local integers and encode as protobuf tile.
 fn encode_tile_from_fragments(
-    frags: &[Fragment],
+    frags: &[Fragment3D],
     tags_registry: &HashMap<u32, Vec<(String, TagValue)>>,
     tz: u32, tx: u32, ty: u32, td: u32,
     extent: u32, extent_z: u32,
@@ -832,7 +844,7 @@ fn encode_tile_from_fragments(
 ///
 /// Returns `(pbf3_bytes, feature_bbox)` where feature_bbox is [xmin,ymin,zmin,xmax,ymax,zmax].
 fn encode_feature_pbf3(
-    frags: &[&Fragment],
+    frags: &[&Fragment3D],
     tags: Option<&Vec<(String, TagValue)>>,
     world_bounds: &(f64, f64, f64, f64, f64, f64),
     layer_name: &str,
@@ -855,8 +867,8 @@ fn encode_feature_pbf3(
     let mut values_encoded: Vec<Vec<u8>> = Vec::new();
 
     // Separate fragments by geometry type
-    let mut mesh_frags: Vec<&Fragment> = Vec::new();
-    let mut other_frags: Vec<&Fragment> = Vec::new();
+    let mut mesh_frags: Vec<&Fragment3D> = Vec::new();
+    let mut other_frags: Vec<&Fragment3D> = Vec::new();
 
     for frag in frags {
         match frag.geom_type {
@@ -1145,7 +1157,7 @@ fn encode_feature_pbf3(
 ///
 /// Returns (pbf3_bytes, finest_lod_bbox).
 fn encode_feature_pbf3_multilod(
-    all_frags: &[&Fragment],
+    all_frags: &[&Fragment3D],
     tags: Option<&Vec<(String, TagValue)>>,
     world_bounds: &(f64, f64, f64, f64, f64, f64),
     max_zoom: u32,
@@ -1159,7 +1171,7 @@ fn encode_feature_pbf3_multilod(
     let dz = if zmax != zmin { zmax - zmin } else { 1.0 };
 
     // Group fragments by tile_z (zoom level)
-    let mut by_zoom: std::collections::BTreeMap<u32, Vec<&Fragment>> = std::collections::BTreeMap::new();
+    let mut by_zoom: std::collections::BTreeMap<u32, Vec<&Fragment3D>> = std::collections::BTreeMap::new();
     for frag in all_frags {
         by_zoom.entry(frag.tile_z).or_default().push(frag);
     }
@@ -1178,8 +1190,8 @@ fn encode_feature_pbf3_multilod(
         let do_simplify = zoom < max_zoom;
 
         // Separate mesh vs non-mesh fragments
-        let mut mesh_frags: Vec<&Fragment> = Vec::new();
-        let mut other_frags: Vec<&Fragment> = Vec::new();
+        let mut mesh_frags: Vec<&Fragment3D> = Vec::new();
+        let mut other_frags: Vec<&Fragment3D> = Vec::new();
         for frag in zoom_frags {
             match frag.geom_type {
                 4 | 5 => mesh_frags.push(frag),
@@ -1481,7 +1493,7 @@ const DEFAULT_BASE_CELLS: u32 = 10;
 ///
 /// Pure function with no shared state — safe to call from `par_iter`.
 fn fragment_to_glb_feature(
-    frag: &Fragment,
+    frag: &Fragment3D,
     tags_registry: &HashMap<u32, Vec<(String, TagValue)>>,
     xmin: f64, ymin: f64, zmin: f64,
     dx: f64, dy: f64, dz: f64,
@@ -1655,7 +1667,7 @@ fn fragment_to_glb_feature(
 /// Returns the paths of the merged bucket files (one per bucket).
 /// Simplify a TIN/PolyhedralSurface fragment via QEM for coarse zoom levels.
 /// Builds indexed mesh, runs QEM, converts back to ring format.
-fn simplify_fragment(frag: Fragment, base_cells: u32, max_zoom: u32) -> Fragment {
+fn simplify_fragment(frag: Fragment3D, base_cells: u32, max_zoom: u32) -> Fragment3D {
     let n_verts = frag.z.len();
     if n_verts == 0 || (frag.geom_type != 4 && frag.geom_type != 5) {
         return frag;
@@ -1742,7 +1754,7 @@ fn simplify_fragment(frag: Fragment, base_cells: u32, max_zoom: u32) -> Fragment
         }
     }
 
-    Fragment {
+    Fragment3D {
         feature_id: frag.feature_id,
         tile_z: frag.tile_z,
         tile_x: frag.tile_x,
@@ -1793,9 +1805,9 @@ fn redistribute_fragments_to_buckets(
 
     shard_paths.par_iter().enumerate().for_each(|(shard_idx, shard_path)| {
         // Each thread creates its own bucket writers
-        let mut writers: Vec<Option<FragmentWriter>> = (0..num_buckets).map(|_| None).collect();
+        let mut writers: Vec<Option<Fragment3DWriter>> = (0..num_buckets).map(|_| None).collect();
 
-        let mut reader = match FragmentReader::new(shard_path) {
+        let mut reader = match Fragment3DReader::new(shard_path) {
             Ok(r) => r,
             Err(e) => {
                 errors.lock().unwrap().push(format!("shard {}: {}", shard_idx, e));
@@ -1823,7 +1835,7 @@ fn redistribute_fragments_to_buckets(
                         let path = bucket_dir.join(
                             format!("shard_{:03}_bucket_{:04}.mjf", shard_idx, bucket)
                         );
-                        match FragmentWriter::new(&path) {
+                        match Fragment3DWriter::new(&path) {
                             Ok(w) => writers[bucket] = Some(w),
                             Err(e) => {
                                 errors.lock().unwrap().push(format!(
@@ -1864,8 +1876,8 @@ fn redistribute_fragments_to_buckets(
     }
 
     // Phase 2: For each bucket index, collect all per-shard files into a
-    // single FragmentReader path list. We don't need to merge them into one
-    // file — FragmentReader::open_dir reads multiple files sequentially.
+    // single Fragment3DReader path list. We don't need to merge them into one
+    // file — Fragment3DReader::open_dir reads multiple files sequentially.
     // Create per-bucket subdirectories with the per-shard files.
     let mut bucket_dirs: Vec<PathBuf> = Vec::with_capacity(num_buckets);
     for b in 0..num_buckets {
@@ -2000,16 +2012,16 @@ fn read_group_simplify_encode(
             let mut zoom_keys = Vec::new();
 
             for batch in 0..n_batches {
-                let groups: DashMap<(u32, u32, u32, u32), Vec<Fragment>> = DashMap::new();
+                let groups: DashMap<(u32, u32, u32, u32), Vec<Fragment3D>> = DashMap::new();
                 let n_b = n_batches;
 
                 zoom_files.par_iter().for_each(|path| {
-                    let mut reader = match FragmentReader::new(path) {
+                    let mut reader = match Fragment3DReader::new(path) {
                         Ok(r) => r,
                         Err(_) => return,
                     };
 
-                    let mut local: AHashMap<(u32, u32, u32, u32), Vec<Fragment>> = AHashMap::new();
+                    let mut local: AHashMap<(u32, u32, u32, u32), Vec<Fragment3D>> = AHashMap::new();
 
                     loop {
                         match reader.read_next() {
@@ -2043,7 +2055,7 @@ fn read_group_simplify_encode(
                 });
 
                 // Encode this batch's tile groups
-                let owned: AHashMap<(u32, u32, u32, u32), Vec<Fragment>> =
+                let owned: AHashMap<(u32, u32, u32, u32), Vec<Fragment3D>> =
                     groups.into_iter().collect();
 
                 if !owned.is_empty() {
@@ -2089,7 +2101,7 @@ fn encode_bucket_to_3dtiles(
     effective_compression: &str,
 ) -> io::Result<(u32, Vec<(u32, u32, u32, u32)>)> {
     // Read all fragments from this bucket's shard files and group by tile key
-    let mut reader = FragmentReader::open_dir(bucket_dir)?;
+    let mut reader = Fragment3DReader::open_dir(bucket_dir)?;
     let groups = reader.read_all_grouped()?;
     _encode_grouped_fragments(groups, tags_registry, out_dir,
         xmin, ymin, zmin, dx, dy, dz, max_zoom, base_cells, effective_compression)
@@ -2106,7 +2118,7 @@ fn encode_bucket_file_to_3dtiles(
     base_cells: u32,
     effective_compression: &str,
 ) -> io::Result<(u32, Vec<(u32, u32, u32, u32)>)> {
-    let mut reader = FragmentReader::new(bucket_file)?;
+    let mut reader = Fragment3DReader::new(bucket_file)?;
     let groups = reader.read_all_grouped()?;
     _encode_grouped_fragments(groups, tags_registry, out_dir,
         xmin, ymin, zmin, dx, dy, dz, max_zoom, base_cells, effective_compression)
@@ -2114,7 +2126,7 @@ fn encode_bucket_file_to_3dtiles(
 
 /// Shared encoding logic for grouped fragments.
 fn _encode_grouped_fragments(
-    groups: AHashMap<(u32, u32, u32, u32), Vec<Fragment>>,
+    groups: AHashMap<(u32, u32, u32, u32), Vec<Fragment3D>>,
     tags_registry: &HashMap<u32, Vec<(String, TagValue)>>,
     out_dir: &Path,
     xmin: f64, ymin: f64, zmin: f64,
@@ -2124,7 +2136,7 @@ fn _encode_grouped_fragments(
     effective_compression: &str,
 ) -> io::Result<(u32, Vec<(u32, u32, u32, u32)>)> {
 
-    let mut tiles: Vec<((u32, u32, u32, u32), Vec<Fragment>)> = groups.into_iter().collect();
+    let mut tiles: Vec<((u32, u32, u32, u32), Vec<Fragment3D>)> = groups.into_iter().collect();
     tiles.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
 
     let tile_keys: Vec<(u32, u32, u32, u32)> = tiles.iter().map(|(k, _)| *k).collect();
@@ -2196,7 +2208,7 @@ struct ParquetRow {
 /// writes per-face vertices directly. Lines and points are transformed
 /// to world coords without clustering.
 fn collect_parquet_rows(
-    tiles: &[((u32, u32, u32, u32), Vec<Fragment>)],
+    tiles: &[((u32, u32, u32, u32), Vec<Fragment3D>)],
     world_bounds: &(f64, f64, f64, f64, f64, f64),
     max_zoom: u32,
     base_cells: u32,
@@ -2303,7 +2315,7 @@ fn collect_parquet_rows(
 /// TIN mesh processing with QEM simplification (coarse zoom levels).
 /// Builds an indexed mesh via `parquet_tin_direct`, then applies QEM.
 fn parquet_tin_simplified(
-    frag: &Fragment,
+    frag: &Fragment3D,
     rls: &[usize],
     n_verts: usize,
     xmin: f64, ymin: f64, zmin: f64,
@@ -2331,7 +2343,7 @@ fn parquet_tin_simplified(
 /// TIN mesh processing without simplification (max_zoom level).
 /// Deduplicates shared vertices via position hash map for indexed mesh output.
 fn parquet_tin_direct(
-    frag: &Fragment,
+    frag: &Fragment3D,
     rls: &[usize],
     n_verts: usize,
     xmin: f64, ymin: f64, zmin: f64,
@@ -2375,7 +2387,7 @@ fn parquet_tin_direct(
 // PyO3 helpers: extract features and tags from Python dicts
 // ---------------------------------------------------------------------------
 
-fn extract_tags(feat: &Bound<'_, PyDict>) -> PyResult<Vec<(String, TagValue)>> {
+pub(crate) fn extract_tags(feat: &Bound<'_, PyDict>) -> PyResult<Vec<(String, TagValue)>> {
     let tags_obj = feat.get_item("tags")?;
     let mut result = Vec::new();
 
@@ -2457,12 +2469,12 @@ pub struct StreamingTileGenerator {
     base_cells: u32,
     feature_count: u32,
     tags_registry: HashMap<u32, Vec<(String, TagValue)>>,
-    fragment_writer: Option<FragmentWriter>,
+    fragment_writer: Option<Fragment3DWriter>,
     frag_dir: PathBuf,
     shard_counter: std::sync::atomic::AtomicUsize,
     num_buckets: usize,
     tiles_written: u32,
-    fragment_reader: Option<FragmentReader>,
+    fragment_reader: Option<Fragment3DReader>,
     parquet_stream_active: bool,
 }
 
@@ -2503,7 +2515,7 @@ impl StreamingTileGenerator {
 
         // Create shard 0 for the single-feature add_feature() path
         let shard_path = frag_dir.join("shard_000.mjf");
-        let writer = FragmentWriter::new(&shard_path)
+        let writer = Fragment3DWriter::new(&shard_path)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
 
         Ok(Self {
@@ -2551,7 +2563,7 @@ impl StreamingTileGenerator {
                 "Cannot add features after generate_pbf3()"))?;
 
         for ((tz, tx, ty, td), cf) in fragments {
-            let frag = Fragment {
+            let frag = Fragment3D {
                 feature_id: fid,
                 tile_z: tz,
                 tile_x: tx,
@@ -2587,13 +2599,13 @@ impl StreamingTileGenerator {
         }
 
         // Read all fragments grouped by tile key
-        let mut reader = FragmentReader::open_dir(&self.frag_dir)
+        let mut reader = Fragment3DReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let groups = reader.read_all_grouped()
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
 
         // Collect for rayon
-        let tiles: Vec<((u32, u32, u32, u32), Vec<Fragment>)> = groups.into_iter().collect();
+        let tiles: Vec<((u32, u32, u32, u32), Vec<Fragment3D>)> = groups.into_iter().collect();
         let tags_ref = &self.tags_registry;
         let extent = self.extent;
         let extent_z = self.extent_z;
@@ -2625,6 +2637,50 @@ impl StreamingTileGenerator {
 
         self.tiles_written = count;
         Ok(count)
+    }
+
+    /// Generate Parquet files from accumulated fragments using arrow-rs + parquet-rs.
+    ///
+    /// Reads fragments, transforms to world coords (parallel via Rayon),
+    /// writes partitioned Parquet files per zoom level.
+    ///
+    /// Returns total number of rows written.
+    #[pyo3(signature = (output_dir, world_bounds, simplify=true, compression="zstd"))]
+    fn generate_parquet_native(
+        &mut self,
+        py: Python<'_>,
+        output_dir: &str,
+        world_bounds: (f64, f64, f64, f64, f64, f64),
+        simplify: bool,
+        compression: &str,
+    ) -> PyResult<u64> {
+        // Flush fragment writer
+        if let Some(mut writer) = self.fragment_writer.take() {
+            writer.flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
+
+        // Read all fragments grouped by tile
+        let mut reader = Fragment3DReader::open_dir(&self.frag_dir)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        let groups = reader.read_all_grouped()
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+
+        let tiles: Vec<((u32, u32, u32, u32), Vec<Fragment3D>)> = groups.into_iter().collect();
+        let max_zoom = self.max_zoom;
+        let base_cells = self.base_cells;
+        let tags_snapshot: HashMap<u32, Vec<(String, TagValue)>> = self.tags_registry.clone();
+        let out_dir = output_dir.to_string();
+        let comp = compression.to_string();
+
+        let total = py.allow_threads(|| {
+            write_parquet_native_3d(
+                &tiles, &out_dir, &world_bounds, max_zoom, base_cells,
+                simplify, &tags_snapshot, &comp,
+            )
+        }).map_err(|e| pyo3::exceptions::PyIOError::new_err(e))?;
+
+        Ok(total)
     }
 
     /// Number of tiles written by the last generate_pbf3() call.
@@ -2752,13 +2808,13 @@ impl StreamingTileGenerator {
         }
 
         // Read all fragments grouped by tile key
-        let mut reader = FragmentReader::open_dir(&self.frag_dir)
+        let mut reader = Fragment3DReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let groups = reader.read_all_grouped()
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
 
         // Collect for rayon
-        let tiles: Vec<((u32, u32, u32, u32), Vec<Fragment>)> = groups.into_iter().collect();
+        let tiles: Vec<((u32, u32, u32, u32), Vec<Fragment3D>)> = groups.into_iter().collect();
         let wb = world_bounds;
         let max_zoom = self.max_zoom;
         let base_cells = self.base_cells;
@@ -2829,7 +2885,7 @@ impl StreamingTileGenerator {
 
     /// Initialize the streaming Parquet iterator.
     ///
-    /// Flushes the fragment writer and opens a FragmentReader for sequential
+    /// Flushes the fragment writer and opens a Fragment3DReader for sequential
     /// batch reading. Must be called before `_next_parquet_batch()`.
     fn _init_parquet_stream(&mut self) -> PyResult<()> {
         if self.parquet_stream_active {
@@ -2845,7 +2901,7 @@ impl StreamingTileGenerator {
         }
 
         // Open reader
-        let reader = FragmentReader::open_dir(&self.frag_dir)
+        let reader = Fragment3DReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         self.fragment_reader = Some(reader);
         self.parquet_stream_active = true;
@@ -2874,12 +2930,12 @@ impl StreamingTileGenerator {
         }
 
         let reader = self.fragment_reader.as_mut().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("Fragment reader is None")
+            pyo3::exceptions::PyRuntimeError::new_err("Fragment3D reader is None")
         })?;
 
         // Read up to batch_size fragments, stopping early if byte budget exceeded.
         // Always read at least 1 fragment so we make progress.
-        let mut groups: AHashMap<(u32, u32, u32, u32), Vec<Fragment>> = AHashMap::new();
+        let mut groups: AHashMap<(u32, u32, u32, u32), Vec<Fragment3D>> = AHashMap::new();
         let mut count = 0usize;
         let mut batch_bytes = 0usize;
         while count < batch_size && (count == 0 || batch_bytes < max_batch_bytes) {
@@ -2901,7 +2957,7 @@ impl StreamingTileGenerator {
         }
 
         // Process fragments into ParquetRows (GIL-released, parallel)
-        let tiles: Vec<((u32, u32, u32, u32), Vec<Fragment>)> = groups.into_iter().collect();
+        let tiles: Vec<((u32, u32, u32, u32), Vec<Fragment3D>)> = groups.into_iter().collect();
         let wb = world_bounds;
         let max_zoom = self.max_zoom;
         let base_cells = self.base_cells;
@@ -3039,7 +3095,7 @@ impl StreamingTileGenerator {
                 "Cannot add features after generate"))?;
 
         for ((tz, tx, ty, td), cf) in fragments {
-            let frag = Fragment {
+            let frag = Fragment3D {
                 feature_id: fid,
                 tile_z: tz,
                 tile_x: tx,
@@ -3171,12 +3227,12 @@ impl StreamingTileGenerator {
                 let write_clip_results = |clip_results: Vec<((u32,u32,u32,u32), ClipFeature)>,
                                           frag_path: PathBuf,
                                           fid: u32| {
-                    let mut writer = match FragmentWriter::new(&frag_path) {
+                    let mut writer = match Fragment3DWriter::new(&frag_path) {
                         Ok(w) => w,
                         Err(_) => return,
                     };
                     for ((tz, tx_coord, ty, td), cf) in clip_results {
-                        let frag = Fragment {
+                        let frag = Fragment3D {
                             feature_id: fid,
                             tile_z: tz, tile_x: tx_coord, tile_y: ty, tile_d: td,
                             geom_type: cf.geom_type,
@@ -3281,6 +3337,254 @@ impl StreamingTileGenerator {
         Ok(fids)
     }
 
+    /// Add meshes from a Parquet file with pre-processed binary geometry.
+    ///
+    /// Each row is one mesh feature with flat binary columns for vertex
+    /// positions (f32 LE, xyz triplets) and triangle indices (u32 LE).
+    /// An optional string property column can provide per-feature tags.
+    ///
+    /// Processing is parallelised across rows using rayon. Each thread
+    /// normalises the mesh into [0,1]³, runs cascaded QEM simplification
+    /// and octree clipping per zoom level, then writes fragments to disk.
+    ///
+    /// Returns the number of features ingested.
+    #[pyo3(signature = (path, positions_col="positions", indices_col="indices", prop_col=None, prop_name=None, layer_type="meshes", bounds=(0.0,0.0,0.0,1.0,1.0,1.0)))]
+    fn add_parquet_meshes(
+        &mut self,
+        py: Python<'_>,
+        path: &str,
+        positions_col: &str,
+        indices_col: &str,
+        prop_col: Option<&str>,
+        prop_name: Option<&str>,
+        layer_type: &str,
+        bounds: (f64, f64, f64, f64, f64, f64),
+    ) -> PyResult<u32> {
+        use arrow::array::{Array, LargeBinaryArray, BinaryArray, StringArray, LargeStringArray};
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use std::fs::File;
+        use std::sync::Mutex;
+
+        let (xmin, ymin, zmin, xmax, ymax, zmax) = bounds;
+        let dx = if xmax != xmin { xmax - xmin } else { 1.0 };
+        let dy = if ymax != ymin { ymax - ymin } else { 1.0 };
+        let dz = if zmax != zmin { zmax - zmin } else { 1.0 };
+
+        // Close the single-feature writer; we'll use per-thread shard writers
+        if let Some(mut writer) = self.fragment_writer.take() {
+            writer.flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
+
+        let min_zoom = self.min_zoom;
+        let max_zoom = self.max_zoom;
+        let buffer = self.buffer;
+        let base_cells = self.base_cells;
+
+        let positions_col = positions_col.to_string();
+        let indices_col = indices_col.to_string();
+        let prop_col = prop_col.map(|s| s.to_string());
+        let prop_name_str = prop_name.unwrap_or("name").to_string();
+        let layer_type_str = layer_type.to_string();
+        let path = path.to_string();
+
+        let fid_counter = AtomicU32::new(self.feature_count);
+        let fid_counter_ref = &fid_counter;
+
+        // Per-thread fragment writers for lock-free parallelism
+        let n_writers = rayon::current_num_threads() + 1;
+        let writers: Vec<Mutex<Fragment3DWriter>> = (0..n_writers)
+            .map(|_| {
+                let shard_id = self.shard_counter.fetch_add(1, Ordering::Relaxed);
+                let shard_path = self.frag_dir.join(format!("shard_{:03}.mjf", shard_id));
+                Mutex::new(
+                    Fragment3DWriter::new(&shard_path)
+                        .expect("Failed to create fragment shard file")
+                )
+            })
+            .collect();
+        let writers_ref = &writers;
+
+        // Read Parquet and process batches — GIL released
+        let all_tags: Vec<Vec<(u32, Vec<(String, TagValue)>)>> = py.allow_threads(|| {
+            let file = File::open(&path).expect("Cannot open parquet file");
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+                .expect("Parquet reader error");
+            let reader = builder.build().expect("Parquet build error");
+
+            let mut batch_tags = Vec::new();
+
+            for batch_result in reader {
+                let batch = match batch_result {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+
+                let pos_col_idx = batch.schema().index_of(&positions_col)
+                    .expect("positions column not found");
+                let idx_col_idx = batch.schema().index_of(&indices_col)
+                    .expect("indices column not found");
+                let pos_arr = batch.column(pos_col_idx);
+                let idx_arr = batch.column(idx_col_idx);
+
+                // Optional property column
+                let prop_arr = prop_col.as_ref().map(|col_name| {
+                    let col_idx = batch.schema().index_of(col_name)
+                        .expect("property column not found");
+                    batch.column(col_idx).clone()
+                });
+
+                let n = batch.num_rows();
+
+                // Collect row data for parallel processing
+                struct RowData {
+                    positions_bytes: Vec<u8>,
+                    indices_bytes: Vec<u8>,
+                    prop_value: Option<String>,
+                }
+
+                let mut rows: Vec<RowData> = Vec::with_capacity(n);
+
+                for i in 0..n {
+                    // Extract positions bytes
+                    let pos_bytes = if let Some(a) = pos_arr.as_any().downcast_ref::<LargeBinaryArray>() {
+                        if a.is_null(i) { continue; }
+                        a.value(i).to_vec()
+                    } else if let Some(a) = pos_arr.as_any().downcast_ref::<BinaryArray>() {
+                        if a.is_null(i) { continue; }
+                        a.value(i).to_vec()
+                    } else {
+                        continue;
+                    };
+
+                    // Extract indices bytes
+                    let idx_bytes = if let Some(a) = idx_arr.as_any().downcast_ref::<LargeBinaryArray>() {
+                        if a.is_null(i) { continue; }
+                        a.value(i).to_vec()
+                    } else if let Some(a) = idx_arr.as_any().downcast_ref::<BinaryArray>() {
+                        if a.is_null(i) { continue; }
+                        a.value(i).to_vec()
+                    } else {
+                        continue;
+                    };
+
+                    // Extract optional property
+                    let prop_value = prop_arr.as_ref().and_then(|arr| {
+                        if arr.is_null(i) { return None; }
+                        if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
+                            Some(a.value(i).to_string())
+                        } else if let Some(a) = arr.as_any().downcast_ref::<LargeStringArray>() {
+                            Some(a.value(i).to_string())
+                        } else {
+                            None
+                        }
+                    });
+
+                    rows.push(RowData { positions_bytes: pos_bytes, indices_bytes: idx_bytes, prop_value });
+                }
+
+                // Process rows in parallel
+                let this_tags: Vec<(u32, Vec<(String, TagValue)>)> = rows.par_iter()
+                    .filter_map(|row| {
+                        // Deserialize positions: flat f32 LE bytes → Vec<f32>
+                        let n_floats = row.positions_bytes.len() / 4;
+                        if n_floats < 3 || n_floats % 3 != 0 { return None; }
+                        let mut positions = Vec::with_capacity(n_floats);
+                        for chunk in row.positions_bytes.chunks_exact(4) {
+                            positions.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                        }
+
+                        // Deserialize indices: flat u32 LE bytes → Vec<u32>
+                        let n_ints = row.indices_bytes.len() / 4;
+                        if n_ints < 3 || n_ints % 3 != 0 { return None; }
+                        let mut indices = Vec::with_capacity(n_ints);
+                        for chunk in row.indices_bytes.chunks_exact(4) {
+                            indices.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                        }
+
+                        let n_verts = n_floats / 3;
+
+                        // Validate: all indices must be in range
+                        if indices.iter().any(|&idx| idx as usize >= n_verts) {
+                            return None;
+                        }
+
+                        // Normalize positions to [0,1]³ in-place
+                        let mut bb = BBox3D::empty();
+                        for v in 0..n_verts {
+                            let px = ((positions[v * 3] as f64 - xmin) / dx) as f32;
+                            let py = ((positions[v * 3 + 1] as f64 - ymin) / dy) as f32;
+                            let pz = ((positions[v * 3 + 2] as f64 - zmin) / dz) as f32;
+                            positions[v * 3] = px;
+                            positions[v * 3 + 1] = py;
+                            positions[v * 3 + 2] = pz;
+                            bb.expand(px as f64, py as f64, pz as f64);
+                        }
+
+                        // Assign feature ID
+                        let fid = fid_counter_ref.fetch_add(1, Ordering::Relaxed);
+
+                        // Build tags
+                        let mut tags: Vec<(String, TagValue)> = Vec::with_capacity(2);
+                        tags.push(("layer_type".to_string(), TagValue::Str(layer_type_str.clone())));
+                        if let Some(ref val) = row.prop_value {
+                            tags.push((prop_name_str.clone(), TagValue::Str(val.clone())));
+                        }
+
+                        // Simplify + clip per zoom level
+                        let fragments = simplify_and_clip_per_zoom(
+                            &positions, &indices, bb,
+                            min_zoom, max_zoom, base_cells, buffer,
+                        );
+
+                        // Write fragments to shard
+                        let writer_idx = rayon::current_thread_index().unwrap_or(n_writers - 1);
+                        let mut w = writers_ref[writer_idx].lock().unwrap();
+                        for ((tz, tx, ty, td), cf) in fragments {
+                            let frag = Fragment3D {
+                                feature_id: fid,
+                                tile_z: tz,
+                                tile_x: tx,
+                                tile_y: ty,
+                                tile_d: td,
+                                geom_type: cf.geom_type,
+                                xy: cf.xy.iter().map(|&v| v as f32).collect(),
+                                z: cf.z.iter().map(|&v| v as f32).collect(),
+                                ring_lengths: cf.ring_lengths,
+                            };
+                            w.write(&frag).ok();
+                        }
+
+                        Some((fid, tags))
+                    })
+                    .collect();
+
+                batch_tags.push(this_tags);
+            }
+
+            batch_tags
+        });
+
+        // Flush shard writers
+        for w in &writers {
+            w.lock().unwrap().flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
+
+        // Collect tags into registry and update feature count
+        let mut total_count: u32 = 0;
+        for batch in all_tags {
+            for (fid, tags) in batch {
+                self.tags_registry.insert(fid, tags);
+                total_count += 1;
+            }
+        }
+
+        self.feature_count = fid_counter.load(Ordering::Relaxed);
+
+        Ok(total_count)
+    }
+
     /// Generate Neuroglancer precomputed legacy meshes from accumulated fragments.
     ///
     /// Unlike PBF3/3D Tiles which are tile-centric (one tile → many features),
@@ -3313,7 +3617,7 @@ impl StreamingTileGenerator {
         }
 
         // Read all fragments grouped by feature_id
-        let mut reader = FragmentReader::open_dir(&self.frag_dir)
+        let mut reader = Fragment3DReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let feature_groups = reader.read_all_grouped_by_feature()
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
@@ -3328,7 +3632,7 @@ impl StreamingTileGenerator {
         let tags_ref = &self.tags_registry;
 
         // Process features in parallel
-        let features: Vec<(u32, Vec<Fragment>)> = feature_groups.into_iter().collect();
+        let features: Vec<(u32, Vec<Fragment3D>)> = feature_groups.into_iter().collect();
 
         let count = py.allow_threads(|| {
             // Create output directory
@@ -3346,7 +3650,7 @@ impl StreamingTileGenerator {
             let segment_count: u32 = features.par_iter()
                 .map(|(feature_id, frags)| {
                     // Filter to max_zoom fragments only (highest resolution)
-                    let max_zoom_frags: Vec<&Fragment> = frags.iter()
+                    let max_zoom_frags: Vec<&Fragment3D> = frags.iter()
                         .filter(|f| f.tile_z == max_zoom)
                         .collect();
 
@@ -3470,7 +3774,7 @@ impl StreamingTileGenerator {
             let mut columns: Vec<Vec<serde_json::Value>> = Vec::new();
 
             // Collect all feature IDs and property keys
-            let mut sorted_features: Vec<&(u32, Vec<Fragment>)> = features.iter().collect();
+            let mut sorted_features: Vec<&(u32, Vec<Fragment3D>)> = features.iter().collect();
             sorted_features.sort_by_key(|(fid, _)| *fid);
 
             for (fid, _) in &sorted_features {
@@ -3569,7 +3873,7 @@ impl StreamingTileGenerator {
         }
 
         // Read all fragments grouped by feature_id
-        let mut reader = FragmentReader::open_dir(&self.frag_dir)
+        let mut reader = Fragment3DReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let feature_groups = reader.read_all_grouped_by_feature()
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
@@ -3583,7 +3887,7 @@ impl StreamingTileGenerator {
         let wb = world_bounds;
         let layer = layer_name.to_string();
 
-        let features: Vec<(u32, Vec<Fragment>)> = feature_groups.into_iter().collect();
+        let features: Vec<(u32, Vec<Fragment3D>)> = feature_groups.into_iter().collect();
 
         // Results include lod_count for manifest
         let count = py.allow_threads(|| {
@@ -3594,7 +3898,7 @@ impl StreamingTileGenerator {
                 .filter_map(|(feature_id, frags)| {
                     if multilod {
                         // Multi-LOD: use all zoom levels
-                        let all_refs: Vec<&Fragment> = frags.iter().collect();
+                        let all_refs: Vec<&Fragment3D> = frags.iter().collect();
                         if all_refs.is_empty() {
                             return None;
                         }
@@ -3620,7 +3924,7 @@ impl StreamingTileGenerator {
                         Some((*feature_id, bbox, byte_count, lod_count))
                     } else {
                         // Single-LOD: only max_zoom fragments (backward compat)
-                        let max_zoom_frags: Vec<&Fragment> = frags.iter()
+                        let max_zoom_frags: Vec<&Fragment3D> = frags.iter()
                             .filter(|f| f.tile_z == max_zoom)
                             .collect();
 
@@ -3724,7 +4028,7 @@ impl StreamingTileGenerator {
         }
 
         // Read all fragments grouped by feature_id
-        let mut reader = FragmentReader::open_dir(&self.frag_dir)
+        let mut reader = Fragment3DReader::open_dir(&self.frag_dir)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let feature_groups = reader.read_all_grouped_by_feature()
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
@@ -3740,7 +4044,7 @@ impl StreamingTileGenerator {
         let out_dir = PathBuf::from(output_dir);
         let tags_ref = &self.tags_registry;
 
-        let features: Vec<(u32, Vec<Fragment>)> = feature_groups.into_iter().collect();
+        let features: Vec<(u32, Vec<Fragment3D>)> = feature_groups.into_iter().collect();
 
         // chunk_shape = world extent / 2^max_zoom (finest tile size in world coords)
         let n_tiles = (1u32 << max_zoom) as f64;
@@ -3773,7 +4077,7 @@ impl StreamingTileGenerator {
             let segment_count: u32 = features.par_iter()
                 .map(|(feature_id, frags)| {
                     // Group fragments by tile_z → BTreeMap for ordered iteration
-                    let mut by_zoom: std::collections::BTreeMap<u32, Vec<&Fragment>> = std::collections::BTreeMap::new();
+                    let mut by_zoom: std::collections::BTreeMap<u32, Vec<&Fragment3D>> = std::collections::BTreeMap::new();
                     for frag in frags {
                         if frag.geom_type == 4 || frag.geom_type == 5 {
                             by_zoom.entry(frag.tile_z).or_default().push(frag);
@@ -3805,7 +4109,7 @@ impl StreamingTileGenerator {
                         vertex_offsets.push(0.0);
 
                         // Group fragments by tile position (tile_x, tile_y, tile_d)
-                        let mut by_tile: std::collections::BTreeMap<(u32, u32, u32), Vec<&Fragment>> = std::collections::BTreeMap::new();
+                        let mut by_tile: std::collections::BTreeMap<(u32, u32, u32), Vec<&Fragment3D>> = std::collections::BTreeMap::new();
                         for frag in zoom_frags {
                             by_tile.entry((frag.tile_x, frag.tile_y, frag.tile_d)).or_default().push(frag);
                         }
@@ -3987,7 +4291,7 @@ impl StreamingTileGenerator {
             let mut seen_keys: AHashMap<String, usize> = AHashMap::new();
             let mut columns: Vec<Vec<serde_json::Value>> = Vec::new();
 
-            let mut sorted_features: Vec<&(u32, Vec<Fragment>)> = features.iter().collect();
+            let mut sorted_features: Vec<&(u32, Vec<Fragment3D>)> = features.iter().collect();
             sorted_features.sort_by_key(|(fid, _)| *fid);
 
             for (fid, _) in &sorted_features {
@@ -4118,6 +4422,167 @@ impl Drop for StreamingTileGenerator {
         self.fragment_reader.take();
         std::fs::remove_dir_all(&self.frag_dir).ok();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Parquet generation (pure Rust, parallel row collection + sequential write)
+// ---------------------------------------------------------------------------
+
+fn write_parquet_native_3d(
+    tiles: &[((u32, u32, u32, u32), Vec<Fragment3D>)],
+    output_dir: &str,
+    world_bounds: &(f64, f64, f64, f64, f64, f64),
+    max_zoom: u32,
+    base_cells: u32,
+    _simplify: bool,
+    tags: &HashMap<u32, Vec<(String, TagValue)>>,
+    compression: &str,
+) -> Result<u64, String> {
+    use arrow::array::*;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use parquet::basic::Compression;
+    use parquet::file::properties::WriterProperties;
+
+    if tiles.is_empty() {
+        return Ok(0);
+    }
+
+    // Group tiles by zoom level
+    let min_zoom = tiles.iter().map(|((z, _, _, _), _)| *z).min().unwrap_or(0);
+    let max_z = tiles.iter().map(|((z, _, _, _), _)| *z).max().unwrap_or(0);
+
+    let mut tiles_by_zoom: Vec<Vec<&((u32, u32, u32, u32), Vec<Fragment3D>)>> =
+        vec![Vec::new(); (max_z as usize) + 1];
+    for entry in tiles {
+        tiles_by_zoom[entry.0 .0 as usize].push(entry);
+    }
+
+    // Arrow schema for 3D tiles (no ring_lengths, has tile_d)
+    let schema = Schema::new(vec![
+        Field::new("tile_x", DataType::UInt16, false),
+        Field::new("tile_y", DataType::UInt16, false),
+        Field::new("tile_d", DataType::UInt16, false),
+        Field::new("feature_id", DataType::UInt32, false),
+        Field::new("geom_type", DataType::UInt8, false),
+        Field::new("positions", DataType::LargeBinary, false),
+        Field::new("indices", DataType::LargeBinary, false),
+        Field::new("tags",
+            DataType::Map(
+                std::sync::Arc::new(Field::new("entries", DataType::Struct(
+                    vec![
+                        Field::new("keys", DataType::Utf8, false),
+                        Field::new("values", DataType::Utf8, true),
+                    ].into()
+                ), false)),
+                false,
+            ),
+            false),
+    ]);
+    let schema_ref = std::sync::Arc::new(schema);
+
+    let comp = match compression {
+        "zstd" => Compression::ZSTD(Default::default()),
+        "lz4" => Compression::LZ4_RAW,
+        "snappy" => Compression::SNAPPY,
+        _ => Compression::UNCOMPRESSED,
+    };
+
+    let props = WriterProperties::builder()
+        .set_compression(comp)
+        .build();
+
+    let out_path = std::path::Path::new(output_dir);
+    std::fs::create_dir_all(out_path).map_err(|e| format!("mkdir: {}", e))?;
+
+    let total_rows = std::sync::atomic::AtomicU64::new(0);
+    let total_rows_ref = &total_rows;
+
+    // Process one zoom level at a time
+    for zoom in min_zoom..=max_z {
+        let zoom_tiles = &tiles_by_zoom[zoom as usize];
+        if zoom_tiles.is_empty() {
+            continue;
+        }
+
+        let zoom_dir = out_path.join(format!("zoom={}", zoom));
+        std::fs::create_dir_all(&zoom_dir).map_err(|e| format!("mkdir: {}", e))?;
+
+        // Split tiles into chunks -> each chunk collects rows + writes its own part file in parallel
+        let n_parts = rayon::current_num_threads().max(1);
+        let chunk_size = (zoom_tiles.len() + n_parts - 1) / n_parts;
+
+        let chunks: Vec<(usize, &[&((u32, u32, u32, u32), Vec<Fragment3D>)])> =
+            zoom_tiles.chunks(chunk_size).enumerate().collect();
+        chunks.par_iter().try_for_each(|(part_idx, tile_chunk)| -> Result<(), String> {
+            let part_idx = *part_idx;
+            // Collect rows for this chunk of tiles
+            let tiles_owned: Vec<((u32, u32, u32, u32), Vec<Fragment3D>)> = tile_chunk
+                .iter()
+                .map(|&entry| entry.clone())
+                .collect();
+            let rows = collect_parquet_rows(&tiles_owned, world_bounds, max_zoom, base_cells);
+            drop(tiles_owned);
+
+            if rows.is_empty() { return Ok(()); }
+
+            let file_path = zoom_dir.join(format!("part_{:03}.parquet", part_idx));
+            let file = std::fs::File::create(&file_path)
+                .map_err(|e| format!("create {}: {}", file_path.display(), e))?;
+            let mut pq_writer = ArrowWriter::try_new(file, schema_ref.clone(), Some(props.clone()))
+                .map_err(|e| format!("ArrowWriter: {}", e))?;
+
+            let n = rows.len();
+            let tile_x: UInt16Array = rows.iter().map(|r| Some(r.tile_x)).collect();
+            let tile_y: UInt16Array = rows.iter().map(|r| Some(r.tile_y)).collect();
+            let tile_d: UInt16Array = rows.iter().map(|r| Some(r.tile_d)).collect();
+            let feature_id: UInt32Array = rows.iter().map(|r| Some(r.feature_id)).collect();
+            let geom_type: UInt8Array = rows.iter().map(|r| Some(r.geom_type)).collect();
+            let positions: LargeBinaryArray = rows.iter().map(|r| Some(r.positions.as_slice())).collect();
+            let indices: LargeBinaryArray = rows.iter().map(|r| Some(r.indices.as_slice())).collect();
+
+            let key_builder = StringBuilder::with_capacity(n * 2, n * 32);
+            let val_builder = StringBuilder::with_capacity(n * 2, n * 32);
+            let mut map_builder = MapBuilder::new(None, key_builder, val_builder);
+
+            for row in &rows {
+                if let Some(tag_vec) = tags.get(&row.feature_id) {
+                    for (k, v) in tag_vec {
+                        map_builder.keys().append_value(k);
+                        match v {
+                            TagValue::Str(s) => map_builder.values().append_value(s),
+                            TagValue::Int(i) => map_builder.values().append_value(i.to_string()),
+                            TagValue::Float(f) => map_builder.values().append_value(f.to_string()),
+                            TagValue::Bool(b) => map_builder.values().append_value(b.to_string()),
+                        }
+                    }
+                }
+                map_builder.append(true).map_err(|e| format!("map: {}", e))?;
+            }
+
+            let batch = arrow::record_batch::RecordBatch::try_new(
+                schema_ref.clone(),
+                vec![
+                    std::sync::Arc::new(tile_x),
+                    std::sync::Arc::new(tile_y),
+                    std::sync::Arc::new(tile_d),
+                    std::sync::Arc::new(feature_id),
+                    std::sync::Arc::new(geom_type),
+                    std::sync::Arc::new(positions),
+                    std::sync::Arc::new(indices),
+                    std::sync::Arc::new(map_builder.finish()),
+                ],
+            ).map_err(|e| format!("RecordBatch: {}", e))?;
+
+            pq_writer.write(&batch).map_err(|e| format!("write: {}", e))?;
+            pq_writer.close().map_err(|e| format!("close: {}", e))?;
+
+            total_rows_ref.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        })?;
+    }
+
+    Ok(total_rows.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Scan a list of OBJ files and return the combined world bounding box.

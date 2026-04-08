@@ -132,6 +132,23 @@ body {
     border-color: #a0aec0 !important;
 }
 
+#color-legend {
+    margin-top: 8px;
+    font-size: 0.75rem;
+}
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 3px;
+}
+.legend-swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
 .micron-scale-bar {
     background: rgba(26, 32, 44, 0.8);
     border-radius: 4px;

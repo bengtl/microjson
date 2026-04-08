@@ -3,8 +3,22 @@
 /// Architecture:
 ///   For each feature: project → clip through quadtree → write Fragment2D to disk
 ///   For Parquet output: read fragments → encode to world-coord f32 LE → return to Python
+///
+/// # API differences from StreamingTileGenerator (streaming.rs)
+///
+/// **Constructor**: 2D omits `extent_z`, `base_cells`, `num_buckets` (3D-only params).
+/// Both share: `min_zoom`, `max_zoom`, `buffer`, `temp_dir`.
+///
+/// **generate_mvt vs generate_pbf3**: 2D encodes MVT (Mapbox Vector Tiles) with XY-only
+/// geometry. 3D encodes PBF3/GLB/Neuroglancer formats with Z coordinates and 3D geometry
+/// types (TIN, PolyhedralSurface). Unifying signatures would require breaking changes.
+///
+/// **Shared utilities**: `extract_tags` is shared via `crate::streaming::extract_tags`.
+///
+/// **Precision**: 2D uses `extent` for quantization. 3D adds `extent_z`.
+/// A future `precision` parameter could unify these.
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
+use pyo3::types::{PyDict, PyList};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -15,7 +29,7 @@ use crate::types2d::BBox2D;
 use crate::clip2d::{self, ClipFeature2D};
 use crate::fragment2d::{Fragment2D, Fragment2DWriter, Fragment2DReader};
 use crate::simplify2d;
-use crate::streaming::TagValue;
+use crate::streaming::{TagValue, extract_tags};
 use crate::encoder_mvt;
 
 // Geometry type constants
@@ -68,19 +82,24 @@ fn collect_parquet_rows_2d(
                     continue;
                 }
 
-                // Optionally simplify at coarse zoom levels
-                let (work_xy, work_rl) = if do_simplify && frag.geom_type == POLYGON && !frag.ring_lengths.is_empty() {
+                // Optionally simplify at coarse zoom levels (simplify operates on f64)
+                let (work_xy_f32, work_rl) = if do_simplify && frag.geom_type == POLYGON && !frag.ring_lengths.is_empty() {
                     let eps = simplify2d::compute_tolerance(tz, max_zoom);
                     if eps > 0.0 {
-                        simplify2d::simplify_polygon_rings(&frag.xy, &frag.ring_lengths, eps)
+                        let xy_f64: Vec<f64> = frag.xy.iter().map(|&v| v as f64).collect();
+                        let (simp, rl) = simplify2d::simplify_polygon_rings(&xy_f64, &frag.ring_lengths, eps);
+                        let simp_f32: Vec<f32> = simp.iter().map(|&v| v as f32).collect();
+                        (simp_f32, rl)
                     } else {
                         (frag.xy.clone(), frag.ring_lengths.clone())
                     }
                 } else if do_simplify && frag.geom_type == LINESTRING {
                     let eps = simplify2d::compute_tolerance(tz, max_zoom);
                     if eps > 0.0 {
-                        let simplified = simplify2d::douglas_peucker(&frag.xy, eps);
-                        (simplified, vec![])
+                        let xy_f64: Vec<f64> = frag.xy.iter().map(|&v| v as f64).collect();
+                        let simplified = simplify2d::douglas_peucker(&xy_f64, eps);
+                        let simp_f32: Vec<f32> = simplified.iter().map(|&v| v as f32).collect();
+                        (simp_f32, vec![])
                     } else {
                         (frag.xy.clone(), vec![])
                     }
@@ -88,7 +107,7 @@ fn collect_parquet_rows_2d(
                     (frag.xy.clone(), frag.ring_lengths.clone())
                 };
 
-                let work_n = work_xy.len() / 2;
+                let work_n = work_xy_f32.len() / 2;
                 if work_n == 0 {
                     continue;
                 }
@@ -96,8 +115,8 @@ fn collect_parquet_rows_2d(
                 // Convert to world coordinates as f32 LE bytes (x,y pairs)
                 let mut pos_f32: Vec<f32> = Vec::with_capacity(work_n * 2);
                 for i in 0..work_n {
-                    pos_f32.push((xmin + work_xy[i * 2] * dx) as f32);
-                    pos_f32.push((ymin + work_xy[i * 2 + 1] * dy) as f32);
+                    pos_f32.push(xmin as f32 + work_xy_f32[i * 2] * dx as f32);
+                    pos_f32.push(ymin as f32 + work_xy_f32[i * 2 + 1] * dy as f32);
                 }
 
                 // Build indices for LineString (line segment pairs)
@@ -134,35 +153,6 @@ fn collect_parquet_rows_2d(
             rows
         })
         .collect()
-}
-
-// ---------------------------------------------------------------------------
-// PyO3 helpers: extract tags
-// ---------------------------------------------------------------------------
-
-fn extract_tags_2d(feat: &Bound<'_, PyDict>) -> PyResult<Vec<(String, TagValue)>> {
-    let tags_obj = feat.get_item("tags")?;
-    let mut result = Vec::new();
-
-    if let Some(tags) = tags_obj {
-        if let Ok(tags_dict) = tags.downcast::<PyDict>() {
-            for (k, v) in tags_dict.iter() {
-                if v.is_none() { continue; }
-                let key: String = k.extract()?;
-                if v.is_instance_of::<PyBool>() {
-                    result.push((key, TagValue::Bool(v.extract()?)));
-                } else if v.is_instance_of::<PyString>() {
-                    result.push((key, TagValue::Str(v.extract()?)));
-                } else if v.is_instance_of::<PyFloat>() {
-                    result.push((key, TagValue::Float(v.extract()?)));
-                } else if v.is_instance_of::<PyInt>() {
-                    result.push((key, TagValue::Int(v.extract()?)));
-                }
-            }
-        }
-    }
-
-    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -402,7 +392,7 @@ impl StreamingTileGenerator2D {
         let fid = self.feature_count;
         self.feature_count += 1;
 
-        let tags = extract_tags_2d(feat)?;
+        let tags = extract_tags(feat)?;
         self.tags_registry.insert(fid, tags);
 
         let xy: Vec<f64> = feat.get_item("xy")?.unwrap().extract()?;
@@ -435,7 +425,7 @@ impl StreamingTileGenerator2D {
                 tile_x: tx,
                 tile_y: ty,
                 geom_type: cf.geom_type,
-                xy: cf.xy,
+                xy: cf.xy.iter().map(|&v| v as f32).collect(),
                 ring_lengths: cf.ring_lengths,
             };
             writer.write(&frag)
@@ -505,16 +495,23 @@ impl StreamingTileGenerator2D {
             }
             self.tags_registry.insert(fid, tag_vec);
 
-            for (cf, _gt) in clip_feats {
+            for (cf, gt) in clip_feats {
                 let fragments = clip2d::quadtree_clip(&cf, self.min_zoom, self.max_zoom, self.buffer);
                 for ((tz, tx, ty), clipped) in fragments {
+                    // Decimation for point features: at lower zooms, skip most points
+                    if gt == POINT && tz < self.max_zoom {
+                        let skip_factor = 1u32 << (self.max_zoom - tz);
+                        if fid % skip_factor != 0 {
+                            continue;
+                        }
+                    }
                     let frag = Fragment2D {
                         feature_id: fid,
                         tile_z: tz,
                         tile_x: tx,
                         tile_y: ty,
                         geom_type: clipped.geom_type,
-                        xy: clipped.xy,
+                        xy: clipped.xy.iter().map(|&v| v as f32).collect(),
                         ring_lengths: clipped.ring_lengths,
                     };
                     writer.write(&frag)
@@ -548,6 +545,7 @@ impl StreamingTileGenerator2D {
     #[pyo3(signature = (path, x_col, y_col, prop_col, prop_name, layer_type, bounds, coord_scale=1.0))]
     fn add_parquet_points(
         &mut self,
+        py: Python<'_>,
         path: &str,
         x_col: &str,
         y_col: &str,
@@ -560,124 +558,397 @@ impl StreamingTileGenerator2D {
         use arrow::array::{Float32Array, Float64Array, Array};
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
         use std::fs::File;
+        use std::sync::Mutex;
 
         let (xmin, ymin, xmax, ymax) = bounds;
         let proj_dx = if xmax != xmin { xmax - xmin } else { 1.0 };
         let proj_dy = if ymax != ymin { ymax - ymin } else { 1.0 };
 
-        let file = File::open(path)
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Cannot open {}: {}", path, e)))?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Parquet error: {}", e)))?;
-        let reader = builder.build()
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Parquet reader: {}", e)))?;
+        // Close the single-feature writer; we'll use per-thread shard writers
+        if let Some(mut writer) = self.fragment_writer.take() {
+            writer.flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
 
-        let writer = self.fragment_writer.as_mut()
-            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-                "Cannot add features after generate"))?;
-
-        let lt_str = layer_type.to_string();
-        let prop_name_str = prop_name.to_string();
         let min_zoom = self.min_zoom;
         let max_zoom = self.max_zoom;
         let buffer = self.buffer;
-        let mut count: u32 = 0;
+        let lt_str = layer_type.to_string();
+        let prop_name_str = prop_name.to_string();
+        let x_col = x_col.to_string();
+        let y_col = y_col.to_string();
+        let prop_col = prop_col.to_string();
+        let path = path.to_string();
 
-        for batch_result in reader {
-            let batch = batch_result
-                .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Batch read: {}", e)))?;
+        // Per-thread fragment writers (same pattern as add_geojson_files)
+        let n_writers = rayon::current_num_threads() + 1;
+        let writers: Vec<Mutex<Fragment2DWriter>> = (0..n_writers)
+            .map(|_| {
+                let shard_id = self.shard_counter.fetch_add(1, Ordering::Relaxed);
+                let shard_path = self.frag_dir.join(format!("shard_{:03}.mf2d", shard_id));
+                Mutex::new(
+                    Fragment2DWriter::new(&shard_path)
+                        .expect("Failed to create fragment2d shard file")
+                )
+            })
+            .collect();
+        let writers_ref = &writers;
 
-            let x_col_idx = batch.schema().index_of(x_col)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Column '{}': {}", x_col, e)))?;
-            let y_col_idx = batch.schema().index_of(y_col)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Column '{}': {}", y_col, e)))?;
+        let fid_counter = AtomicU32::new(self.feature_count);
+        let fid_counter_ref = &fid_counter;
 
-            let x_arr = batch.column(x_col_idx);
-            let y_arr = batch.column(y_col_idx);
+        // Read Parquet and process batches in parallel — GIL released
+        let all_tags: Vec<Vec<(u32, Vec<(String, TagValue)>)>> = py.allow_threads(|| {
+            let file = File::open(&path).expect("Cannot open parquet file");
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+                .expect("Parquet reader error");
+            let reader = builder.build().expect("Parquet build error");
 
-            let prop_col_idx = batch.schema().index_of(prop_col).ok();
-            let prop_arr = prop_col_idx.map(|i| batch.column(i).clone());
+            let mut batch_tags = Vec::new();
 
-            let n = batch.num_rows();
-            for i in 0..n {
-                if x_arr.is_null(i) || y_arr.is_null(i) {
-                    continue;
+            for batch_result in reader {
+                let batch = match batch_result {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+
+                let x_col_idx = batch.schema().index_of(&x_col).unwrap();
+                let y_col_idx = batch.schema().index_of(&y_col).unwrap();
+                let x_arr = batch.column(x_col_idx);
+                let y_arr = batch.column(y_col_idx);
+                let prop_col_idx = batch.schema().index_of(&prop_col).ok();
+                let prop_arr = prop_col_idx.map(|i| batch.column(i).clone());
+
+                // Collect row data for parallel processing
+                let n = batch.num_rows();
+                let mut rows: Vec<(f64, f64, Option<String>)> = Vec::with_capacity(n);
+
+                for i in 0..n {
+                    if x_arr.is_null(i) || y_arr.is_null(i) { continue; }
+
+                    let raw_x = if let Some(a) = x_arr.as_any().downcast_ref::<Float32Array>() {
+                        a.value(i) as f64
+                    } else if let Some(a) = x_arr.as_any().downcast_ref::<Float64Array>() {
+                        a.value(i)
+                    } else { continue };
+
+                    let raw_y = if let Some(a) = y_arr.as_any().downcast_ref::<Float32Array>() {
+                        a.value(i) as f64
+                    } else if let Some(a) = y_arr.as_any().downcast_ref::<Float64Array>() {
+                        a.value(i)
+                    } else { continue };
+
+                    let prop_val = if let Some(ref arr) = prop_arr {
+                        if let Some(sa) = arr.as_any().downcast_ref::<arrow::array::StringArray>() {
+                            if !sa.is_null(i) { Some(sa.value(i).to_string()) } else { None }
+                        } else if let Some(ba) = arr.as_any().downcast_ref::<arrow::array::BinaryArray>() {
+                            if !ba.is_null(i) {
+                                std::str::from_utf8(ba.value(i)).ok().map(|s| s.to_string())
+                            } else { None }
+                        } else if let Some(sa) = arr.as_any().downcast_ref::<arrow::array::LargeStringArray>() {
+                            if !sa.is_null(i) { Some(sa.value(i).to_string()) } else { None }
+                        } else { None }
+                    } else { None };
+
+                    rows.push((raw_x, raw_y, prop_val));
                 }
 
-                let raw_x = if let Some(a) = x_arr.as_any().downcast_ref::<Float32Array>() {
-                    a.value(i) as f64
-                } else if let Some(a) = x_arr.as_any().downcast_ref::<Float64Array>() {
-                    a.value(i)
-                } else {
-                    continue;
-                };
-                let raw_y = if let Some(a) = y_arr.as_any().downcast_ref::<Float32Array>() {
-                    a.value(i) as f64
-                } else if let Some(a) = y_arr.as_any().downcast_ref::<Float64Array>() {
-                    a.value(i)
-                } else {
-                    continue;
-                };
+                // Parallel clip + write for this batch
+                let this_tags: Vec<(u32, Vec<(String, TagValue)>)> = rows.par_iter()
+                    .map(|(raw_x, raw_y, prop_val)| {
+                        let x = raw_x * coord_scale;
+                        let y = raw_y * coord_scale;
+                        let nx = (x - xmin) / proj_dx;
+                        let ny = (y - ymin) / proj_dy;
 
-                let x = raw_x * coord_scale;
-                let y = raw_y * coord_scale;
+                        let fid = fid_counter_ref.fetch_add(1, Ordering::Relaxed);
 
-                // Project to [0,1]²
-                let nx = (x - xmin) / proj_dx;
-                let ny = (y - ymin) / proj_dy;
-
-                let fid = self.feature_count + count;
-                count += 1;
-
-                // Tags
-                let mut tags: Vec<(String, TagValue)> = Vec::with_capacity(2);
-                tags.push(("layer_type".to_string(), TagValue::Str(lt_str.clone())));
-
-                if let Some(ref arr) = prop_arr {
-                    if let Some(sa) = arr.as_any().downcast_ref::<arrow::array::StringArray>() {
-                        if !sa.is_null(i) {
-                            tags.push((prop_name_str.clone(), TagValue::Str(sa.value(i).to_string())));
+                        let mut tags: Vec<(String, TagValue)> = Vec::with_capacity(2);
+                        tags.push(("layer_type".to_string(), TagValue::Str(lt_str.clone())));
+                        if let Some(ref v) = prop_val {
+                            tags.push((prop_name_str.clone(), TagValue::Str(v.clone())));
                         }
-                    } else if let Some(ba) = arr.as_any().downcast_ref::<arrow::array::BinaryArray>() {
-                        if !ba.is_null(i) {
-                            if let Ok(s) = std::str::from_utf8(ba.value(i)) {
-                                tags.push((prop_name_str.clone(), TagValue::Str(s.to_string())));
+
+                        let cf = ClipFeature2D {
+                            xy: vec![nx, ny],
+                            ring_lengths: vec![],
+                            geom_type: 1,
+                            bbox: BBox2D { min_x: nx, min_y: ny, max_x: nx, max_y: ny },
+                        };
+
+                        let fragments = clip2d::quadtree_clip(&cf, min_zoom, max_zoom, buffer);
+                        let writer_idx = rayon::current_thread_index().unwrap_or(n_writers - 1);
+                        let mut w = writers_ref[writer_idx].lock().unwrap();
+                        for ((tz, tx, ty), clipped) in fragments {
+                            // Decimation: at lower zooms, skip most points
+                            if tz < max_zoom {
+                                let skip_factor = 1u32 << (max_zoom - tz);
+                                if fid % skip_factor != 0 {
+                                    continue;
+                                }
                             }
+                            let frag = Fragment2D {
+                                feature_id: fid,
+                                tile_z: tz, tile_x: tx, tile_y: ty,
+                                geom_type: clipped.geom_type,
+                                xy: clipped.xy.iter().map(|&v| v as f32).collect(),
+                                ring_lengths: clipped.ring_lengths,
+                            };
+                            w.write(&frag).expect("Fragment write failed");
                         }
-                    } else if let Some(sa) = arr.as_any().downcast_ref::<arrow::array::LargeStringArray>() {
-                        if !sa.is_null(i) {
-                            tags.push((prop_name_str.clone(), TagValue::Str(sa.value(i).to_string())));
-                        }
-                    }
-                }
 
+                        (fid, tags)
+                    })
+                    .collect();
+
+                batch_tags.push(this_tags);
+            }
+
+            batch_tags
+        });
+
+        // Flush shard writers
+        for w in &writers {
+            w.lock().unwrap().flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
+
+        // Collect tags into registry
+        let mut total_count: u32 = 0;
+        for batch in all_tags {
+            for (fid, tags) in batch {
                 self.tags_registry.insert(fid, tags);
-
-                // Point clip
-                let cf = ClipFeature2D {
-                    xy: vec![nx, ny],
-                    ring_lengths: vec![],
-                    geom_type: 1,
-                    bbox: BBox2D { min_x: nx, min_y: ny, max_x: nx, max_y: ny },
-                };
-
-                let fragments = clip2d::quadtree_clip(&cf, min_zoom, max_zoom, buffer);
-                for ((tz, tx, ty), clipped) in fragments {
-                    let frag = Fragment2D {
-                        feature_id: fid,
-                        tile_z: tz, tile_x: tx, tile_y: ty,
-                        geom_type: clipped.geom_type,
-                        xy: clipped.xy,
-                        ring_lengths: clipped.ring_lengths,
-                    };
-                    writer.write(&frag)
-                        .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
-                }
+                total_count += 1;
             }
         }
 
-        self.feature_count += count;
-        Ok(count)
+        self.feature_count = fid_counter.load(Ordering::Relaxed);
+        Ok(total_count)
+    }
+
+    /// Add polygon features from a Parquet file with vertex-per-row layout.
+    ///
+    /// Reads id/x/y columns, groups rows by id_col to build polygon rings,
+    /// projects to [0,1]², clips through quadtree, and writes fragments.
+    ///
+    /// Args:
+    ///   path: Path to the Parquet file.
+    ///   id_col: Column name for polygon identifier (e.g., "cell_id").
+    ///   x_col: Column name for vertex x coordinate.
+    ///   y_col: Column name for vertex y coordinate.
+    ///   layer_type: Value for the "layer_type" tag.
+    ///   bounds: World bounding box (xmin, ymin, xmax, ymax) AFTER scaling.
+    ///   coord_scale: Multiply raw coordinates by this (default 1.0).
+    ///
+    /// Returns number of polygons added.
+    #[pyo3(signature = (path, id_col, x_col, y_col, layer_type, bounds, coord_scale=1.0))]
+    fn add_parquet_polygons(
+        &mut self,
+        py: Python<'_>,
+        path: &str,
+        id_col: &str,
+        x_col: &str,
+        y_col: &str,
+        layer_type: &str,
+        bounds: (f64, f64, f64, f64),
+        coord_scale: f64,
+    ) -> PyResult<u32> {
+        use arrow::array::{Float32Array, Float64Array, Int32Array, Int64Array,
+                           StringArray, BinaryArray, LargeStringArray, Array};
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use std::fs::File;
+        use std::sync::Mutex;
+
+        let (xmin, ymin, xmax, ymax) = bounds;
+        let proj_dx = if xmax != xmin { xmax - xmin } else { 1.0 };
+        let proj_dy = if ymax != ymin { ymax - ymin } else { 1.0 };
+
+        // Close the single-feature writer; we'll use per-thread shard writers
+        if let Some(mut writer) = self.fragment_writer.take() {
+            writer.flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
+
+        let min_zoom = self.min_zoom;
+        let max_zoom = self.max_zoom;
+        let buffer = self.buffer;
+        let lt_str = layer_type.to_string();
+        let id_col = id_col.to_string();
+        let x_col = x_col.to_string();
+        let y_col = y_col.to_string();
+        let path = path.to_string();
+
+        // Per-thread fragment writers
+        let n_writers = rayon::current_num_threads() + 1;
+        let writers: Vec<Mutex<Fragment2DWriter>> = (0..n_writers)
+            .map(|_| {
+                let shard_id = self.shard_counter.fetch_add(1, Ordering::Relaxed);
+                let shard_path = self.frag_dir.join(format!("shard_{:03}.mf2d", shard_id));
+                Mutex::new(
+                    Fragment2DWriter::new(&shard_path)
+                        .expect("Failed to create fragment2d shard file")
+                )
+            })
+            .collect();
+        let writers_ref = &writers;
+
+        let fid_counter = AtomicU32::new(self.feature_count);
+        let fid_counter_ref = &fid_counter;
+
+        // Read Parquet and process batches — GIL released
+        let all_tags: Vec<Vec<(u32, Vec<(String, TagValue)>)>> = py.allow_threads(|| {
+            let file = File::open(&path).expect("Cannot open parquet file");
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+                .expect("Parquet reader error");
+            let reader = builder.build().expect("Parquet build error");
+
+            let mut batch_tags = Vec::new();
+
+            for batch_result in reader {
+                let batch = match batch_result {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+
+                let id_col_idx = batch.schema().index_of(&id_col).unwrap();
+                let x_col_idx = batch.schema().index_of(&x_col).unwrap();
+                let y_col_idx = batch.schema().index_of(&y_col).unwrap();
+                let id_arr = batch.column(id_col_idx);
+                let x_arr = batch.column(x_col_idx);
+                let y_arr = batch.column(y_col_idx);
+
+                let n = batch.num_rows();
+
+                // Group rows by cell_id to build polygons
+                // Use an IndexMap-like approach: collect (id_string, x, y) then group
+                let mut groups: ahash::AHashMap<String, Vec<(f64, f64)>> = ahash::AHashMap::new();
+                let mut id_order: Vec<String> = Vec::new();
+
+                for i in 0..n {
+                    if x_arr.is_null(i) || y_arr.is_null(i) || id_arr.is_null(i) {
+                        continue;
+                    }
+
+                    // Extract id as string from various types
+                    let id_str = if let Some(a) = id_arr.as_any().downcast_ref::<Int32Array>() {
+                        a.value(i).to_string()
+                    } else if let Some(a) = id_arr.as_any().downcast_ref::<Int64Array>() {
+                        a.value(i).to_string()
+                    } else if let Some(a) = id_arr.as_any().downcast_ref::<StringArray>() {
+                        a.value(i).to_string()
+                    } else if let Some(a) = id_arr.as_any().downcast_ref::<BinaryArray>() {
+                        match std::str::from_utf8(a.value(i)) {
+                            Ok(s) => s.to_string(),
+                            Err(_) => continue,
+                        }
+                    } else if let Some(a) = id_arr.as_any().downcast_ref::<LargeStringArray>() {
+                        a.value(i).to_string()
+                    } else {
+                        continue;
+                    };
+
+                    let raw_x = if let Some(a) = x_arr.as_any().downcast_ref::<Float32Array>() {
+                        a.value(i) as f64
+                    } else if let Some(a) = x_arr.as_any().downcast_ref::<Float64Array>() {
+                        a.value(i)
+                    } else { continue };
+
+                    let raw_y = if let Some(a) = y_arr.as_any().downcast_ref::<Float32Array>() {
+                        a.value(i) as f64
+                    } else if let Some(a) = y_arr.as_any().downcast_ref::<Float64Array>() {
+                        a.value(i)
+                    } else { continue };
+
+                    if !groups.contains_key(&id_str) {
+                        id_order.push(id_str.clone());
+                    }
+                    groups.entry(id_str).or_default().push((raw_x, raw_y));
+                }
+
+                // Build polygon features and clip in parallel
+                let polygons: Vec<(String, Vec<(f64, f64)>)> = id_order
+                    .into_iter()
+                    .filter_map(|id| {
+                        let verts = groups.remove(&id)?;
+                        if verts.len() >= 3 {
+                            Some((id, verts))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                let this_tags: Vec<(u32, Vec<(String, TagValue)>)> = polygons.par_iter()
+                    .map(|(cell_id, verts)| {
+                        // Build normalized polygon ring
+                        let mut xy = Vec::with_capacity(verts.len() * 2);
+                        let mut bb = BBox2D::empty();
+                        for &(raw_x, raw_y) in verts {
+                            let x = raw_x * coord_scale;
+                            let y = raw_y * coord_scale;
+                            let nx = (x - xmin) / proj_dx;
+                            let ny = (y - ymin) / proj_dy;
+                            xy.push(nx);
+                            xy.push(ny);
+                            bb.expand(nx, ny);
+                        }
+
+                        let ring_lengths = vec![verts.len() as u32];
+
+                        let fid = fid_counter_ref.fetch_add(1, Ordering::Relaxed);
+
+                        let mut tags: Vec<(String, TagValue)> = Vec::with_capacity(2);
+                        tags.push(("layer_type".to_string(), TagValue::Str(lt_str.clone())));
+                        tags.push(("cell_id".to_string(), TagValue::Str(cell_id.clone())));
+
+                        let cf = ClipFeature2D {
+                            xy,
+                            ring_lengths,
+                            geom_type: POLYGON,
+                            bbox: bb,
+                        };
+
+                        let fragments = clip2d::quadtree_clip(&cf, min_zoom, max_zoom, buffer);
+                        let writer_idx = rayon::current_thread_index().unwrap_or(n_writers - 1);
+                        let mut w = writers_ref[writer_idx].lock().unwrap();
+                        for ((tz, tx, ty), clipped) in fragments {
+                            let frag = Fragment2D {
+                                feature_id: fid,
+                                tile_z: tz, tile_x: tx, tile_y: ty,
+                                geom_type: clipped.geom_type,
+                                xy: clipped.xy.iter().map(|&v| v as f32).collect(),
+                                ring_lengths: clipped.ring_lengths,
+                            };
+                            w.write(&frag).expect("Fragment write failed");
+                        }
+
+                        (fid, tags)
+                    })
+                    .collect();
+
+                batch_tags.push(this_tags);
+            }
+
+            batch_tags
+        });
+
+        // Flush shard writers
+        for w in &writers {
+            w.lock().unwrap().flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
+
+        // Collect tags into registry
+        let mut total_count: u32 = 0;
+        for batch in all_tags {
+            for (fid, tags) in batch {
+                self.tags_registry.insert(fid, tags);
+                total_count += 1;
+            }
+        }
+
+        self.feature_count = fid_counter.load(Ordering::Relaxed);
+        Ok(total_count)
     }
 
     /// Add multiple GeoJSON files in parallel using rayon.
@@ -775,7 +1046,7 @@ impl StreamingTileGenerator2D {
                                 feature_id: fid,
                                 tile_z: tz, tile_x: tx, tile_y: ty,
                                 geom_type: clipped.geom_type,
-                                xy: clipped.xy,
+                                xy: clipped.xy.iter().map(|&v| v as f32).collect(),
                                 ring_lengths: clipped.ring_lengths,
                             };
                             w.write(&frag_out).ok();
@@ -998,6 +1269,298 @@ impl StreamingTileGenerator2D {
 
         Ok(tile_count)
     }
+
+    /// Generate partitioned Parquet entirely in Rust — no Python round-trip.
+    ///
+    /// Reads fragments, transforms to world coords (parallel via Rayon),
+    /// writes one Parquet file per zoom level using arrow-rs + parquet-rs.
+    ///
+    /// Returns total number of rows written.
+    #[pyo3(signature = (output_dir, world_bounds, simplify=true, compression="zstd"))]
+    fn generate_parquet_native(
+        &mut self,
+        py: Python<'_>,
+        output_dir: &str,
+        world_bounds: (f64, f64, f64, f64),
+        simplify: bool,
+        compression: &str,
+    ) -> PyResult<u64> {
+        // Flush fragment writer
+        if let Some(mut writer) = self.fragment_writer.take() {
+            writer.flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
+
+        // Read all fragments grouped by tile
+        let mut reader = Fragment2DReader::open_dir(&self.frag_dir)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        let groups = reader.read_all_grouped()
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+
+        let tiles: Vec<((u32, u32, u32), Vec<Fragment2D>)> = groups.into_iter().collect();
+        let max_zoom = self.max_zoom;
+        let tags_snapshot: HashMap<u32, Vec<(String, TagValue)>> = self.tags_registry.clone();
+        let out_dir = output_dir.to_string();
+        let comp = compression.to_string();
+
+        let total = py.allow_threads(|| {
+            write_parquet_native(
+                &tiles, &out_dir, &world_bounds, max_zoom,
+                simplify, &tags_snapshot, &comp,
+            )
+        }).map_err(|e| pyo3::exceptions::PyIOError::new_err(e))?;
+
+        Ok(total)
+    }
+
+    /// Generate PBF + Parquet concurrently from the same fragments.
+    ///
+    /// Reads fragments once, then uses rayon::join to run PBF encoding
+    /// and Parquet writing in parallel. Returns (tile_count, parquet_rows).
+    #[pyo3(signature = (pbf_dir, parquet_dir, world_bounds, extent=4096, simplify=true, layer_name="geojsonLayer", compression="zstd"))]
+    fn generate_all(
+        &mut self,
+        py: Python<'_>,
+        pbf_dir: &str,
+        parquet_dir: &str,
+        world_bounds: (f64, f64, f64, f64),
+        extent: u32,
+        simplify: bool,
+        layer_name: &str,
+        compression: &str,
+    ) -> PyResult<(u32, u64)> {
+        // Flush fragment writer
+        if let Some(mut writer) = self.fragment_writer.take() {
+            writer.flush()
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
+
+        // Read all fragments once
+        let mut reader = Fragment2DReader::open_dir(&self.frag_dir)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        let groups = reader.read_all_grouped()
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+
+        let tiles: Vec<((u32, u32, u32), Vec<Fragment2D>)> = groups.into_iter().collect();
+        let max_zoom = self.max_zoom;
+        let min_zoom = self.min_zoom;
+        let tags_snapshot: HashMap<u32, Vec<(String, TagValue)>> = self.tags_registry.clone();
+        let pbf_out = pbf_dir.to_string();
+        let pq_out = parquet_dir.to_string();
+        let ln = layer_name.to_string();
+        let comp = compression.to_string();
+
+        // Run PBF + Parquet concurrently via rayon::join (GIL released)
+        let (pbf_result, pq_result) = py.allow_threads(|| {
+            rayon::join(
+                || generate_pbf_tiles(
+                    &tiles, &pbf_out, &world_bounds, max_zoom, extent,
+                    simplify, &ln, &tags_snapshot,
+                ),
+                || write_parquet_native(
+                    &tiles, &pq_out, &world_bounds, max_zoom,
+                    simplify, &tags_snapshot, &comp,
+                ),
+            )
+        });
+
+        let tile_count = pbf_result
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e))?;
+        let pq_rows = pq_result
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e))?;
+
+        // Write PBF metadata.json
+        let meta_path = std::path::Path::new(pbf_dir).join("metadata.json");
+        let center_x = (world_bounds.0 + world_bounds.2) / 2.0;
+        let center_y = (world_bounds.1 + world_bounds.3) / 2.0;
+        let meta = serde_json::json!({
+            "tilejson": "3.0.0",
+            "tiles": ["{z}/{x}/{y}.pbf"],
+            "name": "MicroJSON Vector Tiles",
+            "description": "Vector tiles generated by microjson Rust pipeline",
+            "version": "1.0.0",
+            "minzoom": min_zoom,
+            "maxzoom": max_zoom,
+            "bounds": [world_bounds.0, world_bounds.1, world_bounds.2, world_bounds.3],
+            "center": [0.0, center_x, center_y],
+            "vector_layers": [{
+                "id": ln,
+                "fields": {},
+                "minzoom": min_zoom,
+                "maxzoom": max_zoom,
+            }],
+            "tile_count": tile_count,
+        });
+        std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap())
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+
+        Ok((tile_count, pq_rows))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Parquet generation (pure Rust, parallel row collection + sequential write)
+// ---------------------------------------------------------------------------
+
+fn write_parquet_native(
+    tiles: &[((u32, u32, u32), Vec<Fragment2D>)],
+    output_dir: &str,
+    world_bounds: &(f64, f64, f64, f64),
+    max_zoom: u32,
+    simplify: bool,
+    tags: &HashMap<u32, Vec<(String, TagValue)>>,
+    compression: &str,
+) -> Result<u64, String> {
+    use arrow::array::*;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use parquet::basic::Compression;
+    use parquet::file::properties::WriterProperties;
+
+    if tiles.is_empty() {
+        return Ok(0);
+    }
+
+    // Group tiles by zoom level first — no row collection yet
+    let min_zoom = tiles.iter().map(|((z, _, _), _)| *z).min().unwrap_or(0);
+    let max_z = tiles.iter().map(|((z, _, _), _)| *z).max().unwrap_or(0);
+
+    let mut tiles_by_zoom: Vec<Vec<&((u32, u32, u32), Vec<Fragment2D>)>> =
+        vec![Vec::new(); (max_z as usize) + 1];
+    for entry in tiles {
+        tiles_by_zoom[entry.0 .0 as usize].push(entry);
+    }
+
+    // Arrow schema matching the Python parquet_writer output
+    let schema = Schema::new(vec![
+        Field::new("tile_x", DataType::UInt16, false),
+        Field::new("tile_y", DataType::UInt16, false),
+        Field::new("feature_id", DataType::UInt32, false),
+        Field::new("geom_type", DataType::UInt8, false),
+        Field::new("positions", DataType::LargeBinary, false),
+        Field::new("indices", DataType::LargeBinary, false),
+        Field::new("ring_lengths",
+            DataType::List(std::sync::Arc::new(Field::new("item", DataType::UInt32, true))),
+            false),
+        Field::new("tags",
+            DataType::Map(
+                std::sync::Arc::new(Field::new("entries", DataType::Struct(
+                    vec![
+                        Field::new("keys", DataType::Utf8, false),
+                        Field::new("values", DataType::Utf8, true),
+                    ].into()
+                ), false)),
+                false,
+            ),
+            false),
+    ]);
+    let schema_ref = std::sync::Arc::new(schema);
+
+    let comp = match compression {
+        "zstd" => Compression::ZSTD(Default::default()),
+        "lz4" => Compression::LZ4_RAW,
+        "snappy" => Compression::SNAPPY,
+        _ => Compression::UNCOMPRESSED,
+    };
+
+    let props = WriterProperties::builder()
+        .set_compression(comp)
+        .build();
+
+    let out_path = std::path::Path::new(output_dir);
+    std::fs::create_dir_all(out_path).map_err(|e| format!("mkdir: {}", e))?;
+
+    let total_rows = std::sync::atomic::AtomicU64::new(0);
+    let total_rows_ref = &total_rows;
+
+    // Process one zoom level at a time
+    for zoom in min_zoom..=max_z {
+        let zoom_tiles = &tiles_by_zoom[zoom as usize];
+        if zoom_tiles.is_empty() {
+            continue;
+        }
+
+        let zoom_dir = out_path.join(format!("zoom={}", zoom));
+        std::fs::create_dir_all(&zoom_dir).map_err(|e| format!("mkdir: {}", e))?;
+
+        // Split tiles into chunks → each chunk collects rows + writes its own part file in parallel
+        let n_parts = rayon::current_num_threads().max(1);
+        let chunk_size = (zoom_tiles.len() + n_parts - 1) / n_parts;
+
+        let chunks: Vec<(usize, &[&((u32, u32, u32), Vec<Fragment2D>)])> =
+            zoom_tiles.chunks(chunk_size).enumerate().collect();
+        chunks.par_iter().try_for_each(|(part_idx, tile_chunk)| -> Result<(), String> {
+            let part_idx = *part_idx;
+            // Collect rows for this chunk of tiles (Rayon parallel internally)
+            let tiles_owned: Vec<((u32, u32, u32), Vec<Fragment2D>)> = tile_chunk
+                .iter()
+                .map(|&entry| entry.clone())
+                .collect();
+            let rows = collect_parquet_rows_2d(&tiles_owned, world_bounds, max_zoom, simplify);
+            drop(tiles_owned);
+
+            if rows.is_empty() { return Ok(()); }
+
+            let file_path = zoom_dir.join(format!("part_{:03}.parquet", part_idx));
+            let file = std::fs::File::create(&file_path)
+                .map_err(|e| format!("create {}: {}", file_path.display(), e))?;
+            let mut pq_writer = ArrowWriter::try_new(file, schema_ref.clone(), Some(props.clone()))
+                .map_err(|e| format!("ArrowWriter: {}", e))?;
+
+            let n = rows.len();
+            let tile_x: UInt16Array = rows.iter().map(|r| Some(r.tile_x)).collect();
+            let tile_y: UInt16Array = rows.iter().map(|r| Some(r.tile_y)).collect();
+            let feature_id: UInt32Array = rows.iter().map(|r| Some(r.feature_id)).collect();
+            let geom_type: UInt8Array = rows.iter().map(|r| Some(r.geom_type)).collect();
+            let positions: LargeBinaryArray = rows.iter().map(|r| Some(r.positions.as_slice())).collect();
+            let indices: LargeBinaryArray = rows.iter().map(|r| Some(r.indices.as_slice())).collect();
+
+            let mut rl_builder = ListBuilder::new(UInt32Builder::new());
+            let key_builder = StringBuilder::with_capacity(n * 2, n * 32);
+            let val_builder = StringBuilder::with_capacity(n * 2, n * 32);
+            let mut map_builder = MapBuilder::new(None, key_builder, val_builder);
+
+            for row in &rows {
+                rl_builder.values().append_slice(&row.ring_lengths);
+                rl_builder.append(true);
+
+                if let Some(tag_vec) = tags.get(&row.feature_id) {
+                    for (k, v) in tag_vec {
+                        map_builder.keys().append_value(k);
+                        match v {
+                            TagValue::Str(s) => map_builder.values().append_value(s),
+                            TagValue::Int(i) => map_builder.values().append_value(i.to_string()),
+                            TagValue::Float(f) => map_builder.values().append_value(f.to_string()),
+                            TagValue::Bool(b) => map_builder.values().append_value(b.to_string()),
+                        }
+                    }
+                }
+                map_builder.append(true).map_err(|e| format!("map: {}", e))?;
+            }
+
+            let batch = arrow::record_batch::RecordBatch::try_new(
+                schema_ref.clone(),
+                vec![
+                    std::sync::Arc::new(tile_x),
+                    std::sync::Arc::new(tile_y),
+                    std::sync::Arc::new(feature_id),
+                    std::sync::Arc::new(geom_type),
+                    std::sync::Arc::new(positions),
+                    std::sync::Arc::new(indices),
+                    std::sync::Arc::new(rl_builder.finish()),
+                    std::sync::Arc::new(map_builder.finish()),
+                ],
+            ).map_err(|e| format!("RecordBatch: {}", e))?;
+
+            pq_writer.write(&batch).map_err(|e| format!("write: {}", e))?;
+            pq_writer.close().map_err(|e| format!("close: {}", e))?;
+
+            total_rows_ref.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        })?;
+    }
+
+    Ok(total_rows.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,24 +1593,27 @@ fn generate_pbf_tiles(
                 continue;
             }
 
+            // Widen f32 → f64 for simplify + MVT encoding
+            let xy_f64: Vec<f64> = frag.xy.iter().map(|&v| v as f64).collect();
+
             // Optionally simplify at coarse zoom levels
             let (work_xy, work_rl) = if do_simplify && frag.geom_type == POLYGON && !frag.ring_lengths.is_empty() {
                 let eps = simplify2d::compute_tolerance(tz, max_zoom);
                 if eps > 0.0 {
-                    simplify2d::simplify_polygon_rings(&frag.xy, &frag.ring_lengths, eps)
+                    simplify2d::simplify_polygon_rings(&xy_f64, &frag.ring_lengths, eps)
                 } else {
-                    (frag.xy.clone(), frag.ring_lengths.clone())
+                    (xy_f64, frag.ring_lengths.clone())
                 }
             } else if do_simplify && frag.geom_type == LINESTRING {
                 let eps = simplify2d::compute_tolerance(tz, max_zoom);
                 if eps > 0.0 {
-                    let simplified = simplify2d::douglas_peucker(&frag.xy, eps);
+                    let simplified = simplify2d::douglas_peucker(&xy_f64, eps);
                     (simplified, vec![])
                 } else {
-                    (frag.xy.clone(), vec![])
+                    (xy_f64, vec![])
                 }
             } else {
-                (frag.xy.clone(), frag.ring_lengths.clone())
+                (xy_f64, frag.ring_lengths.clone())
             };
 
             let work_n = work_xy.len() / 2;
